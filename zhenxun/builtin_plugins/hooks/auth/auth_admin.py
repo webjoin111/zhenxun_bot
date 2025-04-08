@@ -22,11 +22,15 @@ async def auth_admin(plugin: PluginInfo, session: Uninfo):
         return
     entity = get_entity_ids(session)
     cache = Cache[list[LevelUser]](CacheType.LEVEL)
-    user_level = await cache.get(session.user.id) or []
+    user_list = await cache.get(session.user.id) or []
     if entity.group_id:
-        user_level += await cache.get(session.user.id, entity.group_id) or []
-        user = max(user_level, key=lambda x: x.user_level)
-        if user.user_level < plugin.admin_level:
+        user_list += await cache.get(session.user.id, entity.group_id) or []
+        if user_list:
+            user = max(user_list, key=lambda x: x.user_level)
+            user_level = user.user_level
+        else:
+            user_level = 0
+        if user_level < plugin.admin_level:
             await send_message(
                 session,
                 [
@@ -38,8 +42,8 @@ async def auth_admin(plugin: PluginInfo, session: Uninfo):
             raise SkipPluginException(
                 f"{plugin.name}({plugin.module}) 管理员权限不足..."
             )
-    elif user_level:
-        user = max(user_level, key=lambda x: x.user_level)
+    elif user_list:
+        user = max(user_list, key=lambda x: x.user_level)
         if user.user_level < plugin.admin_level:
             await send_message(
                 session,

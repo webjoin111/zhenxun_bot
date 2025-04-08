@@ -2,13 +2,14 @@ from nonebot import on_message
 from nonebot.plugin import PluginMetadata
 from nonebot_plugin_alconna import UniMsg
 from nonebot_plugin_apscheduler import scheduler
-from nonebot_plugin_session import EventSession
+from nonebot_plugin_uninfo import Uninfo
 
 from zhenxun.configs.config import Config
 from zhenxun.configs.utils import PluginExtraData, RegisterConfig
 from zhenxun.models.chat_history import ChatHistory
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import PluginType
+from zhenxun.utils.utils import get_entity_ids
 
 __plugin_meta__ = PluginMetadata(
     name="消息存储",
@@ -43,16 +44,15 @@ TEMP_LIST = []
 
 
 @chat_history.handle()
-async def _(message: UniMsg, session: EventSession):
-    # group_id = session.id3 or session.id2
-    group_id = session.id2
+async def _(message: UniMsg, session: Uninfo):
+    entity = get_entity_ids(session)
     TEMP_LIST.append(
         ChatHistory(
-            user_id=session.id1,
-            group_id=group_id,
+            user_id=entity.user_id,
+            group_id=entity.group_id,
             text=str(message),
             plain_text=message.extract_plain_text(),
-            bot_id=session.bot_id,
+            bot_id=session.self_id,
             platform=session.platform,
         )
     )
@@ -68,7 +68,7 @@ async def _():
         TEMP_LIST.clear()
         if message_list:
             await ChatHistory.bulk_create(message_list)
-        logger.debug(f"批量添加聊天记录 {len(message_list)} 条", "定时任务")
+            logger.debug(f"批量添加聊天记录 {len(message_list)} 条", "定时任务")
     except Exception as e:
         logger.error("定时批量添加聊天记录", "定时任务", e=e)
 

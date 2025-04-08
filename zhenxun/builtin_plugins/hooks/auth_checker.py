@@ -28,7 +28,11 @@ from .auth.auth_group import auth_group
 from .auth.auth_limit import LimitManage, auth_limit
 from .auth.auth_plugin import auth_plugin
 from .auth.config import LOGGER_COMMAND
-from .auth.exception import IsSuperuserException, SkipPluginException
+from .auth.exception import (
+    IsSuperuserException,
+    PermissionExemption,
+    SkipPluginException,
+)
 
 
 async def get_plugin_and_user(
@@ -41,10 +45,10 @@ async def get_plugin_and_user(
         user_id: 用户id
 
     异常:
-        SkipPluginException: 插件数据不存在
-        SkipPluginException: 插件类型为HIDDEN
-        SkipPluginException: 重复创建用户
-        SkipPluginException: 用户数据不存在
+        PermissionExemption: 插件数据不存在
+        PermissionExemption: 插件类型为HIDDEN
+        PermissionExemption: 重复创建用户
+        PermissionExemption: 用户数据不存在
 
     返回:
         tuple[PluginInfo, UserConsole]: 插件信息，用户信息
@@ -52,18 +56,18 @@ async def get_plugin_and_user(
     user_cache = Cache[UserConsole](CacheType.USERS)
     plugin = await Cache[PluginInfo](CacheType.PLUGINS).get(module)
     if not plugin:
-        raise SkipPluginException(f"插件:{module} 数据不存在，已跳过权限检查...")
+        raise PermissionExemption(f"插件:{module} 数据不存在，已跳过权限检查...")
     if plugin.plugin_type == PluginType.HIDDEN:
-        raise SkipPluginException(
+        raise PermissionExemption(
             f"插件: {plugin.name}:{plugin.module} 为HIDDEN，已跳过权限检查..."
         )
     user = None
     try:
         user = await user_cache.get(user_id)
     except IntegrityError as e:
-        raise SkipPluginException("重复创建用户，已跳过该次权限检查...") from e
+        raise PermissionExemption("重复创建用户，已跳过该次权限检查...") from e
     if not user:
-        raise SkipPluginException("用户数据不存在，已跳过权限检查...")
+        raise PermissionExemption("用户数据不存在，已跳过权限检查...")
     return plugin, user
 
 
@@ -143,7 +147,7 @@ async def auth(
     module = matcher.plugin_name or ""
     try:
         if not module:
-            raise SkipPluginException("Matcher插件名称不存在...")
+            raise PermissionExemption("Matcher插件名称不存在...")
         plugin, user = await get_plugin_and_user(module, entity.user_id)
         cost_gold = await get_plugin_cost(bot, user, plugin, session)
         await asyncio.gather(
@@ -162,6 +166,8 @@ async def auth(
         ignore_flag = True
     except IsSuperuserException:
         logger.debug("超级用户跳过权限检测...", LOGGER_COMMAND, session=session)
+    except PermissionExemption as e:
+        logger.info(str(e), LOGGER_COMMAND, session=session)
     if not ignore_flag and cost_gold > 0:
         await reduce_gold(entity.user_id, module, cost_gold, session)
     if ignore_flag:
