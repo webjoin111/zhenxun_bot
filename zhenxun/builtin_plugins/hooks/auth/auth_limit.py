@@ -1,6 +1,5 @@
 from typing import ClassVar
 
-from nonebot.exception import IgnoredException
 from nonebot_plugin_uninfo import Uninfo
 from pydantic import BaseModel
 
@@ -10,6 +9,9 @@ from zhenxun.services.log import logger
 from zhenxun.utils.enum import LimitWatchType, PluginLimitType
 from zhenxun.utils.message import MessageUtils
 from zhenxun.utils.utils import CountLimiter, FreqLimiter, UserBlockLimiter
+
+from .config import LOGGER_COMMAND
+from .exception import SkipPluginException
 
 
 class Limit(BaseModel):
@@ -69,7 +71,7 @@ class LimitManage:
                 key_type = channel_id or group_id
             logger.debug(
                 f"解除对象: {key_type} 的block限制",
-                "AuthChecker",
+                LOGGER_COMMAND,
                 session=user_id,
                 group_id=group_id,
             )
@@ -139,16 +141,13 @@ class LimitManage:
         if is_limit and not limiter.check(key_type):
             if limit.result:
                 await MessageUtils.build_message(limit.result).send()
-            logger.debug(
-                f"{limit.module}({limit.limit_type}) 正在限制中...",
-                "AuthChecker",
-                session=session,
+            raise SkipPluginException(
+                f"{limit.module}({limit.limit_type}) 正在限制中..."
             )
-            raise IgnoredException(f"{limit.module} 正在限制中...")
         else:
             logger.debug(
                 f"开始进行限制 {limit.module}({limit.limit_type})...",
-                "AuthChecker",
+                LOGGER_COMMAND,
                 session=user_id,
                 group_id=group_id,
             )

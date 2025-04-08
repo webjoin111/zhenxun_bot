@@ -46,13 +46,12 @@ class CacheGetter(BaseModel, Generic[T]):
 
     async def get(self, cache_data: "CacheData", *args, **kwargs) -> T:
         """获取缓存"""
-        processed_data = (
-            await self.get_func(cache_data, *args, **kwargs)
-            if self.get_func and is_coroutine_callable(self.get_func)
-            else self.get_func(cache_data, *args, **kwargs)
-            if self.get_func
-            else cache_data.data
-        )
+        if not self.get_func:
+            return cache_data.data
+        if is_coroutine_callable(self.get_func):
+            processed_data = await self.get_func(cache_data, *args, **kwargs)
+        else:
+            processed_data = self.get_func(cache_data, *args, **kwargs)
         return cast(T, processed_data)
 
 
@@ -81,9 +80,14 @@ class CacheData(BaseModel):
     """更新时间"""
     reload_count: int = 0
     """更新次数"""
+    incremental_update: bool = True
+    """是否是增量更新"""
 
     async def get(self, *args, **kwargs) -> Any:
         """获取单个缓存"""
+        if not self.reload_count and not self.incremental_update:
+            # 首次获取时，非增量更新获取全部数据
+            await self.reload()
         self.call_cleanup_expired()  # 移除过期缓存
         if not self.getter:
             return self.data
@@ -210,12 +214,17 @@ class CacheManage:
                     id=f"CacheRoot-{cache_data.name}",
                 )
 
-    def new(self, name: str, expire: int = 60 * 10):
+    def new(self, name: str, incremental_update: bool = True, expire: int = 60 * 10):
         def wrapper(func: Callable):
             _name = name.upper()
             if _name in self._data:
                 raise DbCacheException(f"DbCache 缓存数据 {name} 已存在...")
-            self._data[_name] = CacheData(name=_name, func=func, expire=expire)
+            self._data[_name] = CacheData(
+                name=_name,
+                func=func,
+                expire=expire,
+                incremental_update=incremental_update,
+            )
 
         return wrapper
 
@@ -253,7 +262,7 @@ class CacheManage:
         return wrapper
 
     @validate_name
-    def getter(self, name: str, result_model: type | None = None):
+    def getter(self, name: str, result_model: type):
         def wrapper(func: Callable):
             self._data[name].getter = CacheGetter[result_model](get_func=func)
 

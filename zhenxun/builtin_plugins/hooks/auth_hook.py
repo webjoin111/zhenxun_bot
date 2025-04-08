@@ -1,15 +1,21 @@
+import time
+
 from nonebot.adapters import Bot, Event
 from nonebot.matcher import Matcher
 from nonebot.message import run_postprocessor, run_preprocessor
 from nonebot_plugin_alconna import UniMsg
 from nonebot_plugin_uninfo import Uninfo
 
+from zhenxun.services.log import logger
+
+from .auth.config import LOGGER_COMMAND
 from .auth_checker import LimitManage, auth
 
 
 # # 权限检测
 @run_preprocessor
 async def _(matcher: Matcher, event: Event, bot: Bot, session: Uninfo, message: UniMsg):
+    start_time = time.time()
     await auth(
         matcher,
         event,
@@ -17,6 +23,7 @@ async def _(matcher: Matcher, event: Event, bot: Bot, session: Uninfo, message: 
         session,
         message,
     )
+    logger.info(f"权限检测耗时：{time.time() - start_time}秒", LOGGER_COMMAND)
 
 
 # 解除命令block阻塞

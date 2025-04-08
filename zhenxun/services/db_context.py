@@ -69,12 +69,12 @@ class Model(TortoiseModel):
         using_db: BaseDBAsyncClient | None = None,
         **kwargs: Any,
     ) -> tuple[Self, bool]:
-        result = await super().get_or_create(
+        result, is_create = await super().get_or_create(
             defaults=defaults, using_db=using_db, **kwargs
         )
-        if cache_type := cls.get_cache_type():
+        if is_create and (cache_type := cls.get_cache_type()):
             await CacheRoot.reload(cache_type)
-        return result
+        return (result, is_create)
 
     @classmethod
     async def update_or_create(

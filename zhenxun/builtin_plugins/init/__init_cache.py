@@ -42,14 +42,10 @@ def default_with_expiration(
     data: dict[str, Any], expire_data: dict[str, int], expire: int
 ):
     """默认更新期时间cache方法"""
+    if not data:
+        return {}
     keys = {k for k in data if k not in expire_data}
     return {k: time.time() + expire for k in keys} if keys else {}
-
-
-@CacheRoot.new(CacheType.PLUGINS)
-async def _():
-    data_list = await PluginInfo.get_plugins()
-    return {p.module: p for p in data_list}
 
 
 @CacheRoot.new(CacheType.PLUGINS)
@@ -109,21 +105,20 @@ async def _(data: dict[str, GroupConsole], key: str, value: Any):
 
 
 @CacheRoot.getter(CacheType.GROUPS, result_model=GroupConsole)
-async def _(data: dict[str, GroupConsole] | None, group_id: str):
-    if not data:
-        data = {}
-    result = data.get(group_id, None)
+async def _(cache_data: CacheData, group_id: str):
+    cache_data.data = cache_data.data or {}
+    result = cache_data.data.get(group_id, None)
     if not result:
         result = await GroupConsole.get_group(group_id=group_id)
         if result:
-            data[group_id] = result
+            cache_data.data[group_id] = result
     return result
 
 
 @CacheRoot.with_refresh(CacheType.GROUPS)
 async def _(data: dict[str, GroupConsole]):
     groups = await GroupConsole.filter(
-        group_id__in=data.keys(), channel_id__isnull=True, load_status=True
+        group_id__in=data.keys(), channel_id__isnull=True
     )
     for group in groups:
         data[group.group_id] = group
@@ -154,14 +149,13 @@ async def _(data: dict[str, BotConsole], key: str, value: Any):
 
 
 @CacheRoot.getter(CacheType.BOT, result_model=BotConsole)
-async def _(data: dict[str, BotConsole] | None, bot_id: str):
-    if not data:
-        data = {}
-    result = data.get(bot_id, None)
+async def _(cache_data: CacheData, bot_id: str):
+    cache_data.data = cache_data.data or {}
+    result = cache_data.data.get(bot_id, None)
     if not result:
         result = await BotConsole.get_or_none(bot_id=bot_id)
         if result:
-            data[bot_id] = result
+            cache_data.data[bot_id] = result
     return result
 
 
@@ -224,7 +218,7 @@ def _(cache_data: CacheData):
     return default_cleanup_expired(cache_data)
 
 
-@CacheRoot.new(CacheType.LEVEL)
+@CacheRoot.new(CacheType.LEVEL, False)
 async def _():
     return await LevelUser().all()
 
@@ -246,13 +240,13 @@ async def _(cache_data: CacheData, user_id: str, group_id: str | None = None):
         ]
 
 
-@CacheRoot.new(CacheType.BAN)
+@CacheRoot.new(CacheType.BAN, False, 5)
 async def _():
     return await BanConsole.all()
 
 
 @CacheRoot.getter(CacheType.BAN, result_model=list[BanConsole])
-def _(cache_data: CacheData, user_id: str | None, group_id: str | None = None):
+async def _(cache_data: CacheData, user_id: str | None, group_id: str | None = None):
     if user_id:
         return (
             [

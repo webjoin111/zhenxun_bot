@@ -196,7 +196,7 @@ class PluginManage:
             await PluginInfo.filter(plugin_type=PluginType.NORMAL).update(
                 default_status=status
             )
-            return f'成功将所有功能进群默认状态修改为: {"开启" if status else "关闭"}'
+            return f"成功将所有功能进群默认状态修改为: {'开启' if status else '关闭'}"
         if group_id:
             if group := await GroupConsole.get_or_none(
                 group_id=group_id, channel_id__isnull=True
@@ -213,12 +213,12 @@ class PluginManage:
                     module_list = [f"<{module}" for module in module_list]
                     group.block_plugin = ",".join(module_list) + ","  # type: ignore
                 await group.save(update_fields=["block_plugin"])
-                return f'成功将此群组所有功能状态修改为: {"开启" if status else "关闭"}'
+                return f"成功将此群组所有功能状态修改为: {'开启' if status else '关闭'}"
             return "获取群组失败..."
         await PluginInfo.filter(plugin_type=PluginType.NORMAL).update(
             status=status, block_type=None if status else BlockType.ALL
         )
-        return f'成功将所有功能全局状态修改为: {"开启" if status else "关闭"}'
+        return f"成功将所有功能全局状态修改为: {'开启' if status else '关闭'}"
 
     @classmethod
     async def is_wake(cls, group_id: str) -> bool:
@@ -243,9 +243,11 @@ class PluginManage:
         参数:
             group_id: 群组id
         """
-        await GroupConsole.filter(group_id=group_id, channel_id__isnull=True).update(
-            status=False
+        group, _ = await GroupConsole.get_or_create(
+            group_id=group_id, channel_id__isnull=True
         )
+        group.status = False
+        await group.save(update_fields=["status"])
 
     @classmethod
     async def wake(cls, group_id: str):
@@ -254,9 +256,11 @@ class PluginManage:
         参数:
             group_id: 群组id
         """
-        await GroupConsole.filter(group_id=group_id, channel_id__isnull=True).update(
-            status=True
+        group, _ = await GroupConsole.get_or_create(
+            group_id=group_id, channel_id__isnull=True
         )
+        group.status = True
+        await group.save(update_fields=["status"])
 
     @classmethod
     async def block(cls, module: str):
