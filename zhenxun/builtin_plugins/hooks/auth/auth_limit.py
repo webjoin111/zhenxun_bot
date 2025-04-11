@@ -8,7 +8,12 @@ from zhenxun.models.plugin_limit import PluginLimit
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import LimitWatchType, PluginLimitType
 from zhenxun.utils.message import MessageUtils
-from zhenxun.utils.utils import CountLimiter, FreqLimiter, UserBlockLimiter
+from zhenxun.utils.utils import (
+    CountLimiter,
+    FreqLimiter,
+    UserBlockLimiter,
+    get_entity_ids,
+)
 
 from .config import LOGGER_COMMAND
 from .exception import SkipPluginException
@@ -22,7 +27,7 @@ class Limit(BaseModel):
         arbitrary_types_allowed = True
 
 
-class LimitManage:
+class LimitManager:
     add_module: ClassVar[list] = []
 
     cd_limit: ClassVar[dict[str, Limit]] = {}
@@ -84,7 +89,6 @@ class LimitManage:
         user_id: str,
         group_id: str | None,
         channel_id: str | None,
-        session: Uninfo,
     ):
         """检测限制
 
@@ -93,17 +97,16 @@ class LimitManage:
             user_id: 用户id
             group_id: 群组id
             channel_id: 频道id
-            session: Session
 
         异常:
             IgnoredException: IgnoredException
         """
         if limit_model := cls.cd_limit.get(module):
-            await cls.__check(limit_model, user_id, group_id, channel_id, session)
+            await cls.__check(limit_model, user_id, group_id, channel_id)
         if limit_model := cls.block_limit.get(module):
-            await cls.__check(limit_model, user_id, group_id, channel_id, session)
+            await cls.__check(limit_model, user_id, group_id, channel_id)
         if limit_model := cls.count_limit.get(module):
-            await cls.__check(limit_model, user_id, group_id, channel_id, session)
+            await cls.__check(limit_model, user_id, group_id, channel_id)
 
     @classmethod
     async def __check(
@@ -112,7 +115,6 @@ class LimitManage:
         user_id: str,
         group_id: str | None,
         channel_id: str | None,
-        session: Uninfo,
     ):
         """检测限制
 
@@ -121,7 +123,6 @@ class LimitManage:
             user_id: 用户id
             group_id: 群组id
             channel_id: 频道id
-            session: Session
 
         异常:
             IgnoredException: IgnoredException
@@ -166,23 +167,14 @@ async def auth_limit(plugin: PluginInfo, session: Uninfo):
         plugin: PluginInfo
         session: Uninfo
     """
-    user_id = session.user.id
-    group_id = None
-    channel_id = None
-    if session.group:
-        if session.group.parent:
-            group_id = session.group.parent.id
-            channel_id = session.group.id
-        else:
-            group_id = session.group.id
-    if not group_id:
-        group_id = channel_id
-        channel_id = None
-    if plugin.module not in LimitManage.add_module:
+    entity = get_entity_ids(session)
+    if plugin.module not in LimitManager.add_module:
         limit_list: list[PluginLimit] = await plugin.plugin_limit.filter(
             status=True
         ).all()  # type: ignore
         for limit in limit_list:
-            LimitManage.add_limit(limit)
-    if user_id:
-        await LimitManage.check(plugin.module, user_id, group_id, channel_id, session)
+            LimitManager.add_limit(limit)
+    if entity.user_id:
+        await LimitManager.check(
+            plugin.module, entity.user_id, entity.group_id, entity.channel_id
+        )

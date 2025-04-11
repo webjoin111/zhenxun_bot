@@ -27,6 +27,7 @@ from .auth.auth_cost import auth_cost
 from .auth.auth_group import auth_group
 from .auth.auth_limit import LimitManage, auth_limit
 from .auth.auth_plugin import auth_plugin
+from .auth.bot_filter import bot_filter
 from .auth.config import LOGGER_COMMAND
 from .auth.exception import (
     IsSuperuserException,
@@ -152,6 +153,7 @@ async def auth(
         cost_gold = await get_plugin_cost(bot, user, plugin, session)
         await asyncio.gather(
             *[
+                bot_filter(session),
                 auth_ban(matcher, bot, session),
                 auth_bot(plugin, bot.self_id),
                 auth_group(plugin, entity, message),

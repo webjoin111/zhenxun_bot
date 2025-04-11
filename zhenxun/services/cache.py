@@ -33,7 +33,7 @@ def validate_name(func: Callable):
 
     def wrapper(self, name: str, *args, **kwargs):
         _name = name.upper()
-        if _name not in CacheManage._data:
+        if _name not in CacheManager._data:
             raise DbCacheException(f"DbCache 缓存数据 {name} 不存在...")
         return func(self, _name, *args, **kwargs)
 
@@ -190,7 +190,7 @@ class CacheData(BaseModel):
         )
 
 
-class CacheManage:
+class CacheManager:
     """全局缓存管理，减少数据库与网络请求查询次数
 
 
@@ -324,7 +324,7 @@ class CacheManage:
             await cache.update(key, value, *args, **kwargs)
 
 
-CacheRoot = CacheManage()
+CacheRoot = CacheManager()
 
 
 class Cache(Generic[T]):

@@ -14,7 +14,7 @@ from zhenxun.utils.utils import EntityIDs, get_entity_ids
 
 from .config import LOGGER_COMMAND
 from .exception import SkipPluginException
-from .utils import send_message
+from .utils import freq, send_message
 
 Config.add_plugin_config(
     "hook",
@@ -131,6 +131,7 @@ async def user_handle(
             # and not db_plugin.ignore_prompt
             and time != -1
             and ban_result
+            and freq.is_send_limit_message(db_plugin, entity.user_id, False)
         ):
             await send_message(
                 session,

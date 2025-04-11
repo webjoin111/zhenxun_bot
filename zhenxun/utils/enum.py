@@ -18,6 +18,8 @@ class CacheType(StrEnum):
     """全局bot信息"""
     LEVEL = "GLOBAL_USER_LEVEL"
     """用户权限"""
+    LIMIT = "GLOBAL_LIMIT"
+    """插件限制"""
 
 
 class DbLockType(StrEnum):

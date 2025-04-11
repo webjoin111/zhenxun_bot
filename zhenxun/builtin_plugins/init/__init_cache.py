@@ -8,6 +8,7 @@ from zhenxun.models.bot_console import BotConsole
 from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.level_user import LevelUser
 from zhenxun.models.plugin_info import PluginInfo
+from zhenxun.models.plugin_limit import PluginLimit
 from zhenxun.models.user_console import UserConsole
 from zhenxun.services.cache import CacheData, CacheRoot
 from zhenxun.utils.enum import CacheType
@@ -38,13 +39,38 @@ def default_cleanup_expired(cache_data: CacheData) -> list[str]:
     return expire_key
 
 
+def default_cleanup_expired_1(cache_data: CacheData) -> list[str]:
+    """默认清理列表过期cache方法"""
+    if not cache_data.data:
+        return []
+    now = time.time()
+    expire_key = []
+    for k, t in list(cache_data.expire_data.items()):
+        if t < now:
+            expire_key.append(k)
+            cache_data.expire_data.pop(k)
+    if expire_key:
+        cache_data.data = [k for k in cache_data.data if repr(k) not in expire_key]
+    return expire_key
+
+
 def default_with_expiration(
     data: dict[str, Any], expire_data: dict[str, int], expire: int
 ):
-    """默认更新期时间cache方法"""
+    """默认更新过期时间cache方法"""
     if not data:
         return {}
     keys = {k for k in data if k not in expire_data}
+    return {k: time.time() + expire for k in keys} if keys else {}
+
+
+def default_with_expiration_1(
+    data: dict[str, Any], expire_data: dict[str, int], expire: int
+):
+    """默认更新过期时间cache方法"""
+    if not data:
+        return {}
+    keys = {repr(k) for k in data if repr(k) not in expire_data}
     return {k: time.time() + expire for k in keys} if keys else {}
 
 
@@ -75,7 +101,7 @@ async def _(cache_data: CacheData, module: str):
 
 @CacheRoot.with_refresh(CacheType.PLUGINS)
 async def _(data: dict[str, PluginInfo]):
-    plugins = await PluginInfo.filter(module__in=data.keys(), load_status=True)
+    plugins = await PluginInfo.filter(module__in=data.keys(), load_status=True).all()
     for plugin in plugins:
         data[plugin.module] = plugin
 
@@ -119,7 +145,7 @@ async def _(cache_data: CacheData, group_id: str):
 async def _(data: dict[str, GroupConsole]):
     groups = await GroupConsole.filter(
         group_id__in=data.keys(), channel_id__isnull=True
-    )
+    ).all()
     for group in groups:
         data[group.group_id] = group
 
@@ -161,7 +187,7 @@ async def _(cache_data: CacheData, bot_id: str):
 
 @CacheRoot.with_refresh(CacheType.BOT)
 async def _(data: dict[str, BotConsole]):
-    bots = await BotConsole.filter(bot_id__in=data.keys())
+    bots = await BotConsole.filter(bot_id__in=data.keys()).all()
     for bot in bots:
         data[bot.bot_id] = bot
 
@@ -203,7 +229,7 @@ async def _(cache_data: CacheData, user_id: str):
 
 @CacheRoot.with_refresh(CacheType.USERS)
 async def _(data: dict[str, UserConsole]):
-    users = await UserConsole.filter(user_id__in=data.keys())
+    users = await UserConsole.filter(user_id__in=data.keys()).all()
     for user in users:
         data[user.user_id] = user
 
@@ -240,7 +266,17 @@ async def _(cache_data: CacheData, user_id: str, group_id: str | None = None):
         ]
 
 
-@CacheRoot.new(CacheType.BAN, False, 5)
+@CacheRoot.with_expiration(CacheType.LEVEL)
+def _(data: dict[str, UserConsole], expire_data: dict[str, int], expire: int):
+    return default_with_expiration_1(data, expire_data, expire)
+
+
+@CacheRoot.cleanup_expired(CacheType.LEVEL)
+def _(cache_data: CacheData):
+    return default_cleanup_expired_1(cache_data)
+
+
+@CacheRoot.new(CacheType.BAN, False)
 async def _():
     return await BanConsole.all()
 
@@ -268,3 +304,63 @@ async def _(cache_data: CacheData, user_id: str | None, group_id: str | None = N
             if not data.user_id and data.group_id == group_id
         ]
     return None
+
+
+@CacheRoot.with_expiration(CacheType.BAN)
+def _(data: dict[str, UserConsole], expire_data: dict[str, int], expire: int):
+    return default_with_expiration_1(data, expire_data, expire)
+
+
+@CacheRoot.cleanup_expired(CacheType.BAN)
+def _(cache_data: CacheData):
+    return default_cleanup_expired_1(cache_data)
+
+
+@CacheRoot.new(CacheType.LIMIT)
+async def _():
+    data_list = await PluginLimit.filter(status=True).all()
+    result_data = {}
+    for data in data_list:
+        if not result_data.get(data.module):
+            result_data[data.module] = []
+        result_data[data.module].append(data)
+    return result_data
+
+
+@CacheRoot.updater(CacheType.LIMIT)
+async def _(data: dict[str, list[PluginLimit]], key: str, value: Any):
+    if value:
+        data[key] = value
+    elif limits := await PluginLimit.filter(module=key, status=True):
+        data[key] = limits
+
+
+@CacheRoot.getter(CacheType.LIMIT, result_model=list[PluginLimit])
+async def _(cache_data: CacheData, module: str):
+    cache_data.data = cache_data.data or {}
+    result = cache_data.data.get(module, None)
+    if not result:
+        result = await PluginLimit.filter(module=module, status=True)
+        if result:
+            cache_data.data[module] = result
+    return result
+
+
+@CacheRoot.with_refresh(CacheType.LIMIT)
+async def _(data: dict[str, list[PluginLimit]]):
+    limits = await PluginLimit.filter(module__in=data.keys(), load_status=True).all()
+    data.clear()
+    for limit in limits:
+        if not data.get(limit.module):
+            data[limit.module] = []
+        data[limit.module].append(limit)
+
+
+@CacheRoot.with_expiration(CacheType.LIMIT)
+def _(data: dict[str, PluginInfo], expire_data: dict[str, int], expire: int):
+    return default_with_expiration(data, expire_data, expire)
+
+
+@CacheRoot.cleanup_expired(CacheType.LIMIT)
+def _(cache_data: CacheData):
+    return default_cleanup_expired(cache_data)
