@@ -25,7 +25,7 @@ from .auth.auth_ban import auth_ban
 from .auth.auth_bot import auth_bot
 from .auth.auth_cost import auth_cost
 from .auth.auth_group import auth_group
-from .auth.auth_limit import LimitManage, auth_limit
+from .auth.auth_limit import LimitManager, auth_limit
 from .auth.auth_plugin import auth_plugin
 from .auth.bot_filter import bot_filter
 from .auth.config import LOGGER_COMMAND
@@ -163,7 +163,7 @@ async def auth(
         )
         await auth_limit(plugin, session)
     except SkipPluginException as e:
-        LimitManage.unblock(module, entity.user_id, entity.group_id, entity.channel_id)
+        LimitManager.unblock(module, entity.user_id, entity.group_id, entity.channel_id)
         logger.info(str(e), LOGGER_COMMAND, session=session)
         ignore_flag = True
     except IsSuperuserException:

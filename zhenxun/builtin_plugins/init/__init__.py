@@ -1,6 +1,4 @@
-import os
 from pathlib import Path
-import sys
 
 import nonebot
 from nonebot.adapters import Bot
