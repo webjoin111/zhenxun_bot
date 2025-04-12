@@ -21,7 +21,7 @@ __plugin_meta__ = PluginMetadata(
         author="HibiKier",
         version="0.1",
         plugin_type=PluginType.SUPERUSER,
-    ).dict(),
+    ).to_dict(),
 )
 
 _friend_matcher = on_alconna(
@@ -70,8 +70,6 @@ async def _(
         msg = f"| UID | 昵称 | 共{len(fl)}个好友\n" + msg
         await MessageUtils.build_message(msg).send()
         logger.info("查看好友列表", "好友列表", session=session)
-    except (ApiNotAvailable, AttributeError):
-        await MessageUtils.build_message("Api未实现...").send()
     except Exception as e:
         logger.error("好友列表发生错误", "好友列表", session=session, e=e)
         await MessageUtils.build_message("其他未知错误...").send()
@@ -90,8 +88,6 @@ async def _(
         msg = f"| GID | 名称 | 共{len(gl)}个群组\n" + msg
         await MessageUtils.build_message(msg).send()
         logger.info("查看群组列表", "群组列表", session=session)
-    except (ApiNotAvailable, AttributeError):
-        await MessageUtils.build_message("Api未实现...").send()
     except Exception as e:
         logger.error("查看群组列表发生错误", "群组列表", session=session, e=e)
         await MessageUtils.build_message("其他未知错误...").send()

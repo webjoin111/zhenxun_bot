@@ -16,8 +16,9 @@ from nonebot_plugin_alconna import (
 )
 from nonebot_plugin_uninfo import Uninfo
 
-from zhenxun.configs.utils import BaseBlock, PluginExtraData, RegisterConfig
+from zhenxun.configs.utils import BaseBlock, Command, PluginExtraData, RegisterConfig
 from zhenxun.services.log import logger
+from zhenxun.utils.decorator.shop import NotMeetUseConditionsException
 from zhenxun.utils.depends import UserName
 from zhenxun.utils.enum import BlockType, PluginType
 from zhenxun.utils.exception import GoodsNotFound
@@ -44,6 +45,14 @@ __plugin_meta__ = PluginMetadata(
         version="0.1",
         plugin_type=PluginType.NORMAL,
         menu_type="商店",
+        commands=[
+            Command(command="我的金币"),
+            Command(command="我的道具"),
+            Command(command="购买道具"),
+            Command(command="使用道具"),
+            Command(command="金币排行"),
+            Command(command="金币总排行"),
+        ],
         limits=[BaseBlock(check_type=BlockType.GROUP)],
         configs=[
             RegisterConfig(
@@ -53,7 +62,7 @@ __plugin_meta__ = PluginMetadata(
                 default_value="zhenxun",
             )
         ],
-    ).dict(),
+    ).to_dict(),
 )
 
 from .goods_register import *  # noqa: F403
@@ -193,6 +202,12 @@ async def _(
     except GoodsNotFound:
         await MessageUtils.build_message(
             f"没有找到道具 {name.result} 或道具数量不足..."
+        ).send(reply_to=True)
+    except NotMeetUseConditionsException as e:
+        if info := e.get_info():
+            await MessageUtils.build_message(info).finish()  # type: ignore
+        await MessageUtils.build_message(
+            f"使用道具 {name.result} 的条件不满足..."
         ).send(reply_to=True)
 
 

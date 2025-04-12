@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta
 import time
 
@@ -7,6 +8,7 @@ from nonebot.drivers import Driver
 from tortoise.expressions import RawSQL
 from tortoise.functions import Count
 
+from zhenxun.configs.config import BotConfig
 from zhenxun.models.bot_connect_log import BotConnectLog
 from zhenxun.models.chat_history import ChatHistory
 from zhenxun.models.statistics import Statistics
@@ -15,7 +17,13 @@ from zhenxun.utils.platform import PlatformUtils
 
 from ....base_model import BaseResultModel, QueryModel
 from ..main.data_source import bot_live
-from .model import AllChatAndCallCount, BotInfo, ChatCallMonthCount, QueryChatCallCount
+from .model import (
+    AllChatAndCallCount,
+    BotConnectLogInfo,
+    BotInfo,
+    ChatCallMonthCount,
+    QueryChatCallCount,
+)
 
 driver: Driver = nonebot.get_driver()
 
@@ -45,7 +53,12 @@ class ApiDataSource:
         if platform == "qq":
             login_info = await bot.get_login_info()
             nickname = login_info["nickname"]
-            ava_url = PlatformUtils.get_user_avatar_url(bot.self_id, "qq") or ""
+            ava_url = (
+                PlatformUtils.get_user_avatar_url(
+                    bot.self_id, "qq", BotConfig.get_qbot_uid(bot.self_id)
+                )
+                or ""
+            )
         else:
             nickname = bot.self_id
             ava_url = ""
@@ -53,12 +66,14 @@ class ApiDataSource:
             self_id=bot.self_id, nickname=nickname, ava_url=ava_url, platform=platform
         )
         try:
-            group_list, _ = await PlatformUtils.get_group_list(bot, True)
-            friend_list, _ = await PlatformUtils.get_friend_list(bot)
-            bot_info.group_count = len(group_list)
-            bot_info.friend_count = len(friend_list)
+            group, friend = await asyncio.gather(
+                PlatformUtils.get_group_list(bot, True),
+                PlatformUtils.get_friend_list(bot),
+            )
+            bot_info.group_count = len(group[0])
+            bot_info.friend_count = len(friend[0])
         except Exception as e:
-            logger.warning("获取bot好友/群组数量失败...", "WebUi", e=e)
+            logger.warning("获取bot好友/群组信息失败...", "WebUi", e=e)
             bot_info.group_count = 0
             bot_info.friend_count = 0
         bot_info.day_call = await Statistics.filter(
@@ -241,6 +256,12 @@ class ApiDataSource:
             .offset((query.index - 1) * query.size)
             .limit(query.size)
         )
+        result_list = []
         for v in data:
             v.connect_time = v.connect_time.replace(tzinfo=None).replace(microsecond=0)
-        return BaseResultModel(total=total, data=data)
+            result_list.append(
+                BotConnectLogInfo(
+                    bot_id=v.bot_id, connect_time=v.connect_time, type=v.type
+                )
+            )
+        return BaseResultModel(total=total, data=result_list)

@@ -29,7 +29,7 @@ __plugin_meta__ = PluginMetadata(
                 type=bool,
             )
         ],
-    ).dict(),
+    ).to_dict(),
 )
 
 
@@ -38,7 +38,6 @@ def rule(message: UniMsg) -> bool:
 
 
 chat_history = on_message(rule=rule, priority=1, block=False)
-
 
 TEMP_LIST = []
 
@@ -70,14 +69,4 @@ async def _():
             await ChatHistory.bulk_create(message_list)
             logger.debug(f"批量添加聊天记录 {len(message_list)} 条", "定时任务")
     except Exception as e:
-        logger.error("定时批量添加聊天记录", "定时任务", e=e)
-
-
-# @test.handle()
-# async def _(event: MessageEvent):
-#     print(await ChatHistory.get_user_msg(event.user_id, "private"))
-#     print(await ChatHistory.get_user_msg_count(event.user_id, "private"))
-#     print(await ChatHistory.get_user_msg(event.user_id, "group"))
-#     print(await ChatHistory.get_user_msg_count(event.user_id, "group"))
-#     print(await ChatHistory.get_group_msg(event.group_id))
-#     print(await ChatHistory.get_group_msg_count(event.group_id))
+        logger.warning("存储聊天记录失败", "chat_history", e=e)

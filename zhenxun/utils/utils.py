@@ -261,3 +261,19 @@ def get_entity_ids(session: Uninfo) -> EntityIDs:
         else:
             group_id = session.group.id
     return EntityIDs(user_id=user_id, group_id=group_id, channel_id=channel_id)
+
+
+def is_number(text: str) -> bool:
+    """是否为数字
+
+    参数:
+        text: 文本
+
+    返回:
+        bool: 是否为数字
+    """
+    try:
+        float(text)
+        return True
+    except ValueError:
+        return False

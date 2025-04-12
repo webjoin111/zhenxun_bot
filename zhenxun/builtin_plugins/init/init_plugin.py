@@ -72,7 +72,10 @@ async def _handle_setting(
             cost_gold=setting.cost_gold,
             plugin_type=extra_data.plugin_type,
             admin_level=extra_data.admin_level,
+            is_show=extra_data.is_show,
+            ignore_prompt=extra_data.ignore_prompt,
             parent=(plugin.parent_plugin.module_name if plugin.parent_plugin else None),
+            impression=setting.impression,
         )
     )
     if extra_data.limits:

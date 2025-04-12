@@ -37,7 +37,7 @@ class BotLive:
         self._data = {}
 
     def add(self, bot_id: str):
-        self._data[bot_id] = time.time()
+        self._data[bot_id] = int(time.time())
 
     def get(self, bot_id: str) -> int | None:
         return self._data.get(bot_id)
@@ -161,7 +161,7 @@ class ApiDataSource:
         for bot in bot_list:
             bot.bot = None  # type: ignore
         select_bot.is_select = True
-        return [BaseInfo(**e.dict()) for e in bot_list]
+        return [BaseInfo(**e.to_dict()) for e in bot_list]
 
     @classmethod
     async def get_all_chat_count(cls, bot_id: str | None) -> QueryCount:
@@ -255,13 +255,31 @@ class ApiDataSource:
         if bot_id:
             query = query.filter(bot_id=bot_id)
         if date_type == QueryDateType.DAY:
-            query = query.filter(create_time__gte=now - timedelta(hours=now.hour))
+            query = query.filter(
+                create_time__gte=now
+                - timedelta(hours=now.hour, minutes=now.minute, seconds=now.second)
+            )
         if date_type == QueryDateType.WEEK:
-            query = query.filter(create_time__gte=now - timedelta(days=7))
+            query = query.filter(
+                create_time__gte=now
+                - timedelta(
+                    days=7, hours=now.hour, minutes=now.minute, seconds=now.second
+                )
+            )
         if date_type == QueryDateType.MONTH:
-            query = query.filter(create_time__gte=now - timedelta(days=30))
+            query = query.filter(
+                create_time__gte=now
+                - timedelta(
+                    days=30, hours=now.hour, minutes=now.minute, seconds=now.second
+                )
+            )
         if date_type == QueryDateType.YEAR:
-            query = query.filter(create_time__gte=now - timedelta(days=365))
+            query = query.filter(
+                create_time__gte=now
+                - timedelta(
+                    days=365, hours=now.hour, minutes=now.minute, seconds=now.second
+                )
+            )
         return query
 
     @classmethod

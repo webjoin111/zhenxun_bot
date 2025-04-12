@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Awaitable, Callable
 import random
 from typing import Literal
@@ -55,6 +56,8 @@ class PlatformUtils:
         """
         if isinstance(session, Bot):
             return bool(BotConfig.get_qbot_uid(session.self_id))
+        if BotConfig.get_qbot_uid(session.self_id):
+            return True
         return session.scope == SupportScope.qq_api
 
     @classmethod
@@ -154,43 +157,44 @@ class PlatformUtils:
         返回:
             UserData | None: 用户数据
         """
-        if interface := get_interface(bot):
-            member = None
-            user = None
-            if channel_id:
-                member = await interface.get_member(
-                    SceneType.CHANNEL_TEXT, channel_id, user_id
-                )
-                if member:
-                    user = member.user
-            elif group_id:
-                member = await interface.get_member(SceneType.GROUP, group_id, user_id)
-                if member:
-                    user = member.user
-            else:
-                user = await interface.get_user(user_id)
-            if not user:
-                return None
+        if not (interface := get_interface(bot)):
+            return None
+        member = None
+        user = None
+        if channel_id:
+            member = await interface.get_member(
+                SceneType.CHANNEL_TEXT, channel_id, user_id
+            )
             if member:
-                return UserData(
-                    name=user.name or "",
-                    card=member.nick,
-                    user_id=user.id,
-                    group_id=group_id,
-                    channel_id=channel_id,
-                    role=member.role.id if member.role else None,
-                    join_time=int(member.joined_at.timestamp())
-                    if member.joined_at
-                    else None,
-                )
-            else:
-                return UserData(
-                    name=user.name or "",
-                    user_id=user.id,
-                    group_id=group_id,
-                    channel_id=channel_id,
-                )
-        return None
+                user = member.user
+        elif group_id:
+            member = await interface.get_member(SceneType.GROUP, group_id, user_id)
+            if member:
+                user = member.user
+        else:
+            user = await interface.get_user(user_id)
+        if not user:
+            return None
+        return (
+            UserData(
+                name=user.name or "",
+                card=member.nick,
+                user_id=user.id,
+                group_id=group_id,
+                channel_id=channel_id,
+                role=member.role.id if member.role else None,
+                join_time=(
+                    int(member.joined_at.timestamp()) if member.joined_at else None
+                ),
+            )
+            if member
+            else UserData(
+                name=user.name or "",
+                user_id=user.id,
+                group_id=group_id,
+                channel_id=channel_id,
+            )
+        )
 
     @classmethod
     async def get_user_avatar(
@@ -207,7 +211,7 @@ class PlatformUtils:
             if user_id.isdigit():
                 url = f"http://q1.qlogo.cn/g?b=qq&nk={user_id}&s=160"
             else:
-                url = f"https://q.qlogo.cn/qqapp/{appid}/{user_id}/100"
+                url = f"https://q.qlogo.cn/qqapp/{appid}/{user_id}/640"
         return await AsyncHttpx.get_content(url) if url else None
 
     @classmethod
@@ -220,14 +224,12 @@ class PlatformUtils:
             user_id: 用户id
             platform: 平台
         """
-        if platform == "qq":
-            return (
-                f"http://q1.qlogo.cn/g?b=qq&nk={user_id}&s=160"
-                if user_id.isdigit()
-                else f"https://q.qlogo.cn/qqapp/{appid}/{user_id}/100"
-            )
-        else:
+        if platform != "qq":
             return None
+        if user_id.isdigit():
+            return f"http://q1.qlogo.cn/g?b=qq&nk={user_id}&s=160"
+        else:
+            return f"https://q.qlogo.cn/qqapp/{appid}/{user_id}/640"
 
     @classmethod
     async def get_group_avatar(cls, gid: str, platform: str) -> bytes | None:
@@ -344,6 +346,23 @@ class PlatformUtils:
         return "unknown"
 
     @classmethod
+    def is_forward_merge_supported(cls, t: Bot | Uninfo) -> bool:
+        """是否支持转发消息
+
+        参数:
+            t: bot | Uninfo
+
+        返回:
+            bool: 是否支持转发消息
+        """
+        if not isinstance(t, Bot):
+            return t.basic["scope"] == SupportScope.qq_client
+        if interface := get_interface(t):
+            info = interface.basic_info()
+            return info["scope"] == SupportScope.qq_client
+        return False
+
+    @classmethod
     async def get_group_list(
         cls, bot: Bot, only_group: bool = False
     ) -> tuple[list[GroupConsole], str]:
@@ -356,32 +375,30 @@ class PlatformUtils:
         返回:
             tuple[list[GroupConsole], str]: 群组列表, 平台
         """
-        if interface := get_interface(bot):
-            platform = cls.get_platform(bot)
-            result_list = []
-            scenes = await interface.get_scenes(SceneType.GROUP)
-            for scene in scenes:
-                group_id = scene.id
-                result_list.append(
-                    GroupConsole(
-                        group_id=scene.id,
-                        group_name=scene.name,
-                    )
+        if not (interface := get_interface(bot)):
+            return [], ""
+        platform = cls.get_platform(bot)
+        result_list = []
+        scenes = await interface.get_scenes(SceneType.GROUP)
+        for scene in scenes:
+            group_id = scene.id
+            result_list.append(
+                GroupConsole(
+                    group_id=scene.id,
+                    group_name=scene.name,
                 )
-                if not only_group and platform != "qq":
-                    if channel_list := await interface.get_scenes(
-                        parent_scene_id=group_id
-                    ):
-                        for channel in channel_list:
-                            result_list.append(
-                                GroupConsole(
-                                    group_id=scene.id,
-                                    group_name=channel.name,
-                                    channel_id=channel.id,
-                                )
-                            )
-            return result_list, platform
-        return [], ""
+            )
+            if not only_group and platform != "qq":
+                if channel_list := await interface.get_scenes(parent_scene_id=group_id):
+                    result_list.extend(
+                        GroupConsole(
+                            group_id=scene.id,
+                            group_name=channel.name,
+                            channel_id=channel.id,
+                        )
+                        for channel in channel_list
+                    )
+        return result_list, platform
 
     @classmethod
     async def update_friend(cls, bot: Bot) -> int:
@@ -541,6 +558,7 @@ async def broadcast_group(
                                 target, _bot
                             )
                             logger.debug("发送成功", log_cmd, target=key)
+                            await asyncio.sleep(random.randint(1, 3))
                         else:
                             logger.warning("target为空", log_cmd, target=key)
                     except Exception as e:

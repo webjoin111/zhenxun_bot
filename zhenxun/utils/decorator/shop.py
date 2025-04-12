@@ -2,14 +2,14 @@ from collections.abc import Callable
 
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from nonebot.plugin import require
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from zhenxun.models.goods_info import GoodsInfo
 
 
 class Goods(BaseModel):
-    before_handle: list[Callable] = []
-    after_handle: list[Callable] = []
+    before_handle: list[Callable] = Field(default_factory=list)
+    after_handle: list[Callable] = Field(default_factory=list)
     price: int
     des: str = ""
     discount: float
@@ -19,7 +19,7 @@ class Goods(BaseModel):
     is_passive: bool
     partition: str | None
     func: Callable
-    kwargs: dict[str, str] = {}
+    kwargs: dict[str, str] = Field(default_factory=dict)
     send_success_msg: bool
     max_num_limit: int
 

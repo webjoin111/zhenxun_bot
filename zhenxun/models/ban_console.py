@@ -26,7 +26,7 @@ class BanConsole(Model):
     operator = fields.CharField(255)
     """使用Ban命令的用户"""
 
-    class Meta:  # type: ignore
+    class Meta:  # pyright: ignore [reportIncompatibleVariableOverride]
         table = "ban_console"
         table_description = "封禁人员/群组数据表"
         unique_together = ("user_id", "group_id")
