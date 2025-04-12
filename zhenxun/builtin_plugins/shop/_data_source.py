@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import inspect
 import time
 from types import MappingProxyType
-from typing import Any, ClassVar, Literal
+from typing import Any, Literal
 
 from nonebot.adapters import Bot, Event
 from nonebot.compat import model_dump
@@ -69,9 +69,9 @@ class ShopParam(BaseModel):
     """道具单次使用数量"""
     text: str
     """text"""
-    send_success_msg: ClassVar[bool] = True
+    send_success_msg: bool = True
     """是否发送使用成功信息"""
-    max_num_limit: ClassVar[int] = 1
+    max_num_limit: int = 1
     """单次使用最大次数"""
     session: Uninfo | None = None
     """Uninfo"""
@@ -81,7 +81,7 @@ class ShopParam(BaseModel):
     """At对象"""
     at_users: list[str] = []
     """At对象列表"""
-    extra_data: ClassVar[dict[str, Any]] = {}
+    extra_data: dict[str, Any] = Field(default_factory=dict)
     """额外数据"""
 
     class Config:
@@ -403,10 +403,10 @@ class ShopManage:
         cls.uuid2goods[uuid] = Goods(
             model=create_model(
                 f"{uuid}_model",
-                send_success_msg=send_success_msg,
-                max_num_limit=max_num_limit,
                 __base__=ShopParam,
-                extra_data=kwargs,
+                send_success_msg=(bool, Field(default=send_success_msg)),
+                max_num_limit=(int, Field(default=max_num_limit)),
+                extra_data=(dict[str, Any], Field(default=kwargs)),
             ),
             params=kwargs,
             before_handle=before_handle,
