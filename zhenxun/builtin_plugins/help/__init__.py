@@ -38,7 +38,7 @@ __plugin_meta__ = PluginMetadata(
             RegisterConfig(
                 key="type",
                 value="zhenxun",
-                help="帮助图片样式 ['normal', 'HTML', 'zhenxun']",
+                help="帮助图片样式 [normal, HTML, zhenxun]",
                 default_value="zhenxun",
             )
         ],
