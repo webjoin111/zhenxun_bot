@@ -100,7 +100,9 @@ async def _(cache_data: CacheData, module: str):
 
 
 @CacheRoot.with_refresh(CacheType.PLUGINS)
-async def _(data: dict[str, PluginInfo]):
+async def _(data: dict[str, PluginInfo] | None):
+    if not data:
+        return
     plugins = await PluginInfo.filter(module__in=data.keys(), load_status=True).all()
     for plugin in plugins:
         data[plugin.module] = plugin
@@ -142,7 +144,9 @@ async def _(cache_data: CacheData, group_id: str):
 
 
 @CacheRoot.with_refresh(CacheType.GROUPS)
-async def _(data: dict[str, GroupConsole]):
+async def _(data: dict[str, GroupConsole] | None):
+    if not data:
+        return
     groups = await GroupConsole.filter(
         group_id__in=data.keys(), channel_id__isnull=True
     ).all()
@@ -186,7 +190,9 @@ async def _(cache_data: CacheData, bot_id: str):
 
 
 @CacheRoot.with_refresh(CacheType.BOT)
-async def _(data: dict[str, BotConsole]):
+async def _(data: dict[str, BotConsole] | None):
+    if not data:
+        return
     bots = await BotConsole.filter(bot_id__in=data.keys()).all()
     for bot in bots:
         data[bot.bot_id] = bot
@@ -228,7 +234,9 @@ async def _(cache_data: CacheData, user_id: str):
 
 
 @CacheRoot.with_refresh(CacheType.USERS)
-async def _(data: dict[str, UserConsole]):
+async def _(data: dict[str, UserConsole] | None):
+    if not data:
+        return
     users = await UserConsole.filter(user_id__in=data.keys()).all()
     for user in users:
         data[user.user_id] = user
@@ -347,7 +355,9 @@ async def _(cache_data: CacheData, module: str):
 
 
 @CacheRoot.with_refresh(CacheType.LIMIT)
-async def _(data: dict[str, list[PluginLimit]]):
+async def _(data: dict[str, list[PluginLimit]] | None):
+    if not data:
+        return
     limits = await PluginLimit.filter(module__in=data.keys(), load_status=True).all()
     data.clear()
     for limit in limits:

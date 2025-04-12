@@ -23,7 +23,7 @@ async def _(matcher: Matcher, event: Event, bot: Bot, session: Uninfo, message: 
         session,
         message,
     )
-    logger.info(f"权限检测耗时：{time.time() - start_time}秒", LOGGER_COMMAND)
+    logger.debug(f"权限检测耗时：{time.time() - start_time}秒", LOGGER_COMMAND)
 
 
 # 解除命令block阻塞
