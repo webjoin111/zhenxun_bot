@@ -9,7 +9,7 @@ from nonebot_plugin_uninfo import Uninfo
 from zhenxun.services.log import logger
 
 from .auth.config import LOGGER_COMMAND
-from .auth_checker import LimitManage, auth
+from .auth_checker import LimitManager, auth
 
 
 # # 权限检测
@@ -40,4 +40,4 @@ async def _(matcher: Matcher, session: Uninfo):
             group_id = session.group.id
     if user_id and matcher.plugin:
         module = matcher.plugin.name
-        LimitManage.unblock(module, user_id, group_id, channel_id)
+        LimitManager.unblock(module, user_id, group_id, channel_id)
