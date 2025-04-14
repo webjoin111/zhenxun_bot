@@ -165,7 +165,7 @@ class Model(TortoiseModel):
             await CacheRoot.reload(cache_type)
 
 
-class DbUrlIsNode(Exception):
+class DbUrlMissing(Exception):
     """
     数据库链接地址为空
     """
@@ -183,7 +183,7 @@ class DbConnectError(Exception):
 
 async def init():
     if not BotConfig.db_url:
-        raise DbUrlIsNode("数据库配置为空，请在.env.dev中配置DB_URL...")
+        raise DbUrlMissing("数据库配置为空，请在.env.dev中配置DB_URL...")
     try:
         await Tortoise.init(
             db_url=BotConfig.db_url,
