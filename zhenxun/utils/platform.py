@@ -479,6 +479,20 @@ class BroadcastEngine:
         log_cmd: str | None = None,
         platform: str | None = None,
     ):
+        """广播引擎
+
+        参数:
+        message: 广播消息内容
+        bot: 指定bot对象.
+        bot_id: 指定bot id.
+        ignore_group: 忽略群聊列表.
+        check_func: 发送前对群聊检测方法，判断是否发送.
+        log_cmd: 日志标记.
+        platform: 指定平台.
+
+        异常:
+            ValueError: 没有可用的Bot对象
+        """
         if ignore_group is None:
             ignore_group = []
         self.message = MessageUtils.build_message(message)
@@ -487,6 +501,7 @@ class BroadcastEngine:
         self.log_cmd = log_cmd
         self.platform = platform
         self.bot_list = []
+        self.count = 0
         if bot:
             self.bot_list = [bot] if isinstance(bot, Bot) else bot
         if isinstance(bot_id, str):
@@ -519,13 +534,20 @@ class BroadcastEngine:
         return cast(bool, is_run)
 
     async def __send_message(self, bot: Bot, group: GroupConsole):
+        """群组发送消息
+
+        参数:
+            bot: Bot
+            group: GroupConsole
+        """
         key = f"{group.group_id}:{group.channel_id}"
-        if not self.call_check(bot, group.group_id):
-            return logger.debug(
+        if not await self.call_check(bot, group.group_id):
+            logger.debug(
                 "广播方法检测运行方法为 False, 已跳过该群组...",
                 self.log_cmd,
                 group_id=group.group_id,
             )
+            return
         if target := PlatformUtils.get_target(
             group_id=group.group_id,
             channel_id=group.channel_id,
@@ -536,13 +558,18 @@ class BroadcastEngine:
         else:
             logger.warning("广播消息获取Target失败...", self.log_cmd, target=key)
 
-    async def broadcast(self):
+    async def broadcast(self) -> int:
+        """广播消息
+
+        返回:
+            int: 成功发送次数
+        """
         for bot in self.bot_list:
             if self.platform and self.platform != PlatformUtils.get_platform(bot):
                 continue
             group_list, _ = await PlatformUtils.get_group_list(bot)
             if not group_list:
-                return
+                continue
             for group in group_list:
                 if (
                     group.group_id in self.ignore_group
@@ -552,10 +579,12 @@ class BroadcastEngine:
                 try:
                     await self.__send_message(bot, group)
                     await asyncio.sleep(random.randint(1, 3))
+                    self.count += 1
                 except Exception as e:
                     logger.warning(
                         "广播消息发送失败", self.log_cmd, target=group.group_id, e=e
                     )
+        return self.count
 
 
 async def broadcast_group(
@@ -566,7 +595,7 @@ async def broadcast_group(
     check_func: Callable[[Bot, str], Awaitable] | None = None,
     log_cmd: str | None = None,
     platform: str | None = None,
-):
+) -> int:
     """获取所有Bot或指定Bot对象广播群聊
 
     参数:
@@ -577,10 +606,13 @@ async def broadcast_group(
         check_func: 发送前对群聊检测方法，判断是否发送.
         log_cmd: 日志标记.
         platform: 指定平台
+
+    返回:
+        int: 成功发送次数
     """
     if not message.strip():
-        raise ValueError("群聊广播消息不能为空")
-    await BroadcastEngine(
+        raise ValueError("群聊广播消息不能为空...")
+    return await BroadcastEngine(
         message=message,
         bot=bot,
         bot_id=bot_id,
