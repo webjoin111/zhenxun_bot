@@ -97,14 +97,15 @@ async def _handle_setting(
 
 async def fix_db_schema():
     """修复数据库架构问题"""
-    from tortoise import connections
+    from tortoise.connection import connections
+
     conn = connections.get("default")
     # 检查是否存在superuser列并处理
     try:
         await conn.execute_query("""
             DO $$
             BEGIN
-                IF EXISTS (SELECT 1 FROM information_schema.columns 
+                IF EXISTS (SELECT 1 FROM information_schema.columns
                         WHERE table_name='plugin_info' AND column_name='superuser') THEN
                     ALTER TABLE plugin_info DROP COLUMN superuser;
                 END IF;
@@ -122,7 +123,7 @@ async def _():
     """
     # 修复数据库架构问题
     await fix_db_schema()
-    
+
     plugin_list: list[PluginInfo] = []
     limit_list: list[PluginLimit] = []
     module2id = {}
@@ -150,26 +151,31 @@ async def _():
                     "is_show",
                     "ignore_prompt",
                     # 移除了 menu_type
-                    # 确保 level, default_status, limit_superuser, cost_gold, impression, status, block_type 等用户配置不在此列表
+                    # 确保 level, default_status, limit_superuser,
+                    # cost_gold, impression, status, block_type 等用户配置不在此列表
                 ]
             )
-            
+
             # # 验证更新是否成功
             # updated_plugin = await PluginInfo.get(id=plugin.id)
             # if updated_plugin.menu_type != plugin.menu_type:
-            #     logger.warning(f"插件 {plugin.name} 的menu_type更新失败: 期望值 '{plugin.menu_type}', 实际值 '{updated_plugin.menu_type}'")
+            #     logger.warning(
+            #         f"插件 {plugin.name} 的menu_type更新失败: "
+            #         f"期望值 '{plugin.menu_type}', "
+            #         f"实际值 '{updated_plugin.menu_type}'"
+            #     )
             #     # 尝试单独更新menu_type
             #     updated_plugin.menu_type = plugin.menu_type
             #     await updated_plugin.save(update_fields=["menu_type"])
-            
+
             update_list.append(plugin)
-    
+
     if create_list:
         await PluginInfo.bulk_create(create_list, 10)
-    
+
     # 对于批量更新操作，逐个更新替代批量操作
     # 这里不使用被注释的批量更新代码，而是在上面的循环中已经处理
-    
+
     await data_migration()
     await PluginInfo.filter(module_path__in=load_plugin).update(load_status=True)
     await PluginInfo.filter(module_path__not_in=load_plugin).update(load_status=False)

@@ -58,5 +58,10 @@
   },
   "[markdown]": {
     "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "workbench.colorCustomizations": {
+    "activityBar.background": "#491160",
+    "titleBar.activeBackground": "#671886",
+    "titleBar.activeForeground": "#FCF9FE"
   }
 }
