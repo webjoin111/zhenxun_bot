@@ -1,6 +1,11 @@
 from strenum import StrEnum
 
 
+class BotSentType(StrEnum):
+    GROUP = "GROUP"
+    PRIVATE = "PRIVATE"
+
+
 class GoldHandle(StrEnum):
     """
     金币处理
