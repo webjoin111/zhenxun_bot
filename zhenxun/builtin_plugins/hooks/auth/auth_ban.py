@@ -30,11 +30,7 @@ async def is_ban(user_id: str | None, group_id: str | None) -> int:
     if not results:
         return 0
     for result in results:
-        if result.group_id == group_id and (
-            result.duration > 0 or result.duration == -1
-        ):
-            return await BanConsole.check_ban_time(user_id, group_id)
-        if not result.group_id and result.duration == -1:
+        if result.duration > 0 or result.duration == -1:
             return await BanConsole.check_ban_time(user_id, group_id)
     return 0
 

@@ -151,9 +151,9 @@ async def auth(
             raise PermissionExemption("Matcher插件名称不存在...")
         plugin, user = await get_plugin_and_user(module, entity.user_id)
         cost_gold = await get_plugin_cost(bot, user, plugin, session)
+        bot_filter(session)
         await asyncio.gather(
             *[
-                bot_filter(session),
                 auth_ban(matcher, bot, session),
                 auth_bot(plugin, bot.self_id),
                 auth_group(plugin, entity, message),
