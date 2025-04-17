@@ -93,6 +93,8 @@ WsApiRouter.include_router(chat_routes)
 async def _():
     try:
 
+        _tasks = []
+
         async def log_sink(message: str):
             loop = None
             if not loop:
@@ -102,7 +104,10 @@ async def _():
                     logger.warning("Web Ui log_sink", e=e)
             if not loop:
                 loop = asyncio.new_event_loop()
-            loop.create_task(LOG_STORAGE.add(message.rstrip("\n")))
+            task = loop.create_task(LOG_STORAGE.add(message.rstrip("\n")))
+            _tasks.append(task)
+            while _tasks and _tasks[0].done():
+                _tasks.pop(0)
 
         logger_.add(
             log_sink, colorize=True, filter=default_filter, format=default_format

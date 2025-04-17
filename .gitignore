@@ -155,6 +155,6 @@ bot.py
 .idea/
 resources/
 /configs/config.py
-configs/config.yaml
+configs/config.yaml 
 .vscode/launch.json
 plugins_/
