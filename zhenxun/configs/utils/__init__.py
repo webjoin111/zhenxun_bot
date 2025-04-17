@@ -366,13 +366,13 @@ class ConfigsManager:
 
         if not module or not key:
             raise ValueError("add_plugin_config: module和key不能为为空")
-        
+
         key_upper = key.upper()
         self.add_module.append(f"{module}:{key}".lower())
-        
+
         # 检查配置是否已存在
         config_exists = module in self._data and key_upper in self._data[module].configs
-        
+
         # 如果配置已存在，仅更新元数据，保留原始值
         if config_exists:
             config = self._data[module].configs[key_upper]
@@ -397,7 +397,7 @@ class ConfigsManager:
                 default_value=default_value,
                 type=type,
             )
-            
+
             # 同时更新simple_data
             if module not in self._simple_data:
                 self._simple_data[module] = {}
@@ -512,7 +512,7 @@ class ConfigsManager:
                     _yaml.dump(self._simple_data, f)
                 # 原子替换
                 temp_simple_file.replace(self._simple_file)
-                
+
             path = path or self.file
             data = {}
             for module in self._data:
@@ -522,7 +522,7 @@ class ConfigsManager:
                     del value["type"]
                     del value["arg_parser"]
                     data[module][config] = value
-                    
+
             # 使用临时文件进行原子写入
             temp_file = Path(str(path) + ".tmp")
             with open(temp_file, "w", encoding="utf8") as f:
@@ -530,7 +530,7 @@ class ConfigsManager:
             # 原子替换
             temp_file.replace(path)
         except Exception as e:
-            logger.error(f"保存配置文件失败: {str(e)}")
+            logger.error(f"保存配置文件失败: {e!s}")
 
     def reload(self):
         """重新加载配置文件"""
@@ -540,24 +540,24 @@ class ConfigsManager:
             if self._simple_file.exists():
                 with open(self._simple_file, encoding="utf8") as f:
                     self._simple_data = _yaml.load(f)
-                    
+
             # 检查加载的数据是否为None
             if self._simple_data is None:
                 logger.error("配置文件为空或格式错误，保留原有配置")
                 self._simple_data = {}
-                
+
             # 更新配置值
             for key in self._simple_data.keys():
                 for k in self._simple_data[key].keys():
                     if key in self._data and k in self._data[key].configs:
                         self._data[key].configs[k].value = self._simple_data[key][k]
-            
+
             self.save()
         except ScannerError as e:
-            logger.error(f"配置文件解析失败: {str(e)}，保留现有配置")
+            logger.error(f"配置文件解析失败: {e!s}，保留现有配置")
             self._data = backup_data
         except Exception as e:
-            logger.error(f"重新加载配置失败: {str(e)}")
+            logger.error(f"重新加载配置失败: {e!s}")
             # 发生错误时恢复到备份配置
             self._data = backup_data
 
