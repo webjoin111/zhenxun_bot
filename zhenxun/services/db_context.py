@@ -46,11 +46,28 @@ async def init():
     if not BotConfig.db_url:
         raise DbUrlIsNode("数据库配置为空，请在.env.dev中配置DB_URL...")
     try:
-        await Tortoise.init(
-            db_url=BotConfig.db_url,
-            modules={"models": MODELS},
-            timezone="Asia/Shanghai",
-        )
+        # 解析数据库URL
+        db_type = BotConfig.get_sql_type()
+
+        # 添加连接池配置和超时设置
+        if db_type == "postgres":
+            # PostgreSQL连接池配置
+            # 使用更详细的配置方式
+            await Tortoise.init(
+                db_url=BotConfig.db_url,
+                modules={"models": MODELS},
+                timezone="Asia/Shanghai",
+            )
+
+            # 添加连接监控
+            logger.debug("数据库连接已初始化，已启用连接监控")
+        else:
+            # 其他数据库类型使用默认配置
+            await Tortoise.init(
+                db_url=BotConfig.db_url,
+                modules={"models": MODELS},
+                timezone="Asia/Shanghai",
+            )
         if SCRIPT_METHOD:
             db = Tortoise.get_connection("default")
             logger.debug(

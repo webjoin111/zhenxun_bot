@@ -1,3 +1,4 @@
+import asyncio
 from typing import ClassVar
 
 from nonebot.adapters import Bot, Event
@@ -231,17 +232,74 @@ class AuthChecker:
             session: EventSession
             message: UniMsg
         """
-        is_ignore = False
-        cost_gold = 0
         user_id = session.id1
         group_id = session.id3
         channel_id = session.id2
+
+        # 添加超时机制
+        try:
+            # 创建一个任务来处理权限检查
+            auth_task = asyncio.create_task(
+                self._process_auth(
+                    matcher, event, bot, session, message, user_id, group_id, channel_id
+                )
+            )
+            # 设置5秒超时
+            try:
+                result = await asyncio.wait_for(auth_task, timeout=5.0)
+                if isinstance(result, IgnoredException):
+                    raise result
+                return
+            except asyncio.TimeoutError:
+                # 超时取消任务
+                auth_task.cancel()
+                logger.error("权限检查超时，跳过检查", "AuthChecker", session=session)
+                # 不抛出异常，允许命令继续执行
+                return
+        except IgnoredException as e:
+            raise e
+        except Exception as e:
+            logger.error(
+                f"权限检查出现未知错误: {e}", "AuthChecker", session=session, e=e
+            )
+            # 不抛出异常，允许命令继续执行
+            return
+
+    async def _process_auth(
+        self,
+        matcher: Matcher,
+        event: Event,
+        bot: Bot,
+        session: EventSession,
+        message: UniMsg,
+        user_id: str | None,
+        group_id: str | None,
+        channel_id: str | None,
+    ) -> IgnoredException | None:
+        """处理权限检查的内部方法
+
+        参数:
+            matcher: matcher
+            event: event
+            bot: bot
+            session: EventSession
+            message: UniMsg
+            user_id: 用户ID
+            group_id: 群组ID
+            channel_id: 频道ID
+
+        返回:
+            IgnoredException | None: 如果需要忽略则返回异常，否则返回None
+        """
+        is_ignore = False
+        cost_gold = 0
+
         if not group_id:
             group_id = channel_id
             channel_id = None
         if matcher.type == "notice" and not isinstance(event, PokeNotifyEvent):
             """过滤除poke外的notice"""
-            return
+            return None
         if user_id and matcher.plugin and (module_path := matcher.plugin.module_name):
             try:
                 user = await UserConsole.get_user(user_id, session.platform)
@@ -252,14 +310,14 @@ class AuthChecker:
                     session=session,
                     e=e,
                 )
-                return
+                return None
             if plugin := await PluginInfo.get_or_none(module_path=module_path):
                 if plugin.plugin_type == PluginType.HIDDEN:
                     logger.debug(
                         f"插件: {plugin.name}:{plugin.module} "
                         "为HIDDEN，已跳过权限检查..."
                     )
-                    return
+                    return None
                 try:
                     cost_gold = await self.auth_cost(user, plugin, session)
                     if session.id1 in bot.config.superusers:
@@ -275,7 +333,9 @@ class AuthChecker:
                     await self.auth_limit(plugin, session)
                 except IsSuperuserException:
                     logger.debug(
-                        "超级用户或被ban跳过权限检测...", "AuthChecker", session=session
+                        "超级用户或被ban跳过权限检测...",
+                        "AuthChecker",
+                        session=session,
                     )
                 except IgnoredException:
                     is_ignore = True
@@ -303,7 +363,8 @@ class AuthChecker:
                 f"调用功能花费金币: {cost_gold}", "AuthChecker", session=session
             )
         if is_ignore:
-            raise IgnoredException("权限检测 ignore")
+            return IgnoredException("权限检测 ignore")
+        return None
 
     async def auth_bot(self, plugin: PluginInfo, bot_id: str):
         """机器人权限
@@ -347,7 +408,7 @@ class AuthChecker:
             )
 
     async def auth_plugin(
-        self, plugin: PluginInfo, session: EventSession, event: Event
+        self, plugin: PluginInfo, session: EventSession, event: Event | None = None
     ):
         """插件状态
 

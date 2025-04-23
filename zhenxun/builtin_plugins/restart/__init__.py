@@ -1,8 +1,12 @@
 import os
-from pathlib import Path
 import platform
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
 
 import aiofiles
+import asyncio
 import nonebot
 from nonebot import on_command
 from nonebot.adapters import Bot
@@ -75,42 +79,80 @@ RESTART_MARK = Path() / "is_restart"
 RESTART_FILE = Path() / "restart.sh"
 
 
-import asyncio
-from datetime import datetime
-
 # 定时重启任务
 _interval_restart_task = None
 
 
+def perform_restart_sync():
+    """同步执行重启操作"""
+    try:
+        logger.info("开始定时自动重启真寻...")
+
+        # 创建重启标记文件，但不写入用户ID（因为没有bot和session）
+        with open(RESTART_MARK, "w", encoding="utf8") as f:
+            f.write("auto_restart")
+
+        logger.info("即将执行重启命令...")
+
+        if str(platform.system()).lower() == "windows":
+            # 使用subprocess而非os.execl，因为execl会替换当前进程
+            python = sys.executable
+            subprocess.Popen([python, *sys.argv])
+            # 结束当前进程
+            os._exit(0)
+        else:
+            # 在Linux下使用restart.sh脚本
+            os.system("./restart.sh")
+    except Exception as e:
+        logger.error(f"执行重启操作时发生错误: {e}")
+
+
 async def perform_restart():
-    """执行重启操作，不需要bot和session参数"""
+    """异步执行重启操作，不需要bot和session参数"""
     logger.info("开始定时自动重启真寻...")
-
-    if str(platform.system()).lower() == "windows":
-        import sys
-
-        python = sys.executable
-        os.execl(python, python, *sys.argv)
-    else:
-        os.system("./restart.sh")  # noqa: ASYNC221
+    perform_restart_sync()
 
 
 async def interval_restart_scheduler():
     """定时重启调度器"""
-    interval_time = Config.get_config("restart", "interval_time")
-    if interval_time <= 0:
-        interval_time = 60  # 默认值
+    try:
+        interval_time = Config.get_config("restart", "interval_time")
+        if interval_time <= 0:
+            interval_time = 60  # 默认值
 
-    seconds = interval_time * 60
-    logger.info(f"已启动定时重启功能，每{interval_time}分钟重启一次")
+        seconds = interval_time * 60
+        logger.info(f"已启动定时重启功能，每{interval_time}分钟重启一次")
+        logger.info(f"下次重启将在 {seconds} 秒后执行")
 
-    while True:
-        # 等待指定时间
-        await asyncio.sleep(seconds)
-        # 执行重启
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        logger.info(f"定时重启触发，当前时间：{current_time}")
-        await perform_restart()
+        while True:
+            try:
+                # 等待指定时间
+                for i in range(seconds):
+                    # 每秒检查一次，以便可以快速响应取消操作
+                    await asyncio.sleep(1)
+                    # 每分钟输出一次日志
+                    if i > 0 and i % 60 == 0:
+                        minutes_left = (seconds - i) // 60
+                        logger.info(f"距离下次重启还有 {minutes_left} 分钟")
+
+                # 执行重启
+                current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                logger.info(f"定时重启触发，当前时间：{current_time}")
+                # 直接执行重启，不使用await
+                logger.info("即将执行重启操作...")
+                perform_restart_sync()
+                # 如果重启失败，等待一分钟再尝试
+                logger.warning("重启操作可能失败，等待一分钟后重试...")
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                logger.info("定时重启任务被取消")
+                raise
+            except Exception as e:
+                logger.error(f"定时重启过程中发生错误: {e}")
+                # 发生错误时，等待一分钟再尝试
+                await asyncio.sleep(60)
+    except Exception as e:
+        logger.error(f"定时重启调度器发生错误: {e}")
 
 
 async def restart_bot(bot: Bot, session: Uninfo):
@@ -171,12 +213,24 @@ async def _(bot: Bot):
         logger.info("已自动生成 restart.sh(重启) 文件，请检查脚本是否与本地指令符合...")
     if RESTART_MARK.exists():
         async with aiofiles.open(RESTART_MARK, encoding="utf8") as f:
-            bot_id, user_id = (await f.read()).split()
-        if bot := nonebot.get_bot(bot_id):
-            if target := PlatformUtils.get_target(user_id=user_id):
-                await MessageUtils.build_message(
-                    f"{BotConfig.self_nickname}已成功重启！"
-                ).send(target, bot=bot)
+            content = await f.read()
+
+        if content == "auto_restart":
+            # 自动重启模式，不需要发送消息
+            logger.info(f"{BotConfig.self_nickname}已成功自动重启！")
+        else:
+            try:
+                # 手动重启模式，需要发送消息给用户
+                bot_id, user_id = content.split()
+                if bot := nonebot.get_bot(bot_id):
+                    if target := PlatformUtils.get_target(user_id=user_id):
+                        await MessageUtils.build_message(
+                            f"{BotConfig.self_nickname}已成功重启！"
+                        ).send(target, bot=bot)
+            except Exception as e:
+                logger.error(f"处理重启标记文件时发生错误: {e}")
+
+        # 删除重启标记文件
         RESTART_MARK.unlink()
 
     # 检查是否启用定时重启
@@ -188,7 +242,7 @@ async def _(bot: Bot):
 
 
 @driver.on_bot_disconnect
-async def _(bot: Bot):
+async def _(_: Bot):
     # 停止定时重启任务
     global _interval_restart_task
     if _interval_restart_task is not None:

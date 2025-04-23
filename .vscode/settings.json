@@ -30,7 +30,9 @@
     "zhenxun"
   ],
   "python.analysis.autoImportCompletions": true,
-  "python.testing.pytestArgs": ["tests"],
+  "python.testing.pytestArgs": [
+    "tests"
+  ],
   "python.testing.unittestEnabled": false,
   "python.testing.pytestEnabled": true,
   "[python]": {
@@ -63,5 +65,6 @@
     "activityBar.background": "#491160",
     "titleBar.activeBackground": "#671886",
     "titleBar.activeForeground": "#FCF9FE"
-  }
+  },
+  "files.exclude": {}
 }
