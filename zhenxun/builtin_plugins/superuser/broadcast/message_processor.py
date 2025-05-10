@@ -520,8 +520,21 @@ async def get_broadcast_target_groups(
     """获取广播目标群组和启用了广播功能的群组"""
     target_groups = []
     all_groups, _ = await BroadcastManager.get_all_groups(bot)
-    target_groups = all_groups
-    logger.info("向所有群组广播", "广播", session=session)
+
+    current_group_id = None
+    if hasattr(session, "id2") and session.id2:
+        current_group_id = session.id2
+
+    if current_group_id:
+        target_groups = [
+            group for group in all_groups if group.group_id != current_group_id
+        ]
+        logger.info(
+            f"向除当前群组({current_group_id})外的所有群组广播", "广播", session=session
+        )
+    else:
+        target_groups = all_groups
+        logger.info("向所有群组广播", "广播", session=session)
 
     if not target_groups:
         await MessageUtils.build_message("没有找到符合条件的广播目标群组。").send(
