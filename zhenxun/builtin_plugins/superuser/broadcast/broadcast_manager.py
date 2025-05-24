@@ -102,11 +102,12 @@ class BroadcastManager:
         message: UniMessage,
         target_groups: list[GroupConsole],
         session_info: EventSession | str | None = None,
+        force_send: bool = False,  # New parameter
     ) -> BroadcastResult:
         """发送广播到指定群组"""
         log_session = session_info or bot.self_id
         logger.debug(
-            f"开始广播，目标 {len(target_groups)} 个群组，Bot ID: {bot.self_id}",
+            f"开始广播，目标 {len(target_groups)} 个群组，Bot ID: {bot.self_id}, ForceSend: {force_send}",
             "广播",
             session=log_session,
         )
@@ -165,7 +166,7 @@ class BroadcastManager:
                 )
                 return 0, len(target_groups)
             success_count, error_count, skip_count = await cls._broadcast_forward(
-                bot, log_session, target_groups, v11_nodes
+                bot, log_session, target_groups, v11_nodes, force_send
             )
         else:
             if is_forward_broadcast:
@@ -175,7 +176,7 @@ class BroadcastManager:
                     session=log_session,
                 )
             success_count, error_count, skip_count = await cls._broadcast_normal(
-                bot, log_session, target_groups, message
+                bot, log_session, target_groups, message, force_send
             )
 
         total = len(target_groups)
@@ -287,10 +288,15 @@ class BroadcastManager:
             )
 
     @classmethod
-    async def _check_group_availability(cls, bot: Bot, group: GroupConsole) -> bool:
+    async def _check_group_availability(
+        cls, bot: Bot, group: GroupConsole, force_send: bool = False
+    ) -> bool:
         """检查群组是否可用"""
         if not group.group_id:
             return False
+
+        if force_send:  # If force_send is True, bypass the block check
+            return True
 
         if await CommonUtils.task_is_block(bot, "broadcast", group.group_id):
             return False
@@ -304,6 +310,7 @@ class BroadcastManager:
         session_info: EventSession | str,
         group_list: list[GroupConsole],
         v11_nodes: list[dict],
+        force_send: bool = False,
     ) -> BroadcastDetailResult:
         """发送合并转发"""
         success_count = 0
@@ -313,8 +320,13 @@ class BroadcastManager:
         for _, group in enumerate(group_list):
             group_key = group.group_id or group.channel_id
 
-            if not await cls._check_group_availability(bot, group):
+            if not await cls._check_group_availability(bot, group, force_send):
                 skip_count += 1
+                logger.info(
+                    f"跳过群组 {group_key} (不符合广播条件且非强制发送)",
+                    "广播",
+                    session=session_info,
+                )
                 continue
 
             try:
@@ -360,6 +372,7 @@ class BroadcastManager:
         session_info: EventSession | str,
         group_list: list[GroupConsole],
         message: UniMessage,
+        force_send: bool = False,
     ) -> BroadcastDetailResult:
         """发送普通消息"""
         success_count = 0
@@ -373,8 +386,13 @@ class BroadcastManager:
                 else str(group.group_id)
             )
 
-            if not await cls._check_group_availability(bot, group):
+            if not await cls._check_group_availability(bot, group, force_send):
                 skip_count += 1
+                logger.info(
+                    f"跳过群组 {group_key} (不符合广播条件且非强制发送)",
+                    "广播",
+                    session=session_info,
+                )
                 continue
 
             try:
@@ -482,7 +500,7 @@ class BroadcastManager:
                     session=session_info,
                     e=e,
                 )
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.2)  # Slight delay to avoid rate limiting
 
         logger.debug("撤回操作完成，清空消息ID记录", "广播撤回", session=session_info)
         cls.clear_last_broadcast_msg_ids()

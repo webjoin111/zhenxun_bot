@@ -21,11 +21,13 @@ from nonebot_plugin_alconna.uniseg.segment import (
 from nonebot_plugin_alconna.uniseg.tools import reply_fetch
 from nonebot_plugin_session import EventSession
 
+from zhenxun.models.group_console import GroupConsole
 from zhenxun.services.log import logger
 from zhenxun.utils.common_utils import CommonUtils
 from zhenxun.utils.message import MessageUtils
 
 from .broadcast_manager import BroadcastManager
+from .tag_manager import TagManager
 
 MAX_FORWARD_DEPTH = 3
 
@@ -515,70 +517,126 @@ async def _extract_content_from_message(
 
 
 async def get_broadcast_target_groups(
-    bot: Bot, session: EventSession
+    bot: Bot,
+    session: EventSession,
+    tag_name: str | None = None,
+    force_send: bool = False,
 ) -> tuple[list, list]:
     """获取广播目标群组和启用了广播功能的群组"""
-    target_groups = []
-    all_groups, _ = await BroadcastManager.get_all_groups(bot)
+    target_groups_console: list[GroupConsole] = []
 
     current_group_id = None
     if hasattr(session, "id2") and session.id2:
-        current_group_id = session.id2
+        current_group_id = str(session.id2)
+    elif hasattr(session, "group_id") and session.group_id:
+        current_group_id = str(session.group_id)
 
-    if current_group_id:
-        target_groups = [
-            group for group in all_groups if group.group_id != current_group_id
-        ]
-        logger.info(
-            f"向除当前群组({current_group_id})外的所有群组广播", "广播", session=session
-        )
+    logger.debug(f"当前群组ID: {current_group_id}", "广播")
+
+    if tag_name:
+        tagged_group_ids = await TagManager.get_groups_by_tag(tag_name)
+        if not tagged_group_ids:
+            return [], []
+
+        valid_groups = await GroupConsole.filter(group_id__in=tagged_group_ids)
+
+        if current_group_id:
+            target_groups_console = [
+                group
+                for group in valid_groups
+                if str(group.group_id) != current_group_id
+            ]
+            excluded_msg = (
+                f"，已排除当前群组({current_group_id})"
+                if any(
+                    str(group.group_id) == current_group_id for group in valid_groups
+                )
+                else ""
+            )
+            logger.info(
+                f"向标签 '{tag_name}' 中的 {len(target_groups_console)} 个群组广播 (ForceSend: {force_send}){excluded_msg}",
+                "广播",
+                session=session,
+            )
+        else:
+            target_groups_console = valid_groups
+            logger.info(
+                f"向标签 '{tag_name}' 中的 {len(target_groups_console)} 个群组广播 (ForceSend: {force_send})",
+                "广播",
+                session=session,
+            )
     else:
-        target_groups = all_groups
-        logger.info("向所有群组广播", "广播", session=session)
+        all_groups, _ = await BroadcastManager.get_all_groups(bot)
 
-    if not target_groups:
-        await MessageUtils.build_message("没有找到符合条件的广播目标群组。").send(
-            reply_to=True
-        )
+        if current_group_id:
+            target_groups_console = [
+                group for group in all_groups if str(group.group_id) != current_group_id
+            ]
+            logger.info(
+                f"向除当前群组({current_group_id})外的所有群组广播 (ForceSend: {force_send})",
+                "广播",
+                session=session,
+            )
+        else:
+            target_groups_console = all_groups
+            logger.info(
+                f"向所有群组广播 (ForceSend: {force_send})", "广播", session=session
+            )
+
+    if not target_groups_console:
+        if not tag_name:
+            await MessageUtils.build_message("没有找到符合条件的广播目标群组。").send(
+                reply_to=True
+            )
         return [], []
 
-    enabled_groups = []
-    for group in target_groups:
-        if not await CommonUtils.task_is_block(bot, "broadcast", group.group_id):
-            enabled_groups.append(group)
+    groups_to_actually_send = []
+    if force_send:
+        groups_to_actually_send = target_groups_console
+        logger.debug(
+            f"强制发送模式，将向 {len(groups_to_actually_send)} 个目标群组尝试发送。",
+            "广播",
+        )
+    else:
+        for group in target_groups_console:
+            if not await CommonUtils.task_is_block(bot, "broadcast", group.group_id):
+                groups_to_actually_send.append(group)
+        logger.debug(
+            f"普通发送模式，筛选后将向 {len(groups_to_actually_send)} 个目标群组尝试发送。",
+            "广播",
+        )
 
-    if not enabled_groups:
-        await MessageUtils.build_message(
-            "没有启用了广播功能的目标群组可供立即发送。"
-        ).send(reply_to=True)
-        return target_groups, []
-
-    return target_groups, enabled_groups
+    return target_groups_console, groups_to_actually_send
 
 
 async def send_broadcast_and_notify(
     bot: Bot,
     event: Event,
     message: UniMessage,
-    enabled_groups: list,
-    target_groups: list,
+    groups_to_send: list,
+    all_target_groups_for_stats: list,
     session: EventSession,
+    force_send: bool = False,
 ) -> None:
     """发送广播并通知结果"""
     BroadcastManager.clear_last_broadcast_msg_ids()
     count, error_count = await BroadcastManager.send_to_specific_groups(
-        bot, message, enabled_groups, session
+        bot, message, groups_to_send, session, force_send
     )
 
     result = f"成功广播 {count} 个群组"
     if error_count:
         result += f"\n发送失败 {error_count} 个群组"
-    result += f"\n有效: {len(enabled_groups)} / 总计: {len(target_groups)}"
+
+    effective_sent_count = len(groups_to_send)
+    total_considered_count = len(all_target_groups_for_stats)
+
+    result += f"\n有效: {effective_sent_count} / 总计目标: {total_considered_count}"
 
     user_id = str(event.get_user_id())
     await bot.send_private_msg(user_id=user_id, message=f"发送广播完成!\n{result}")
 
     BroadcastManager.log_info(
-        f"广播完成，有效/总计: {len(enabled_groups)}/{len(target_groups)}",
+        f"广播完成，有效/总计目标: {effective_sent_count}/{total_considered_count}",
         session,
     )
