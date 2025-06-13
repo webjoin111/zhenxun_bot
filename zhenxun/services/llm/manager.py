@@ -37,9 +37,13 @@ def parse_provider_model_string(name_str: str | None) -> tuple[str | None, str |
     return None, None
 
 
-def _make_cache_key(provider_model_name: str | None, override_config: dict | None) -> str:
+def _make_cache_key(
+    provider_model_name: str | None, override_config: dict | None
+) -> str:
     """生成缓存键"""
-    config_str = json.dumps(override_config, sort_keys=True) if override_config else "None"
+    config_str = (
+        json.dumps(override_config, sort_keys=True) if override_config else "None"
+    )
     key_data = f"{provider_model_name}:{config_str}"
     return hashlib.md5(key_data.encode()).hexdigest()
 
@@ -62,7 +66,9 @@ def _get_cached_model(cache_key: str) -> LLMModel | None:
             )
             model._is_closed = False
 
-        logger.debug(f"使用缓存的模型: {cache_key} -> {model.provider_name}/{model.model_name}")
+        logger.debug(
+            f"使用缓存的模型: {cache_key} -> {model.provider_name}/{model.model_name}"
+        )
         return model
     return None
 
@@ -113,7 +119,10 @@ def get_configured_providers() -> list[ProviderConfig]:
     ai_config = get_ai_config()
     providers_raw = ai_config.get(PROVIDERS_CONFIG_KEY, [])
     if not isinstance(providers_raw, list):
-        logger.error(f"配置项 {AI_CONFIG_GROUP}.{PROVIDERS_CONFIG_KEY} 不是一个列表，将使用空列表。")
+        logger.error(
+            f"配置项 {AI_CONFIG_GROUP}.{PROVIDERS_CONFIG_KEY} 不是一个列表，"
+            f"将使用空列表。"
+        )
         return []
 
     valid_providers = []
@@ -128,7 +137,9 @@ def get_configured_providers() -> list[ProviderConfig]:
                 continue
 
             if not item.get("api_key"):
-                logger.warning(f"Provider '{item['name']}' 缺少 'api_key' 字段，已跳过。")
+                logger.warning(
+                    f"Provider '{item['name']}' 缺少 'api_key' 字段，已跳过。"
+                )
                 continue
 
             if "api_type" not in item or not item["api_type"]:
@@ -159,7 +170,9 @@ def get_configured_providers() -> list[ProviderConfig]:
     return valid_providers
 
 
-def find_model_config(provider_name: str, model_name: str) -> tuple[ProviderConfig, ModelDetail] | None:
+def find_model_config(
+    provider_name: str, model_name: str
+) -> tuple[ProviderConfig, ModelDetail] | None:
     """在配置中查找指定的 Provider 和 ModelDetail
 
     Args:
@@ -194,7 +207,9 @@ def list_available_models() -> list[dict[str, Any]]:
                 "api_base": provider.api_base,
                 "is_available": model_detail.is_available,
                 "is_embedding_model": model_detail.is_embedding_model,
-                "available_identifiers": _get_model_identifiers(provider.name, model_detail),
+                "available_identifiers": _get_model_identifiers(
+                    provider.name, model_detail
+                ),
             }
             model_list.append(model_info)
     return model_list
@@ -242,7 +257,8 @@ async def get_model_instance(
             if cached_model._generation_config != validated_override:
                 cached_model._generation_config = validated_override
                 logger.debug(
-                    f"对缓存模型 {provider_model_name} 应用新的覆盖配置: {validated_override.to_dict()}"
+                    f"对缓存模型 {provider_model_name} 应用新的覆盖配置: "
+                    f"{validated_override.to_dict()}"
                 )
         return cached_model
 
@@ -252,21 +268,25 @@ async def get_model_instance(
         if resolved_model_name_str is None:
             available_models_list = list_available_models()
             if not available_models_list:
-                raise LLMException("未配置任何AI模型", code=LLMErrorCode.CONFIGURATION_ERROR)
+                raise LLMException(
+                    "未配置任何AI模型", code=LLMErrorCode.CONFIGURATION_ERROR
+                )
             resolved_model_name_str = available_models_list[0]["full_name"]
             logger.warning(f"未指定模型，使用第一个可用模型: {resolved_model_name_str}")
 
     prov_name_str, mod_name_str = parse_provider_model_string(resolved_model_name_str)
     if not prov_name_str or not mod_name_str:
         raise LLMException(
-            f"无效的模型名称格式: '{resolved_model_name_str}'", code=LLMErrorCode.MODEL_NOT_FOUND
+            f"无效的模型名称格式: '{resolved_model_name_str}'",
+            code=LLMErrorCode.MODEL_NOT_FOUND,
         )
 
     config_tuple_found = find_model_config(prov_name_str, mod_name_str)
     if not config_tuple_found:
         all_models = list_available_models()
         raise LLMException(
-            f"未找到模型: '{resolved_model_name_str}'. 可用: {[m['full_name'] for m in all_models]}",
+            f"未找到模型: '{resolved_model_name_str}'. "
+            f"可用: {[m['full_name'] for m in all_models]}",
             code=LLMErrorCode.MODEL_NOT_FOUND,
         )
 
@@ -274,7 +294,11 @@ async def get_model_instance(
 
     ai_config = get_ai_config()
     global_proxy_setting = ai_config.get(PROXY_KEY)
-    default_timeout = provider_config_found.timeout if provider_config_found.timeout is not None else 180
+    default_timeout = (
+        provider_config_found.timeout
+        if provider_config_found.timeout is not None
+        else 180
+    )
     global_timeout_setting = ai_config.get(TIMEOUT_KEY, default_timeout)
 
     config_for_http_client = ProviderConfig(
@@ -304,16 +328,21 @@ async def get_model_instance(
             validated_override_params = validate_override_params(override_config)
             model_instance._generation_config = validated_override_params
             logger.debug(
-                f"为新模型 {resolved_model_name_str} 应用配置覆盖: {validated_override_params.to_dict()}"
+                f"为新模型 {resolved_model_name_str} 应用配置覆盖: "
+                f"{validated_override_params.to_dict()}"
             )
 
         _cache_model(cache_key, model_instance)
-        logger.debug(f"创建并缓存了新模型: {cache_key} -> {prov_name_str}/{mod_name_str}")
+        logger.debug(
+            f"创建并缓存了新模型: {cache_key} -> {prov_name_str}/{mod_name_str}"
+        )
         return model_instance
     except LLMException:
         raise
     except Exception as e:
-        logger.error(f"实例化 LLMModel ({resolved_model_name_str}) 时发生内部错误: {e!s}", e=e)
+        logger.error(
+            f"实例化 LLMModel ({resolved_model_name_str}) 时发生内部错误: {e!s}", e=e
+        )
         raise LLMException(
             f"初始化模型 '{resolved_model_name_str}' 失败: {e!s}",
             code=LLMErrorCode.MODEL_INIT_FAILED,
@@ -332,10 +361,14 @@ def set_global_default_model_name(provider_model_name: str | None) -> bool:
     if provider_model_name:
         prov_name, mod_name = parse_provider_model_string(provider_model_name)
         if not prov_name or not mod_name or not find_model_config(prov_name, mod_name):
-            logger.error(f"尝试设置的全局默认模型 '{provider_model_name}' 无效或未配置。")
+            logger.error(
+                f"尝试设置的全局默认模型 '{provider_model_name}' 无效或未配置。"
+            )
             return False
 
-    Config.set_config(AI_CONFIG_GROUP, DEFAULT_MODEL_NAME_KEY, provider_model_name, auto_save=True)
+    Config.set_config(
+        AI_CONFIG_GROUP, DEFAULT_MODEL_NAME_KEY, provider_model_name, auto_save=True
+    )
     if provider_model_name:
         logger.info(f"LLM 服务全局默认模型已更新为: {provider_model_name}")
     else:
@@ -350,10 +383,16 @@ async def get_key_usage_stats() -> dict[str, Any]:
 
     for provider in providers:
         provider_stats = await key_store.get_key_stats(
-            [provider.api_key] if isinstance(provider.api_key, str) else provider.api_key
+            [provider.api_key]
+            if isinstance(provider.api_key, str)
+            else provider.api_key
         )
         stats[provider.name] = {
-            "total_keys": len([provider.api_key] if isinstance(provider.api_key, str) else provider.api_key),
+            "total_keys": len(
+                [provider.api_key]
+                if isinstance(provider.api_key, str)
+                else provider.api_key
+            ),
             "key_stats": provider_stats,
         }
 
@@ -375,7 +414,9 @@ async def reset_key_status(provider_name: str, api_key: str | None = None) -> bo
         return False
 
     provider_keys = (
-        [target_provider.api_key] if isinstance(target_provider.api_key, str) else target_provider.api_key
+        [target_provider.api_key]
+        if isinstance(target_provider.api_key, str)
+        else target_provider.api_key
     )
 
     if api_key:

@@ -5,7 +5,16 @@ LLM 模块的工具和转换函数
 import base64
 from pathlib import Path
 
-from nonebot_plugin_alconna.uniseg import At, File, Image, Reply, Text, UniMessage, Video, Voice
+from nonebot_plugin_alconna.uniseg import (
+    At,
+    File,
+    Image,
+    Reply,
+    Text,
+    UniMessage,
+    Video,
+    Voice,
+)
 
 from zhenxun.services.log import logger
 
@@ -29,7 +38,11 @@ async def unimsg_to_llm_parts(message: UniMessage) -> list[LLMContentPart]:
             elif seg.url:
                 part = LLMContentPart.image_url_part(seg.url)
             elif hasattr(seg, "raw") and seg.raw:
-                mime_type = getattr(seg, "mimetype", "image/png") if hasattr(seg, "mimetype") else "image/png"
+                mime_type = (
+                    getattr(seg, "mimetype", "image/png")
+                    if hasattr(seg, "mimetype")
+                    else "image/png"
+                )
                 if isinstance(seg.raw, bytes):
                     b64_data = base64.b64encode(seg.raw).decode("utf-8")
                     part = LLMContentPart.image_base64_part(b64_data, mime_type)
@@ -38,8 +51,13 @@ async def unimsg_to_llm_parts(message: UniMessage) -> list[LLMContentPart]:
             if seg.path:
                 part = await LLMContentPart.from_path(seg.path)
             elif seg.url:
-                logger.warning(f"直接使用 URL 的 {type(seg).__name__} 段，API 可能不支持: {seg.url}")
-                part = LLMContentPart.text_part(f"[{type(seg).__name__.upper()} FILE: {seg.name or seg.url}]")
+                logger.warning(
+                    f"直接使用 URL 的 {type(seg).__name__} 段，"
+                    f"API 可能不支持: {seg.url}"
+                )
+                part = LLMContentPart.text_part(
+                    f"[{type(seg).__name__.upper()} FILE: {seg.name or seg.url}]"
+                )
             elif hasattr(seg, "raw") and seg.raw:
                 mime_type = getattr(seg, "mimetype", None)
                 if isinstance(seg.raw, bytes):
@@ -48,18 +66,29 @@ async def unimsg_to_llm_parts(message: UniMessage) -> list[LLMContentPart]:
                     if isinstance(seg, Video):
                         if not mime_type:
                             mime_type = "video/mp4"
-                        part = LLMContentPart.video_base64_part(data=b64_data, mime_type=mime_type)
-                        logger.debug(f"处理视频字节数据: {mime_type}, 大小: {len(seg.raw)} bytes")
+                        part = LLMContentPart.video_base64_part(
+                            data=b64_data, mime_type=mime_type
+                        )
+                        logger.debug(
+                            f"处理视频字节数据: {mime_type}, 大小: {len(seg.raw)} bytes"
+                        )
                     elif isinstance(seg, Voice):
                         if not mime_type:
                             mime_type = "audio/wav"
-                        part = LLMContentPart.audio_base64_part(data=b64_data, mime_type=mime_type)
-                        logger.debug(f"处理音频字节数据: {mime_type}, 大小: {len(seg.raw)} bytes")
+                        part = LLMContentPart.audio_base64_part(
+                            data=b64_data, mime_type=mime_type
+                        )
+                        logger.debug(
+                            f"处理音频字节数据: {mime_type}, 大小: {len(seg.raw)} bytes"
+                        )
                     else:
                         part = LLMContentPart.text_part(
                             f"[FILE: {mime_type or 'unknown'}, {len(seg.raw)} bytes]"
                         )
-                        logger.debug(f"处理其他文件字节数据: {mime_type}, 大小: {len(seg.raw)} bytes")
+                        logger.debug(
+                            f"处理其他文件字节数据: {mime_type}, "
+                            f"大小: {len(seg.raw)} bytes"
+                        )
 
         elif isinstance(seg, At):
             if seg.flag == "all":
@@ -76,7 +105,9 @@ async def unimsg_to_llm_parts(message: UniMessage) -> list[LLMContentPart]:
                     else:
                         reply_text = str(seg.msg).strip()
                     if reply_text:
-                        part = LLMContentPart.text_part(f'[Replied to: "{reply_text[:50]}..."]')
+                        part = LLMContentPart.text_part(
+                            f'[Replied to: "{reply_text[:50]}..."]'
+                        )
                 except Exception:
                     part = LLMContentPart.text_part("[Replied to a message]")
 
@@ -118,10 +149,14 @@ def create_multimodal_message(
         msg = create_multimodal_message("分析图片", images="/path/to/image.jpg")
 
         # 文本 + 多张图片
-        msg = create_multimodal_message("比较图片", images=["/path/1.jpg", "/path/2.jpg"])
+        msg = create_multimodal_message(
+            "比较图片", images=["/path/1.jpg", "/path/2.jpg"]
+        )
 
         # 文本 + 图片字节数据
-        msg = create_multimodal_message("分析", images=image_data, image_mimetypes="image/jpeg")
+        msg = create_multimodal_message(
+            "分析", images=image_data, image_mimetypes="image/jpeg"
+        )
 
         # 文本 + 视频
         msg = create_multimodal_message("分析视频", videos="/path/to/video.mp4")

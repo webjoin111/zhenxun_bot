@@ -89,7 +89,9 @@ class LLMModel(LLMModelBase):
         self.api_type = provider_config.api_type
         self.api_base = provider_config.api_base
         self.api_keys = (
-            [provider_config.api_key] if isinstance(provider_config.api_key, str) else provider_config.api_key
+            [provider_config.api_key]
+            if isinstance(provider_config.api_key, str)
+            else provider_config.api_key
         )
         self.model_name = model_detail.model_name
         self.temperature = model_detail.temperature
@@ -101,9 +103,12 @@ class LLMModel(LLMModelBase):
         """获取HTTP客户端"""
         if self.http_client.is_closed:
             logger.debug(
-                f"LLMModel {self.provider_name}/{self.model_name} 的 HTTP 客户端已关闭，正在获取新的客户端"
+                f"LLMModel {self.provider_name}/{self.model_name} 的 HTTP 客户端已关闭,"
+                "正在获取新的客户端"
             )
-            self.http_client = await http_client_manager.get_client(self.provider_config)
+            self.http_client = await http_client_manager.get_client(
+                self.provider_config
+            )
         return self.http_client
 
     async def _select_api_key(self, failed_keys: set[str] | None = None) -> str:
@@ -122,7 +127,10 @@ class LLMModel(LLMModelBase):
             raise LLMException(
                 f"提供商 {self.provider_name} 的所有API密钥当前都不可用",
                 code=LLMErrorCode.NO_AVAILABLE_KEYS,
-                details={"total_keys": len(self.api_keys), "failed_keys": len(failed_keys or set())},
+                details={
+                    "total_keys": len(self.api_keys),
+                    "failed_keys": len(failed_keys or set()),
+                },
             )
 
         return selected_key
@@ -154,7 +162,9 @@ class LLMModel(LLMModelBase):
 
             if http_response.status_code != 200:
                 error_text = http_response.text
-                logger.error(f"HTTP嵌入请求失败: {http_response.status_code} - {error_text}")
+                logger.error(
+                    f"HTTP嵌入请求失败: {http_response.status_code} - {error_text}"
+                )
                 await self.key_store.record_failure(api_key, http_response.status_code)
 
                 error_code = LLMErrorCode.API_REQUEST_FAILED
@@ -262,7 +272,9 @@ class LLMModel(LLMModelBase):
 
             if http_response.status_code != 200:
                 error_text = http_response.text
-                logger.error(f"HTTP请求失败: {http_response.status_code} - {error_text}")
+                logger.error(
+                    f"HTTP请求失败: {http_response.status_code} - {error_text}"
+                )
 
                 await self.key_store.record_failure(api_key, http_response.status_code)
 
@@ -304,7 +316,10 @@ class LLMModel(LLMModelBase):
                             try:
                                 response_tool_calls.append(LLMToolCall(**tc_data))
                             except Exception as e:
-                                logger.warning(f"无法将工具调用数据转换为LLMToolCall: {tc_data}, error: {e}")
+                                logger.warning(
+                                    f"无法将工具调用数据转换为LLMToolCall: {tc_data}, "
+                                    f"error: {e}"
+                                )
                         else:
                             logger.warning(f"工具调用数据格式未知: {tc_data}")
 
@@ -355,11 +370,16 @@ class LLMModel(LLMModelBase):
         if self._is_closed:
             return
         self._is_closed = True
-        logger.debug(f"LLMModel实例的使用周期已结束: {self} (共享HTTP客户端状态不受影响)")
+        logger.debug(
+            f"LLMModel实例的使用周期已结束: {self} (共享HTTP客户端状态不受影响)"
+        )
 
     async def __aenter__(self):
         if self._is_closed:
-            logger.debug(f"Re-entering context for closed LLMModel {self}. Resetting _is_closed to False.")
+            logger.debug(
+                f"Re-entering context for closed LLMModel {self}. "
+                f"Resetting _is_closed to False."
+            )
             self._is_closed = False
         self._check_not_closed()
         return self
@@ -393,12 +413,15 @@ class LLMModel(LLMModelBase):
 
         messages.append(LLMMessage.user(prompt))
 
+        model_fields = getattr(LLMGenerationConfig, "model_fields", {})
         request_specific_config_dict = {
-            k: v for k, v in kwargs.items() if k in LLMGenerationConfig.model_fields
+            k: v for k, v in kwargs.items() if k in model_fields
         }
         request_specific_config = None
         if request_specific_config_dict:
-            request_specific_config = LLMGenerationConfig(**request_specific_config_dict)
+            request_specific_config = LLMGenerationConfig(
+                **request_specific_config_dict
+            )
 
         for key in request_specific_config_dict:
             kwargs.pop(key, None)
@@ -450,7 +473,8 @@ class LLMModel(LLMModelBase):
             tools_dict = []
             for tool in tools:
                 if hasattr(tool, "model_dump"):
-                    tools_dict.append(tool.model_dump(exclude_none=True))
+                    model_dump_func = getattr(tool, "model_dump")
+                    tools_dict.append(model_dump_func(exclude_none=True))
                 elif isinstance(tool, dict):
                     tools_dict.append(tool)
                 else:
@@ -497,7 +521,9 @@ class LLMModel(LLMModelBase):
                     logger.debug(f"执行工具: {tool_name}，参数: {tool_args_dict}")
 
                     tool_result = await tool_executor(tool_name, tool_args_dict)
-                    logger.debug(f"工具 '{tool_name}' 执行结果: {str(tool_result)[:200]}...")
+                    logger.debug(
+                        f"工具 '{tool_name}' 执行结果: {str(tool_result)[:200]}..."
+                    )
 
                     tool_response_messages.append(
                         LLMMessage.tool_response(
@@ -508,13 +534,17 @@ class LLMModel(LLMModelBase):
                     )
                 except json.JSONDecodeError as e:
                     logger.error(
-                        f"工具 '{tool_name}' 参数JSON解析失败: {tool_call.function.arguments}, 错误: {e}"
+                        f"工具 '{tool_name}' 参数JSON解析失败: "
+                        f"{tool_call.function.arguments}, 错误: {e}"
                     )
                     tool_response_messages.append(
                         LLMMessage.tool_response(
                             tool_call_id=tool_call.id,
                             function_name=tool_name,
-                            result={"error": "Argument JSON parsing failed", "details": str(e)},
+                            result={
+                                "error": "Argument JSON parsing failed",
+                                "details": str(e),
+                            },
                         )
                     )
                 except Exception as e:
@@ -523,7 +553,10 @@ class LLMModel(LLMModelBase):
                         LLMMessage.tool_response(
                             tool_call_id=tool_call.id,
                             function_name=tool_name,
-                            result={"error": "Tool execution failed", "details": str(e)},
+                            result={
+                                "error": "Tool execution failed",
+                                "details": str(e),
+                            },
                         )
                     )
 
@@ -533,7 +566,10 @@ class LLMModel(LLMModelBase):
         raise LLMException(
             "已达到最大工具调用迭代次数，但模型仍在请求工具调用或未提供最终文本回复。",
             code=LLMErrorCode.GENERATION_FAILED,
-            details={"iterations": max_tool_iterations, "last_messages": current_messages[-2:]},
+            details={
+                "iterations": max_tool_iterations,
+                "last_messages": current_messages[-2:],
+            },
         )
 
     async def generate_embeddings(
@@ -561,7 +597,9 @@ class LLMModel(LLMModelBase):
         ai_config = get_ai_config()
         default_max_retries = ai_config.get("max_retries_llm", 3)
         default_retry_delay = ai_config.get("retry_delay_llm", 2)
-        max_retries_embed = kwargs.get("max_retries_embed", max(1, default_max_retries // 2))
+        max_retries_embed = kwargs.get(
+            "max_retries_embed", max(1, default_max_retries // 2)
+        )
         retry_delay_embed = kwargs.get("retry_delay_embed", default_retry_delay / 2)
 
         retry_config = RetryConfig(

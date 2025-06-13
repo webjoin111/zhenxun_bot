@@ -15,27 +15,47 @@ from ..types.exceptions import LLMErrorCode, LLMException
 class ModelConfigOverride(BaseModel):
     """模型配置覆盖参数"""
 
-    temperature: float | None = Field(default=None, ge=0.0, le=2.0, description="生成温度")
+    temperature: float | None = Field(
+        default=None, ge=0.0, le=2.0, description="生成温度"
+    )
     max_tokens: int | None = Field(default=None, gt=0, description="最大输出token数")
     top_p: float | None = Field(default=None, ge=0.0, le=1.0, description="核采样参数")
     top_k: int | None = Field(default=None, gt=0, description="Top-K采样参数")
-    frequency_penalty: float | None = Field(default=None, ge=-2.0, le=2.0, description="频率惩罚")
-    presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0, description="存在惩罚")
-    repetition_penalty: float | None = Field(default=None, ge=0.0, le=2.0, description="重复惩罚")
+    frequency_penalty: float | None = Field(
+        default=None, ge=-2.0, le=2.0, description="频率惩罚"
+    )
+    presence_penalty: float | None = Field(
+        default=None, ge=-2.0, le=2.0, description="存在惩罚"
+    )
+    repetition_penalty: float | None = Field(
+        default=None, ge=0.0, le=2.0, description="重复惩罚"
+    )
 
     stop: list[str] | str | None = Field(default=None, description="停止序列")
 
     response_format: ResponseFormat | dict[str, Any] | None = Field(
         default=None, description="期望的响应格式"
     )
-    response_mime_type: str | None = Field(default=None, description="响应MIME类型（Gemini专用）")
-    response_schema: dict[str, Any] | None = Field(default=None, description="JSON响应模式")
-    thinking_budget: float | None = Field(default=None, ge=0.0, le=1.0, description="思考预算")
+    response_mime_type: str | None = Field(
+        default=None, description="响应MIME类型（Gemini专用）"
+    )
+    response_schema: dict[str, Any] | None = Field(
+        default=None, description="JSON响应模式"
+    )
+    thinking_budget: float | None = Field(
+        default=None, ge=0.0, le=1.0, description="思考预算"
+    )
     safety_settings: dict[str, str] | None = Field(default=None, description="安全设置")
-    response_modalities: list[str] | None = Field(default=None, description="响应模态类型")
+    response_modalities: list[str] | None = Field(
+        default=None, description="响应模态类型"
+    )
 
-    enable_code_execution: bool | None = Field(default=None, description="是否启用代码执行")
-    enable_grounding: bool | None = Field(default=None, description="是否启用信息来源关联")
+    enable_code_execution: bool | None = Field(
+        default=None, description="是否启用代码执行"
+    )
+    enable_grounding: bool | None = Field(
+        default=None, description="是否启用信息来源关联"
+    )
     enable_caching: bool | None = Field(default=None, description="是否启用响应缓存")
 
     custom_params: dict[str, Any] | None = Field(default=None, description="自定义参数")
@@ -43,7 +63,16 @@ class ModelConfigOverride(BaseModel):
     def to_dict(self) -> dict[str, Any]:
         """转换为字典，排除None值"""
         result = {}
-        for key, value in self.model_dump().items():
+        model_data = getattr(self, "model_dump", lambda: {})()
+        if not model_data:
+            model_data = {}
+            for field_name, _ in self.__class__.__dict__.get(
+                "model_fields", {}
+            ).items():
+                value = getattr(self, field_name, None)
+                if value is not None:
+                    model_data[field_name] = value
+        for key, value in model_data.items():
             if value is not None:
                 if key == "custom_params" and isinstance(value, dict):
                     result.update(value)
@@ -110,13 +139,14 @@ class LLMGenerationConfig(ModelConfigOverride):
                 else:
                     params["repetition_penalty"] = self.repetition_penalty
 
-        # 处理 response_format 参数
         if self.response_format is not None:
             if isinstance(self.response_format, dict):
-                # 直接使用字典格式的 response_format（如 {'type': 'json_object'}）
                 if api_type in ["openai", "zhipu", "deepseek", "general_openai_compat"]:
                     params["response_format"] = self.response_format
-                    logger.debug(f"为 {api_type} 使用自定义 response_format: {self.response_format}")
+                    logger.debug(
+                        f"为 {api_type} 使用自定义 response_format: "
+                        f"{self.response_format}"
+                    )
             elif self.response_format == ResponseFormat.JSON:
                 if api_type in ["openai", "zhipu", "deepseek", "general_openai_compat"]:
                     params["response_format"] = {"type": "json_object"}
@@ -128,9 +158,14 @@ class LLMGenerationConfig(ModelConfigOverride):
                     logger.debug(f"为 {api_type} 启用 JSON MIME 类型输出模式")
 
         if api_type in ["gemini", "gemini_native"]:
-            if self.response_format != ResponseFormat.JSON and self.response_mime_type is not None:
+            if (
+                self.response_format != ResponseFormat.JSON
+                and self.response_mime_type is not None
+            ):
                 params["responseMimeType"] = self.response_mime_type
-                logger.debug(f"使用显式设置的 responseMimeType: {self.response_mime_type}")
+                logger.debug(
+                    f"使用显式设置的 responseMimeType: {self.response_mime_type}"
+                )
 
             if self.response_schema is not None and "responseSchema" not in params:
                 params["responseSchema"] = self.response_schema
@@ -158,7 +193,9 @@ def validate_override_params(
 
     if isinstance(override_config, dict):
         try:
-            filtered_config = {k: v for k, v in override_config.items() if v is not None}
+            filtered_config = {
+                k: v for k, v in override_config.items() if v is not None
+            }
             return LLMGenerationConfig(**filtered_config)
         except Exception as e:
             logger.warning(f"覆盖配置参数验证失败: {e}")
@@ -171,7 +208,9 @@ def validate_override_params(
     return override_config
 
 
-def apply_api_specific_mappings(params: dict[str, Any], api_type: str) -> dict[str, Any]:
+def apply_api_specific_mappings(
+    params: dict[str, Any], api_type: str
+) -> dict[str, Any]:
     """应用API特定的参数映射"""
     mapped_params = params.copy()
 
@@ -204,7 +243,8 @@ def apply_api_specific_mappings(params: dict[str, Any], api_type: str) -> dict[s
 
 def create_generation_config_from_kwargs(**kwargs) -> LLMGenerationConfig:
     """从关键字参数创建生成配置"""
-    known_fields = set(LLMGenerationConfig.model_fields.keys())
+    model_fields = getattr(LLMGenerationConfig, "model_fields", {})
+    known_fields = set(model_fields.keys())
     known_params = {}
     custom_params = {}
 

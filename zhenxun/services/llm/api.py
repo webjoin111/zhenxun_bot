@@ -91,7 +91,9 @@ class AI:
 
         if isinstance(message, str):
             llm_messages = [LLMMessage.user(message)]
-        elif isinstance(message, list) and all(isinstance(part, LLMContentPart) for part in message):
+        elif isinstance(message, list) and all(
+            isinstance(part, LLMContentPart) for part in message
+        ):
             llm_messages = [LLMMessage.user(message)]
         elif isinstance(message, LLMMessage):
             llm_messages = [message]
@@ -103,7 +105,9 @@ class AI:
                 code=LLMErrorCode.API_REQUEST_FAILED,
             )
 
-        response = await self._execute_generation(llm_messages, model, "聊天失败", kwargs)
+        response = await self._execute_generation(
+            llm_messages, model, "聊天失败", kwargs
+        )
         return response.text
 
     async def code(
@@ -135,7 +139,12 @@ class AI:
         }
 
     async def search(
-        self, query: str | UniMessage, *, model: ModelName = None, instruction: str = "", **kwargs: Any
+        self,
+        query: str | UniMessage,
+        *,
+        model: ModelName = None,
+        instruction: str = "",
+        **kwargs: Any,
     ) -> dict[str, Any]:
         """信息搜索 - 支持多模态输入"""
         resolved_model = model or self.config.model or "Gemini/gemini-2.0-flash"
@@ -154,7 +163,9 @@ class AI:
                 if instruction:
                     final_messages.append(LLMMessage.user(instruction))
                 else:
-                    raise LLMException("搜索内容为空或无法处理。", code=LLMErrorCode.API_REQUEST_FAILED)
+                    raise LLMException(
+                        "搜索内容为空或无法处理。", code=LLMErrorCode.API_REQUEST_FAILED
+                    )
             else:
                 final_messages.append(LLMMessage.user(content_parts))
 
@@ -206,7 +217,9 @@ class AI:
             if instruction:
                 final_messages.append(LLMMessage.user(instruction))
             else:
-                raise LLMException("分析内容为空或无法处理。", code=LLMErrorCode.API_REQUEST_FAILED)
+                raise LLMException(
+                    "分析内容为空或无法处理。", code=LLMErrorCode.API_REQUEST_FAILED
+                )
         else:
             final_messages.append(LLMMessage.user(content_parts))
 
@@ -241,7 +254,12 @@ class AI:
                 tool_choice = "none"
 
         response = await self._execute_generation(
-            final_messages, model, "内容分析失败", kwargs, llm_tools=llm_tools, tool_choice=tool_choice
+            final_messages,
+            model,
+            "内容分析失败",
+            kwargs,
+            llm_tools=llm_tools,
+            tool_choice=tool_choice,
         )
 
         if response.tool_calls:
@@ -260,8 +278,12 @@ class AI:
     ) -> LLMResponse:
         """通用的生成执行方法，封装重复的模型获取、配置合并和异常处理逻辑"""
         try:
-            resolved_model_name = self._resolve_model_name(model_name or self.config.model)
-            final_config_dict = self._merge_config(config_overrides, base_config=base_config)
+            resolved_model_name = self._resolve_model_name(
+                model_name or self.config.model
+            )
+            final_config_dict = self._merge_config(
+                config_overrides, base_config=base_config
+            )
 
             async with await get_model_instance(
                 resolved_model_name, override_config=final_config_dict
@@ -316,7 +338,9 @@ class AI:
         if self.config.enable_gemini_thinking:
             final_config["thinking_budget"] = 0.8
         if self.config.enable_gemini_safe_mode:
-            final_config["safety_settings"] = CommonOverrides.gemini_safe().safety_settings
+            final_config["safety_settings"] = (
+                CommonOverrides.gemini_safe().safety_settings
+            )
         if self.config.enable_gemini_multimodal:
             final_config.update(CommonOverrides.gemini_multimodal().to_dict())
         if self.config.enable_gemini_grounding:
@@ -341,10 +365,13 @@ class AI:
             return []
 
         try:
-            resolved_model_str = model or self.config.default_embedding_model or self.config.model
+            resolved_model_str = (
+                model or self.config.default_embedding_model or self.config.model
+            )
             if not resolved_model_str:
                 raise LLMException(
-                    "使用 embed 功能时必须指定嵌入模型名称，或在 AIConfig 中配置 default_embedding_model。",
+                    "使用 embed 功能时必须指定嵌入模型名称，"
+                    "或在 AIConfig 中配置 default_embedding_model。",
                     code=LLMErrorCode.MODEL_NOT_FOUND,
                 )
             resolved_model_str = self._resolve_model_name(resolved_model_str)
@@ -360,7 +387,9 @@ class AI:
             raise
         except Exception as e:
             logger.error(f"文本嵌入失败: {e}", e=e)
-            raise LLMException(f"文本嵌入失败: {e}", code=LLMErrorCode.EMBEDDING_FAILED, cause=e)
+            raise LLMException(
+                f"文本嵌入失败: {e}", code=LLMErrorCode.EMBEDDING_FAILED, cause=e
+            )
 
 
 async def chat(
@@ -443,7 +472,9 @@ async def analyze_multimodal(
     **kwargs: Any,
 ) -> str | LLMResponse:
     """多模态分析便捷函数"""
-    message = create_multimodal_message(text=text, images=images, videos=videos, audios=audios)
+    message = create_multimodal_message(
+        text=text, images=images, videos=videos, audios=audios
+    )
     return await analyze(message, instruction=instruction, model=model, **kwargs)
 
 
@@ -458,7 +489,9 @@ async def search_multimodal(
     **kwargs: Any,
 ) -> dict[str, Any]:
     """多模态搜索便捷函数"""
-    message = create_multimodal_message(text=text, images=images, videos=videos, audios=audios)
+    message = create_multimodal_message(
+        text=text, images=images, videos=videos, audios=audios
+    )
     ai = AI()
     return await ai.search(message, model=model, instruction=instruction, **kwargs)
 
