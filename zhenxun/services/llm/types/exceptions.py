@@ -36,11 +36,15 @@ class LLMException(Exception):
         error_messages = {
             LLMErrorCode.MODEL_NOT_FOUND: "AI模型未找到，请检查配置或联系管理员。",
             LLMErrorCode.API_KEY_INVALID: "API密钥无效，请联系管理员更新配置。",
-            LLMErrorCode.API_QUOTA_EXCEEDED: "API使用配额已用尽，请稍后再试或联系管理员。",
+            LLMErrorCode.API_QUOTA_EXCEEDED: (
+                "API使用配额已用尽，请稍后再试或联系管理员。"
+            ),
             LLMErrorCode.API_TIMEOUT: "AI服务响应超时，请稍后再试。",
             LLMErrorCode.API_RATE_LIMITED: "请求过于频繁，已被AI服务限流，请稍后再试。",
             LLMErrorCode.MODEL_INIT_FAILED: "AI模型初始化失败，请联系管理员检查配置。",
-            LLMErrorCode.NO_AVAILABLE_KEYS: "当前所有API密钥均不可用，请稍后再试或联系管理员。",
+            LLMErrorCode.NO_AVAILABLE_KEYS: (
+                "当前所有API密钥均不可用，请稍后再试或联系管理员。"
+            ),
             LLMErrorCode.USER_LOCATION_NOT_SUPPORTED: (
                 "当前地区暂不支持此AI服务，请联系管理员或尝试其他模型。"
             ),

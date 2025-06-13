@@ -131,7 +131,9 @@ class BaseAdapter(ABC):
         pass
 
     @abstractmethod
-    def parse_embedding_response(self, response_json: dict[str, Any]) -> list[list[float]]:
+    def parse_embedding_response(
+        self, response_json: dict[str, Any]
+    ) -> list[list[float]]:
         """解析文本嵌入响应"""
         pass
 
@@ -145,7 +147,9 @@ class BaseAdapter(ABC):
                 else str(error_info)
             )
             raise LLMException(
-                f"嵌入API错误: {msg}", code=LLMErrorCode.EMBEDDING_FAILED, details=response_json
+                f"嵌入API错误: {msg}",
+                code=LLMErrorCode.EMBEDDING_FAILED,
+                details=response_json,
             )
 
     def get_api_url(self, model: "LLMModel", endpoint: str) -> str:
@@ -170,7 +174,9 @@ class BaseAdapter(ABC):
         )
         return headers
 
-    def convert_messages_to_openai_format(self, messages: list["LLMMessage"]) -> list[dict[str, Any]]:
+    def convert_messages_to_openai_format(
+        self, messages: list["LLMMessage"]
+    ) -> list[dict[str, Any]]:
         """将LLMMessage转换为OpenAI格式 - 通用方法"""
         openai_messages: list[dict[str, Any]] = []
         for msg in messages:
@@ -190,7 +196,10 @@ class BaseAdapter(ABC):
                             content_parts.append({"type": "text", "text": part.text})
                         elif part.type == "image":
                             content_parts.append(
-                                {"type": "image_url", "image_url": {"url": part.image_source}}
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": part.image_source},
+                                }
                             )
                     openai_msg["content"] = content_parts
 
@@ -247,9 +256,13 @@ class BaseAdapter(ABC):
                                 )
                             )
                     except KeyError as e:
-                        logger.warning(f"解析OpenAI工具调用数据时缺少键: {tc_data}, 错误: {e}")
+                        logger.warning(
+                            f"解析OpenAI工具调用数据时缺少键: {tc_data}, 错误: {e}"
+                        )
                     except Exception as e:
-                        logger.warning(f"解析OpenAI工具调用数据时出错: {tc_data}, 错误: {e}")
+                        logger.warning(
+                            f"解析OpenAI工具调用数据时出错: {tc_data}, 错误: {e}"
+                        )
                 if not parsed_tool_calls:
                     parsed_tool_calls = None
 
@@ -268,7 +281,11 @@ class BaseAdapter(ABC):
 
         except Exception as e:
             logger.error(f"解析OpenAI格式响应失败: {e}", e=e)
-            raise LLMException(f"解析API响应失败: {e}", code=LLMErrorCode.RESPONSE_PARSE_ERROR, cause=e)
+            raise LLMException(
+                f"解析API响应失败: {e}",
+                code=LLMErrorCode.RESPONSE_PARSE_ERROR,
+                cause=e,
+            )
 
     def validate_response(self, response_json: dict[str, Any]) -> None:
         """验证API响应，解析不同API的错误结构"""
@@ -291,9 +308,14 @@ class BaseAdapter(ABC):
                     "max_tokens_exceeded": LLMErrorCode.CONTEXT_LENGTH_EXCEEDED,
                 }
 
-                llm_error_code = error_code_mapping.get(error_code, LLMErrorCode.API_RESPONSE_INVALID)
+                llm_error_code = error_code_mapping.get(
+                    error_code, LLMErrorCode.API_RESPONSE_INVALID
+                )
 
-                logger.error(f"API返回错误: {error_message} (代码: {error_code}, 类型: {error_type})")
+                logger.error(
+                    f"API返回错误: {error_message} "
+                    f"(代码: {error_code}, 类型: {error_type})"
+                )
             else:
                 error_message = str(error_info)
                 error_code = "unknown"
@@ -314,7 +336,10 @@ class BaseAdapter(ABC):
                 finish_reason = candidate.get("finishReason")
                 if finish_reason in ["SAFETY", "RECITATION"]:
                     safety_ratings = candidate.get("safetyRatings", [])
-                    logger.warning(f"Gemini内容被安全过滤: {finish_reason}, 安全评级: {safety_ratings}")
+                    logger.warning(
+                        f"Gemini内容被安全过滤: {finish_reason}, "
+                        f"安全评级: {safety_ratings}"
+                    )
                     raise LLMException(
                         f"内容被安全过滤: {finish_reason}",
                         code=LLMErrorCode.CONTENT_FILTERED,
@@ -342,7 +367,9 @@ class BaseAdapter(ABC):
             return config.to_api_params(model.api_type, model.model_name)
 
         if model._generation_config is not None:
-            return model._generation_config.to_api_params(model.api_type, model.model_name)
+            return model._generation_config.to_api_params(
+                model.api_type, model.model_name
+            )
 
         base_config = {}
         if model.temperature is not None:
@@ -417,6 +444,7 @@ class OpenAICompatAdapter(BaseAdapter):
         is_advanced: bool = False,
     ) -> ResponseData:
         """解析响应 - 直接使用基类的 OpenAI 格式解析"""
+        _ = model, is_advanced  # 未使用的参数
         return self.parse_openai_response(response_json)
 
     def prepare_embedding_request(
@@ -428,6 +456,7 @@ class OpenAICompatAdapter(BaseAdapter):
         **kwargs: Any,
     ) -> RequestData:
         """准备嵌入请求 - OpenAI兼容格式"""
+        _ = task_type  # 未使用的参数
         url = self.get_api_url(model, self.get_embedding_endpoint())
         headers = self.get_base_headers(api_key)
 
@@ -442,7 +471,9 @@ class OpenAICompatAdapter(BaseAdapter):
 
         return RequestData(url=url, headers=headers, body=body)
 
-    def parse_embedding_response(self, response_json: dict[str, Any]) -> list[list[float]]:
+    def parse_embedding_response(
+        self, response_json: dict[str, Any]
+    ) -> list[list[float]]:
         """解析嵌入响应 - OpenAI兼容格式"""
         self.validate_embedding_response(response_json)
 

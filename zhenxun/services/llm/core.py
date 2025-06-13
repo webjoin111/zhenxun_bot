@@ -40,7 +40,8 @@ class LLMHttpClient:
             async with self._lock:
                 if self._client is None or self._client.is_closed:
                     logger.debug(
-                        f"LLMHttpClient: Initializing new httpx.AsyncClient with config: {self.config}"
+                        f"LLMHttpClient: Initializing new httpx.AsyncClient "
+                        f"with config: {self.config}"
                     )
                     headers = get_user_agent()
                     limits = httpx.Limits(
@@ -52,11 +53,13 @@ class LLMHttpClient:
                         headers=headers,
                         limits=limits,
                         timeout=timeout,
-                        proxy=self.config.proxy,
+                        proxies=self.config.proxy,
                         follow_redirects=True,
                     )
         if self._client is None:
-            raise LLMException("HTTP client failed to initialize.", LLMErrorCode.CONFIGURATION_ERROR)
+            raise LLMException(
+                "HTTP client failed to initialize.", LLMErrorCode.CONFIGURATION_ERROR
+            )
         return self._client
 
     async def post(self, url: str, **kwargs: Any) -> httpx.Response:
@@ -78,7 +81,8 @@ class LLMHttpClient:
                 )
                 if self._active_requests > 0:
                     logger.warning(
-                        f"LLMHttpClient: Closing while {self._active_requests} requests are still active."
+                        f"LLMHttpClient: Closing while {self._active_requests} "
+                        f"requests are still active."
                     )
                 await self._client.aclose()
             self._client = None
@@ -96,7 +100,9 @@ class LLMHttpClientManager:
         self._clients: dict[tuple[int, str | None], LLMHttpClient] = {}
         self._lock = asyncio.Lock()
 
-    def _get_client_key(self, provider_config: ProviderConfig) -> tuple[int, str | None]:
+    def _get_client_key(
+        self, provider_config: ProviderConfig
+    ) -> tuple[int, str | None]:
         return (provider_config.timeout, provider_config.proxy)
 
     async def get_client(self, provider_config: ProviderConfig) -> LLMHttpClient:
@@ -104,15 +110,21 @@ class LLMHttpClientManager:
         async with self._lock:
             client = self._clients.get(key)
             if client and not client.is_closed:
-                logger.debug(f"LLMHttpClientManager: Reusing existing LLMHttpClient for key: {key}")
+                logger.debug(
+                    f"LLMHttpClientManager: Reusing existing LLMHttpClient "
+                    f"for key: {key}"
+                )
                 return client
 
             if client and client.is_closed:
                 logger.debug(
-                    f"LLMHttpClientManager: Found a closed client for key {key}. Creating a new one."
+                    f"LLMHttpClientManager: Found a closed client for key {key}. "
+                    f"Creating a new one."
                 )
 
-            logger.debug(f"LLMHttpClientManager: Creating new LLMHttpClient for key: {key}")
+            logger.debug(
+                f"LLMHttpClientManager: Creating new LLMHttpClient for key: {key}"
+            )
             http_client_config = HttpClientConfig(
                 timeout=provider_config.timeout, proxy=provider_config.proxy
             )
@@ -122,9 +134,14 @@ class LLMHttpClientManager:
 
     async def shutdown(self):
         async with self._lock:
-            logger.info(f"LLMHttpClientManager: Shutting down. Closing {len(self._clients)} client(s).")
+            logger.info(
+                f"LLMHttpClientManager: Shutting down. "
+                f"Closing {len(self._clients)} client(s)."
+            )
             close_tasks = [
-                client.close() for client in self._clients.values() if client and not client.is_closed
+                client.close()
+                for client in self._clients.values()
+                if client and not client.is_closed
             ]
             if close_tasks:
                 await asyncio.gather(*close_tasks, return_exceptions=True)
@@ -183,11 +200,16 @@ async def with_smart_retry(
         except LLMException as e:
             last_exception = e
 
-            if e.code in [LLMErrorCode.API_KEY_INVALID, LLMErrorCode.API_QUOTA_EXCEEDED]:
+            if e.code in [
+                LLMErrorCode.API_KEY_INVALID,
+                LLMErrorCode.API_QUOTA_EXCEEDED,
+            ]:
                 if hasattr(e, "details") and e.details and "api_key" in e.details:
                     failed_keys.add(e.details["api_key"])
                     if key_store and provider_name:
-                        await key_store.record_failure(e.details["api_key"], e.details.get("status_code"))
+                        await key_store.record_failure(
+                            e.details["api_key"], e.details.get("status_code")
+                        )
 
             should_retry = _should_retry_llm_error(e, attempt, config.max_retries)
             if not should_retry:
@@ -198,7 +220,9 @@ async def with_smart_retry(
                 wait_time = config.retry_delay
                 if config.exponential_backoff:
                     wait_time *= 2**attempt
-                logger.warning(f"请求失败，{wait_time}秒后重试 (第{attempt + 1}次): {e}")
+                logger.warning(
+                    f"请求失败，{wait_time}秒后重试 (第{attempt + 1}次): {e}"
+                )
                 await asyncio.sleep(wait_time)
             else:
                 logger.error(f"重试{config.max_retries}次后仍然失败: {e}")
@@ -218,7 +242,9 @@ async def with_smart_retry(
         raise RuntimeError("重试函数未能正常执行且未捕获到异常")
 
 
-def _should_retry_llm_error(error: LLMException, attempt: int, max_retries: int) -> bool:
+def _should_retry_llm_error(
+    error: LLMException, attempt: int, max_retries: int
+) -> bool:
     """判断LLM错误是否应该重试"""
     non_retryable_errors = {
         LLMErrorCode.MODEL_NOT_FOUND,
@@ -263,7 +289,10 @@ class KeyStatusStore:
         self._lock = asyncio.Lock()
 
     async def get_next_available_key(
-        self, provider_name: str, api_keys: list[str], exclude_keys: set[str] | None = None
+        self,
+        provider_name: str,
+        api_keys: list[str],
+        exclude_keys: set[str] | None = None,
     ) -> str | None:
         """获取下一个可用的API密钥（轮询策略）"""
         if not api_keys:
@@ -271,7 +300,9 @@ class KeyStatusStore:
 
         exclude_keys = exclude_keys or set()
         available_keys = [
-            key for key in api_keys if key not in exclude_keys and self._key_status.get(key, True)
+            key
+            for key in api_keys
+            if key not in exclude_keys and self._key_status.get(key, True)
         ]
 
         if not available_keys:
@@ -282,11 +313,15 @@ class KeyStatusStore:
 
             selected_key = available_keys[current_index % len(available_keys)]
 
-            self._provider_key_index[provider_name] = (current_index + 1) % len(available_keys)
+            self._provider_key_index[provider_name] = (current_index + 1) % len(
+                available_keys
+            )
 
             import time
 
-            self._key_usage_count[selected_key] = self._key_usage_count.get(selected_key, 0) + 1
+            self._key_usage_count[selected_key] = (
+                self._key_usage_count.get(selected_key, 0) + 1
+            )
             self._key_last_used[selected_key] = time.time()
 
             logger.debug(
@@ -308,7 +343,9 @@ class KeyStatusStore:
         async with self._lock:
             if status_code in [401, 403]:
                 self._key_status[api_key] = False
-                logger.warning(f"API密钥认证失败，标记为不可用: {key_id} (状态码: {status_code})")
+                logger.warning(
+                    f"API密钥认证失败，标记为不可用: {key_id} (状态码: {status_code})"
+                )
             else:
                 logger.debug(f"记录API密钥失败使用: {key_id} (状态码: {status_code})")
 

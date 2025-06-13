@@ -30,17 +30,25 @@ class CommonOverrides:
     @staticmethod
     def concise(max_tokens: int = 100) -> LLMGenerationConfig:
         """简洁模式：限制输出长度"""
-        return LLMGenerationConfig(temperature=0.3, max_tokens=max_tokens, stop=["\n\n", "。", "！", "？"])
+        return LLMGenerationConfig(
+            temperature=0.3,
+            max_tokens=max_tokens,
+            stop=["\n\n", "。", "！", "？"],
+        )
 
     @staticmethod
     def detailed(max_tokens: int = 2000) -> LLMGenerationConfig:
         """详细模式：鼓励详细输出"""
-        return LLMGenerationConfig(temperature=0.7, max_tokens=max_tokens, frequency_penalty=-0.1)
+        return LLMGenerationConfig(
+            temperature=0.7, max_tokens=max_tokens, frequency_penalty=-0.1
+        )
 
     @staticmethod
     def gemini_json() -> LLMGenerationConfig:
         """Gemini JSON模式：强制JSON输出"""
-        return LLMGenerationConfig(temperature=0.3, response_mime_type="application/json")
+        return LLMGenerationConfig(
+            temperature=0.3, response_mime_type="application/json"
+        )
 
     @staticmethod
     def gemini_thinking(budget: float = 0.8) -> LLMGenerationConfig:
@@ -96,7 +104,9 @@ class CommonOverrides:
             temperature=0.5,
             max_tokens=4096,
             enable_grounding=True,
-            custom_params={"grounding_config": {"dynamicRetrievalConfig": {"mode": "MODE_DYNAMIC"}}},
+            custom_params={
+                "grounding_config": {"dynamicRetrievalConfig": {"mode": "MODE_DYNAMIC"}}
+            },
         )
 
     @staticmethod
@@ -119,7 +129,9 @@ class CommonOverrides:
             enable_caching=True,
             custom_params={
                 "code_execution_timeout": 30,
-                "grounding_config": {"dynamicRetrievalConfig": {"mode": "MODE_DYNAMIC"}},
+                "grounding_config": {
+                    "dynamicRetrievalConfig": {"mode": "MODE_DYNAMIC"}
+                },
             },
         )
 
@@ -132,7 +144,9 @@ class CommonOverrides:
             thinking_budget=0.8,
             enable_grounding=True,
             response_mime_type="application/json",
-            custom_params={"grounding_config": {"dynamicRetrievalConfig": {"mode": "MODE_DYNAMIC"}}},
+            custom_params={
+                "grounding_config": {"dynamicRetrievalConfig": {"mode": "MODE_DYNAMIC"}}
+            },
         )
 
     @staticmethod

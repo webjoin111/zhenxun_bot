@@ -48,7 +48,9 @@ class GeminiAdapter(BaseAdapter):
         tool_choice: str | dict[str, Any] | None = None,
     ) -> RequestData:
         """准备高级请求"""
-        return self._prepare_request(model, api_key, messages, config, tools, tool_choice)
+        return self._prepare_request(
+            model, api_key, messages, config, tools, tool_choice
+        )
 
     def _prepare_request(
         self,
@@ -75,7 +77,9 @@ class GeminiAdapter(BaseAdapter):
                 if isinstance(msg.content, str):
                     system_instruction_parts = [{"text": msg.content}]
                 elif isinstance(msg.content, list):
-                    system_instruction_parts = [part.convert_for_api("gemini") for part in msg.content]
+                    system_instruction_parts = [
+                        part.convert_for_api("gemini") for part in msg.content
+                    ]
                 continue
 
             elif msg.role == "user":
@@ -115,12 +119,21 @@ class GeminiAdapter(BaseAdapter):
                 import json
 
                 try:
-                    content_str = msg.content if isinstance(msg.content, str) else str(msg.content)
+                    content_str = (
+                        msg.content
+                        if isinstance(msg.content, str)
+                        else str(msg.content)
+                    )
                     tool_result_obj = json.loads(content_str)
                 except json.JSONDecodeError:
-                    content_str = msg.content if isinstance(msg.content, str) else str(msg.content)
+                    content_str = (
+                        msg.content
+                        if isinstance(msg.content, str)
+                        else str(msg.content)
+                    )
                     logger.warning(
-                        f"工具 {msg.name} 的结果不是有效的 JSON: {content_str}. 包装为原始字符串。"
+                        f"工具 {msg.name} 的结果不是有效的 JSON: {content_str}. "
+                        f"包装为原始字符串。"
                     )
                     tool_result_obj = {"raw_output": content_str}
 
@@ -144,7 +157,9 @@ class GeminiAdapter(BaseAdapter):
             for tool_item in tools:
                 if isinstance(tool_item, dict):
                     if "name" in tool_item and "description" in tool_item:
-                        all_tools_for_request.append({"functionDeclarations": [tool_item]})
+                        all_tools_for_request.append(
+                            {"functionDeclarations": [tool_item]}
+                        )
                     else:
                         all_tools_for_request.append(tool_item)
                 else:
@@ -152,7 +167,9 @@ class GeminiAdapter(BaseAdapter):
 
         if effective_config:
             if getattr(effective_config, "enable_grounding", False):
-                has_explicit_gs_tool = any("googleSearch" in tool_item for tool_item in all_tools_for_request)
+                has_explicit_gs_tool = any(
+                    "googleSearch" in tool_item for tool_item in all_tools_for_request
+                )
                 if not has_explicit_gs_tool:
                     all_tools_for_request.append({"googleSearch": {}})
                     logger.debug("隐式启用 Google Search 工具进行信息来源关联。")
@@ -166,7 +183,9 @@ class GeminiAdapter(BaseAdapter):
                     logger.debug("隐式启用代码执行工具。")
 
         if all_tools_for_request:
-            gemini_api_tools = self._convert_tools_to_gemini_format(all_tools_for_request)
+            gemini_api_tools = self._convert_tools_to_gemini_format(
+                all_tools_for_request
+            )
             if gemini_api_tools:
                 body["tools"] = gemini_api_tools
 
@@ -180,11 +199,17 @@ class GeminiAdapter(BaseAdapter):
                 if mode_upper in ["AUTO", "NONE", "ANY"]:
                     body["toolConfig"] = {"functionCallingConfig": {"mode": mode_upper}}
                 else:
-                    body["toolConfig"] = self._convert_tool_choice_to_gemini(final_tool_choice)
+                    body["toolConfig"] = self._convert_tool_choice_to_gemini(
+                        final_tool_choice
+                    )
             else:
-                body["toolConfig"] = self._convert_tool_choice_to_gemini(final_tool_choice)
+                body["toolConfig"] = self._convert_tool_choice_to_gemini(
+                    final_tool_choice
+                )
 
-        final_generation_config = self._build_gemini_generation_config(model, effective_config)
+        final_generation_config = self._build_gemini_generation_config(
+            model, effective_config
+        )
         if final_generation_config:
             body["generationConfig"] = final_generation_config
 
@@ -203,7 +228,9 @@ class GeminiAdapter(BaseAdapter):
         """应用配置覆盖 - Gemini 不需要额外的配置覆盖"""
         return body
 
-    def _get_gemini_endpoint(self, model: "LLMModel", config: "LLMGenerationConfig | None" = None) -> str:
+    def _get_gemini_endpoint(
+        self, model: "LLMModel", config: "LLMGenerationConfig | None" = None
+    ) -> str:
         """根据配置选择Gemini API端点"""
         if config:
             if getattr(config, "enable_code_execution", False):
@@ -214,7 +241,9 @@ class GeminiAdapter(BaseAdapter):
 
         return f"/v1beta/models/{model.model_name}:generateContent"
 
-    def _convert_tools_to_gemini_format(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _convert_tools_to_gemini_format(
+        self, tools: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         """转换工具格式为Gemini格式"""
         gemini_tools = []
 
@@ -232,7 +261,9 @@ class GeminiAdapter(BaseAdapter):
                 }
                 gemini_tools.append(gemini_tool)
             elif tool.get("type") == "code_execution":
-                gemini_tools.append({"codeExecution": {"language": tool.get("language", "python")}})
+                gemini_tools.append(
+                    {"codeExecution": {"language": tool.get("language", "python")}}
+                )
             elif tool.get("type") == "google_search":
                 gemini_tools.append({"googleSearch": {}})
             elif "googleSearch" in tool:
@@ -242,18 +273,26 @@ class GeminiAdapter(BaseAdapter):
 
         return gemini_tools
 
-    def _convert_tool_choice_to_gemini(self, tool_choice_value: str | dict[str, Any]) -> dict[str, Any]:
+    def _convert_tool_choice_to_gemini(
+        self, tool_choice_value: str | dict[str, Any]
+    ) -> dict[str, Any]:
         """转换工具选择策略为Gemini格式"""
         if isinstance(tool_choice_value, str):
             mode_upper = tool_choice_value.upper()
             if mode_upper in ["AUTO", "NONE", "ANY"]:
                 return {"functionCallingConfig": {"mode": mode_upper}}
             else:
-                logger.warning(f"不支持的 tool_choice 字符串值: '{tool_choice_value}'。回退到 AUTO。")
+                logger.warning(
+                    f"不支持的 tool_choice 字符串值: '{tool_choice_value}'。"
+                    f"回退到 AUTO。"
+                )
                 return {"functionCallingConfig": {"mode": "AUTO"}}
 
         elif isinstance(tool_choice_value, dict):
-            if tool_choice_value.get("type") == "function" and "function" in tool_choice_value:
+            if (
+                tool_choice_value.get("type") == "function"
+                and "function" in tool_choice_value
+            ):
                 func_name = tool_choice_value["function"].get("name")
                 if func_name:
                     return {
@@ -263,17 +302,26 @@ class GeminiAdapter(BaseAdapter):
                         }
                     }
                 else:
-                    logger.warning(f"tool_choice dict 中的函数名无效: {tool_choice_value}。回退到 AUTO。")
+                    logger.warning(
+                        f"tool_choice dict 中的函数名无效: {tool_choice_value}。"
+                        f"回退到 AUTO。"
+                    )
                     return {"functionCallingConfig": {"mode": "AUTO"}}
 
             elif "functionCallingConfig" in tool_choice_value:
-                return {"functionCallingConfig": tool_choice_value["functionCallingConfig"]}
+                return {
+                    "functionCallingConfig": tool_choice_value["functionCallingConfig"]
+                }
 
             else:
-                logger.warning(f"不支持的 tool_choice dict 值: {tool_choice_value}。回退到 AUTO。")
+                logger.warning(
+                    f"不支持的 tool_choice dict 值: {tool_choice_value}。回退到 AUTO。"
+                )
                 return {"functionCallingConfig": {"mode": "AUTO"}}
 
-        logger.warning(f"tool_choice 的类型无效: {type(tool_choice_value)}。回退到 AUTO。")
+        logger.warning(
+            f"tool_choice 的类型无效: {type(tool_choice_value)}。回退到 AUTO。"
+        )
         return {"functionCallingConfig": {"mode": "AUTO"}}
 
     def _build_gemini_generation_config(
@@ -285,11 +333,15 @@ class GeminiAdapter(BaseAdapter):
         effective_config = config if config is not None else model._generation_config
 
         if effective_config:
-            base_api_params = effective_config.to_api_params(api_type="gemini", model_name=model.model_name)
+            base_api_params = effective_config.to_api_params(
+                api_type="gemini", model_name=model.model_name
+            )
             generation_config.update(base_api_params)
 
             if getattr(effective_config, "response_mime_type", None):
-                generation_config["responseMimeType"] = effective_config.response_mime_type
+                generation_config["responseMimeType"] = (
+                    effective_config.response_mime_type
+                )
 
             if getattr(effective_config, "response_schema", None):
                 generation_config["responseSchema"] = effective_config.response_schema
@@ -303,15 +355,22 @@ class GeminiAdapter(BaseAdapter):
             if getattr(effective_config, "response_modalities", None):
                 modalities = effective_config.response_modalities
                 if isinstance(modalities, list):
-                    generation_config["responseModalities"] = [m.upper() for m in modalities]
+                    generation_config["responseModalities"] = [
+                        m.upper() for m in modalities
+                    ]
                 elif isinstance(modalities, str):
                     generation_config["responseModalities"] = [modalities.upper()]
 
-            generation_config = {k: v for k, v in generation_config.items() if v is not None}
+            generation_config = {
+                k: v for k, v in generation_config.items() if v is not None
+            }
 
             if generation_config:
                 param_keys = list(generation_config.keys())
-                logger.debug(f"构建Gemini生成配置完成，包含 {len(generation_config)} 个参数: {param_keys}")
+                logger.debug(
+                    f"构建Gemini生成配置完成，包含 {len(generation_config)} 个参数: "
+                    f"{param_keys}"
+                )
 
         return generation_config
 
@@ -337,7 +396,9 @@ class GeminiAdapter(BaseAdapter):
                 safety_settings.append({"category": category, "threshold": threshold})
         else:
             for category in safety_categories:
-                safety_settings.append({"category": category, "threshold": "BLOCK_MEDIUM_AND_ABOVE"})
+                safety_settings.append(
+                    {"category": category, "threshold": "BLOCK_MEDIUM_AND_ABOVE"}
+                )
 
         return safety_settings if safety_settings else None
 
@@ -368,12 +429,18 @@ class GeminiAdapter(BaseAdapter):
 
             candidate = candidates[0]
 
-            if candidate.get("finishReason") in ["RECITATION", "OTHER"] and not candidate.get("content"):
+            if candidate.get("finishReason") in [
+                "RECITATION",
+                "OTHER",
+            ] and not candidate.get("content"):
                 logger.warning(
-                    f"Gemini candidate finished with reason '{candidate.get('finishReason')}' and no content."
+                    f"Gemini candidate finished with reason "
+                    f"'{candidate.get('finishReason')}' and no content."
                 )
                 return ResponseData(
-                    text="", raw_response=response_json, usage_info=response_json.get("usageMetadata")
+                    text="",
+                    raw_response=response_json,
+                    usage_info=response_json.get("usageMetadata"),
                 )
 
             content_data = candidate.get("content", {})
@@ -394,9 +461,10 @@ class GeminiAdapter(BaseAdapter):
 
                         from ..types.models import LLMToolCall, LLMToolFunction
 
+                        call_id = f"call_{model.provider_name}_{len(parsed_tool_calls)}"
                         parsed_tool_calls.append(
                             LLMToolCall(
-                                id=f"call_{model.provider_name}_{len(parsed_tool_calls)}",
+                                id=call_id,
                                 function=LLMToolFunction(
                                     name=fc_data["name"],
                                     arguments=json.dumps(fc_data["args"]),
@@ -404,16 +472,22 @@ class GeminiAdapter(BaseAdapter):
                             )
                         )
                     except KeyError as e:
-                        logger.warning(f"解析Gemini functionCall时缺少键: {fc_data}, 错误: {e}")
+                        logger.warning(
+                            f"解析Gemini functionCall时缺少键: {fc_data}, 错误: {e}"
+                        )
                     except Exception as e:
-                        logger.warning(f"解析Gemini functionCall时出错: {fc_data}, 错误: {e}")
+                        logger.warning(
+                            f"解析Gemini functionCall时出错: {fc_data}, 错误: {e}"
+                        )
                 elif "codeExecutionResult" in part:
                     result = part["codeExecutionResult"]
                     if result.get("outcome") == "OK":
                         output = result.get("output", "")
                         text_content += f"\n[代码执行结果]:\n{output}\n"
                     else:
-                        text_content += f"\n[代码执行失败]: {result.get('outcome', 'UNKNOWN')}\n"
+                        text_content += (
+                            f"\n[代码执行失败]: {result.get('outcome', 'UNKNOWN')}\n"
+                        )
 
             usage_info = response_json.get("usageMetadata")
 
@@ -436,7 +510,11 @@ class GeminiAdapter(BaseAdapter):
 
         except Exception as e:
             logger.error(f"解析 Gemini 响应失败: {e}", e=e)
-            raise LLMException(f"解析API响应失败: {e}", code=LLMErrorCode.RESPONSE_PARSE_ERROR, cause=e)
+            raise LLMException(
+                f"解析API响应失败: {e}",
+                code=LLMErrorCode.RESPONSE_PARSE_ERROR,
+                cause=e,
+            )
 
     def prepare_embedding_request(
         self,
@@ -474,7 +552,9 @@ class GeminiAdapter(BaseAdapter):
         body = {"requests": requests_payload}
         return RequestData(url=url, headers=headers, body=body)
 
-    def parse_embedding_response(self, response_json: dict[str, Any]) -> list[list[float]]:
+    def parse_embedding_response(
+        self, response_json: dict[str, Any]
+    ) -> list[list[float]]:
         """解析文本嵌入响应"""
         try:
             embeddings_data = response_json["embeddings"]
@@ -482,18 +562,26 @@ class GeminiAdapter(BaseAdapter):
         except KeyError as e:
             logger.error(f"解析Gemini嵌入响应时缺少键: {e}. 响应: {response_json}")
             raise LLMException(
-                "Gemini嵌入响应格式错误", code=LLMErrorCode.RESPONSE_PARSE_ERROR, details={"error": str(e)}
+                "Gemini嵌入响应格式错误",
+                code=LLMErrorCode.RESPONSE_PARSE_ERROR,
+                details={"error": str(e)},
             )
         except Exception as e:
-            logger.error(f"解析Gemini嵌入响应时发生未知错误: {e}. 响应: {response_json}")
+            logger.error(
+                f"解析Gemini嵌入响应时发生未知错误: {e}. 响应: {response_json}"
+            )
             raise LLMException(
-                f"解析Gemini嵌入响应失败: {e}", code=LLMErrorCode.RESPONSE_PARSE_ERROR, cause=e
+                f"解析Gemini嵌入响应失败: {e}",
+                code=LLMErrorCode.RESPONSE_PARSE_ERROR,
+                cause=e,
             )
 
     def validate_embedding_response(self, response_json: dict[str, Any]) -> None:
         """验证嵌入响应"""
         super().validate_embedding_response(response_json)
-        if "embeddings" not in response_json or not isinstance(response_json["embeddings"], list):
+        if "embeddings" not in response_json or not isinstance(
+            response_json["embeddings"], list
+        ):
             raise LLMException(
                 "Gemini嵌入响应缺少'embeddings'字段或格式不正确",
                 code=LLMErrorCode.RESPONSE_PARSE_ERROR,

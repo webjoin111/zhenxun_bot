@@ -58,7 +58,9 @@ class LLMContentPart(BaseModel):
         return cls(type="image", image_source=url)
 
     @classmethod
-    def image_base64_part(cls, data: str, mime_type: str = "image/png") -> "LLMContentPart":
+    def image_base64_part(
+        cls, data: str, mime_type: str = "image/png"
+    ) -> "LLMContentPart":
         """创建Base64图片内容部分"""
         data_url = f"data:{mime_type};base64,{data}"
         return cls(type="image", image_source=data_url)
@@ -74,13 +76,17 @@ class LLMContentPart(BaseModel):
         return cls(type="video", video_source=url, mime_type=mime_type)
 
     @classmethod
-    def video_base64_part(cls, data: str, mime_type: str = "video/mp4") -> "LLMContentPart":
+    def video_base64_part(
+        cls, data: str, mime_type: str = "video/mp4"
+    ) -> "LLMContentPart":
         """创建Base64视频内容部分"""
         data_url = f"data:{mime_type};base64,{data}"
         return cls(type="video", video_source=data_url, mime_type=mime_type)
 
     @classmethod
-    def audio_base64_part(cls, data: str, mime_type: str = "audio/wav") -> "LLMContentPart":
+    def audio_base64_part(
+        cls, data: str, mime_type: str = "audio/wav"
+    ) -> "LLMContentPart":
         """创建Base64音频内容部分"""
         data_url = f"data:{mime_type};base64,{data}"
         return cls(type="audio", audio_source=data_url, mime_type=mime_type)
@@ -101,7 +107,9 @@ class LLMContentPart(BaseModel):
         )
 
     @classmethod
-    async def from_path(cls, path_like: str | Path, target_api: str | None = None) -> "LLMContentPart | None":
+    async def from_path(
+        cls, path_like: str | Path, target_api: str | None = None
+    ) -> "LLMContentPart | None":
         """
         从本地文件路径创建 LLMContentPart。
         自动检测MIME类型，并根据类型（如图片）可能加载为Base64。
@@ -116,7 +124,9 @@ class LLMContentPart(BaseModel):
             mime_type, _ = mimetypes.guess_type(path.resolve().as_uri())
 
             if not mime_type:
-                logger.warning(f"无法猜测文件 {path.name} 的MIME类型，将尝试作为文本文件处理。")
+                logger.warning(
+                    f"无法猜测文件 {path.name} 的MIME类型，将尝试作为文本文件处理。"
+                )
                 try:
                     async with aiofiles.open(path, encoding="utf-8") as f:
                         text_content = await f.read()
@@ -131,17 +141,22 @@ class LLMContentPart(BaseModel):
                         async with aiofiles.open(path, "rb") as f:
                             img_bytes = await f.read()
                         base64_data = base64.b64encode(img_bytes).decode("utf-8")
-                        return cls.image_base64_part(data=base64_data, mime_type=mime_type)
+                        return cls.image_base64_part(
+                            data=base64_data, mime_type=mime_type
+                        )
                     except Exception as e:
                         logger.error(f"读取或编码图片文件 {path.name} 失败: {e}")
                         return None
                 else:
                     logger.warning(
-                        f"为本地图片路径 {path.name} 生成 image_url_part。实际API可能不支持 file:// URI。考虑使用Base64或公网URL。"  # noqa: E501
+                        f"为本地图片路径 {path.name} 生成 image_url_part。"
+                        "实际API可能不支持 file:// URI。考虑使用Base64或公网URL。"
                     )
                     return cls.image_url_part(url=path.resolve().as_uri())
             elif mime_type.startswith("audio/"):
-                return cls.audio_url_part(url=path.resolve().as_uri(), mime_type=mime_type)
+                return cls.audio_url_part(
+                    url=path.resolve().as_uri(), mime_type=mime_type
+                )
             elif mime_type.startswith("video/"):
                 if target_api == "gemini":
                     # 对于 Gemini API，将视频转换为 base64
@@ -149,12 +164,16 @@ class LLMContentPart(BaseModel):
                         async with aiofiles.open(path, "rb") as f:
                             video_bytes = await f.read()
                         base64_data = base64.b64encode(video_bytes).decode("utf-8")
-                        return cls.video_base64_part(data=base64_data, mime_type=mime_type)
+                        return cls.video_base64_part(
+                            data=base64_data, mime_type=mime_type
+                        )
                     except Exception as e:
                         logger.error(f"读取或编码视频文件 {path.name} 失败: {e}")
                         return None
                 else:
-                    return cls.video_url_part(url=path.resolve().as_uri(), mime_type=mime_type)
+                    return cls.video_url_part(
+                        url=path.resolve().as_uri(), mime_type=mime_type
+                    )
             elif (
                 mime_type.startswith("text/")
                 or mime_type == "application/json"
@@ -168,7 +187,9 @@ class LLMContentPart(BaseModel):
                     logger.error(f"读取文本类文件 {path.name} 失败: {e}")
                     return None
             else:
-                logger.info(f"文件 {path.name} (MIME: {mime_type}) 将作为通用文件URI处理。")
+                logger.info(
+                    f"文件 {path.name} (MIME: {mime_type}) 将作为通用文件URI处理。"
+                )
                 return cls.file_uri_part(
                     file_uri=path.resolve().as_uri(),
                     mime_type=mime_type,
@@ -228,9 +249,13 @@ class LLMContentPart(BaseModel):
                         return {"inlineData": {"mimeType": mime_type, "data": data}}
                     else:
                         # 如果无法解析 Base64 数据，抛出异常
-                        raise ValueError(f"无法解析Base64图像数据: {self.image_source[:50]}...")
+                        raise ValueError(
+                            f"无法解析Base64图像数据: {self.image_source[:50]}..."
+                        )
                 else:
-                    logger.warning(f"Gemini API需要Base64格式，但提供的是URL: {self.image_source}")
+                    logger.warning(
+                        f"Gemini API需要Base64格式，但提供的是URL: {self.image_source}"
+                    )
                     return {
                         "inlineData": {
                             "mimeType": "image/jpeg",
@@ -253,10 +278,14 @@ class LLMContentPart(BaseModel):
                         mime_type = header.split(";")[0].replace("data:", "")
                         return {"inlineData": {"mimeType": mime_type, "data": data}}
                     except (ValueError, IndexError):
-                        raise ValueError(f"无法解析Base64视频数据: {self.video_source[:50]}...")
+                        raise ValueError(
+                            f"无法解析Base64视频数据: {self.video_source[:50]}..."
+                        )
                 else:
                     # 对于 URL 或其他格式，暂时不支持直接内联
-                    raise ValueError("Gemini API 的视频处理需要通过 File API 上传，不支持直接 URL")
+                    raise ValueError(
+                        "Gemini API 的视频处理需要通过 File API 上传，不支持直接 URL"
+                    )
             else:
                 # 其他 API 可能不支持视频
                 raise ValueError(f"API类型 '{api_type}' 不支持视频内容")
@@ -273,17 +302,25 @@ class LLMContentPart(BaseModel):
                         mime_type = header.split(";")[0].replace("data:", "")
                         return {"inlineData": {"mimeType": mime_type, "data": data}}
                     except (ValueError, IndexError):
-                        raise ValueError(f"无法解析Base64音频数据: {self.audio_source[:50]}...")
+                        raise ValueError(
+                            f"无法解析Base64音频数据: {self.audio_source[:50]}..."
+                        )
                 else:
-                    raise ValueError("Gemini API 的音频处理需要通过 File API 上传，不支持直接 URL")
+                    raise ValueError(
+                        "Gemini API 的音频处理需要通过 File API 上传，不支持直接 URL"
+                    )
             else:
                 raise ValueError(f"API类型 '{api_type}' 不支持音频内容")
 
         elif self.type == "file":
             if api_type == "gemini" and self.file_uri:
-                return {"fileData": {"mimeType": self.mime_type, "fileUri": self.file_uri}}
+                return {
+                    "fileData": {"mimeType": self.mime_type, "fileUri": self.file_uri}
+                }
             elif self.file_source:
-                file_name = self.metadata.get("name", "file") if self.metadata else "file"
+                file_name = (
+                    self.metadata.get("name", "file") if self.metadata else "file"
+                )
                 if api_type == "gemini":
                     return {"text": f"[文件: {file_name}]\n{self.file_source}"}
                 else:
@@ -317,7 +354,8 @@ class LLMMessage(BaseModel):
                 raise ValueError("工具角色的消息必须包含函数名 (在 name 字段中)")
         if self.role == "tool" and not isinstance(self.content, str):
             logger.warning(
-                f"工具角色消息的内容期望是字符串，但得到的是: {type(self.content)}. 将尝试转换为字符串。"
+                f"工具角色消息的内容期望是字符串，但得到的是: {type(self.content)}. "
+                "将尝试转换为字符串。"
             )
             try:
                 self.content = str(self.content)
@@ -339,7 +377,9 @@ class LLMMessage(BaseModel):
         return cls(role="assistant", content=content, tool_calls=tool_calls)
 
     @classmethod
-    def assistant_text_response(cls, content: str | list[LLMContentPart]) -> "LLMMessage":
+    def assistant_text_response(
+        cls, content: str | list[LLMContentPart]
+    ) -> "LLMMessage":
         """创建助手纯文本回复的消息"""
         return cls(role="assistant", content=content, tool_calls=None)
 
@@ -356,10 +396,19 @@ class LLMMessage(BaseModel):
         try:
             content_str = json.dumps(result)
         except TypeError as e:
-            logger.error(f"工具 '{function_name}' 的结果无法JSON序列化: {result}. 错误: {e}")
-            content_str = json.dumps({"error": "Tool result not JSON serializable", "details": str(e)})
+            logger.error(
+                f"工具 '{function_name}' 的结果无法JSON序列化: {result}. 错误: {e}"
+            )
+            content_str = json.dumps(
+                {"error": "Tool result not JSON serializable", "details": str(e)}
+            )
 
-        return cls(role="tool", content=content_str, tool_call_id=tool_call_id, name=function_name)
+        return cls(
+            role="tool",
+            content=content_str,
+            tool_call_id=tool_call_id,
+            name=function_name,
+        )
 
     @classmethod
     def system(cls, content: str) -> "LLMMessage":
