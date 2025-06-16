@@ -112,7 +112,7 @@ AccessToken: PUBLIC_ZHENXUN_TEST
 |      [插件库](https://github.com/zhenxun-org/zhenxun_bot_plugins)      |   插件   |    [zhenxun-org](https://github.com/zhenxun-org)    |                 原 plugins 文件夹插件                 |
 | [插件索引库](https://github.com/zhenxun-org/zhenxun_bot_plugins_index) |   插件   |    [zhenxun-org](https://github.com/zhenxun-org)    |                    扩展插件索引库                     |
 |    [一键安装](https://github.com/soloxiaoye2022/zhenxun_bot-deploy)    |   安装   | [soloxiaoye2022](https://github.com/soloxiaoye2022) |                        第三方                         |
-|         [WebUi](https://github.com/HibiKier/zhenxun_bot_webui)         |   管理   |       [hibikier](https://github.com/HibiKier)       | 基于真寻 WebApi 的 webui 实现 [预览](#-webui界面展示) |
+|          [WebUi](https://github.com/zhenxun-org/zhenxun_bot)           |   管理   |       [hibikier](https://github.com/HibiKier)       | 基于真寻 WebApi 的 webui 实现 [预览](#-webui界面展示) |
 |  [安卓 app(WebUi)](https://github.com/YuS1aN/zhenxun_bot_android_ui)   |   安装   |         [YuS1aN](https://github.com/YuS1aN)         |                        第三方                         |
 
 </div>
@@ -125,6 +125,28 @@ AccessToken: PUBLIC_ZHENXUN_TEST
 - 方便增删插件，原生 nonebot2 matcher，不需要额外修改，仅仅通过简单的配置属性就可以生成`帮助图片`和`帮助信息`
 - 提供了 cd，阻塞，每日次数等限制，仅仅通过简单的属性就可以生成一个限制，例如：`PluginCdBlock` 等
 - **更多详细请通过 [传送门](https://zhenxun-org.github.io/zhenxun_bot/) 查看文档！**
+
+## 🐣 小白整合
+
+如果你系统是 **Windows** 且不想下载 Python  
+可以使用整合包（Python3.10+zhenxun+webui）
+
+文档地址：[整合包文档](https://hibikier.github.io/zhenxun_bot/beginner/)
+
+<details>
+<summary>下载地址</summary>
+
+- **百度云：**  
+  https://pan.baidu.com/s/1ph4yzx1vdNbkxm9VBKDdgQ?pwd=971j
+
+- **天翼云：**  
+  https://cloud.189.cn/web/share?code=jq67r2i2E7Fb  
+  访问码：8wxm
+
+- **Google Drive：**  
+  https://drive.google.com/file/d/1cc3Dqjk0x5hWGLNeMkrFwWl8BvsK6KfD/view?usp=drive_link
+
+</details>
 
 ## 🛠️ 简单部署
 
@@ -272,12 +294,12 @@ DB_URL 是基于 Tortoise ORM 的数据库连接字符串，用于指定项目�
 ## ❔ 需要帮助？
 
 > [!TIP]
-> 发起 [issue](https://github.com/HibiKier/zhenxun_bot/issues/new/choose) 前，我们希望你能够阅读过或者了解 [提问的智慧](https://github.com/ryanhanwu/How-To-Ask-Questions-The-Smart-Way/blob/main/README-zh_CN.md)
+> 发起 [issue](https://github.com/zhenxun-org/zhenxun_bot/issues/new/choose) 前，我们希望你能够阅读过或者了解 [提问的智慧](https://github.com/ryanhanwu/How-To-Ask-Questions-The-Smart-Way/blob/main/README-zh_CN.md)
 >
 > - 善用[搜索引擎](https://www.google.com/)
 > - 查阅 issue 中是否有类似问题，如果没有请按照模板发起 issue
 
-欢迎前往 [issue](https://github.com/HibiKier/zhenxun_bot/issues/new/choose) 中提出你遇到的问题，或者加入我们的 [用户群](https://qm.qq.com/q/mRNtLSl6uc) 或 [技术群](https://qm.qq.com/q/YYYt5rkMYc)与我们联系
+欢迎前往 [issue](https://github.com/zhenxun-org/zhenxun_bot/issues/new/choose) 中提出你遇到的问题，或者加入我们的 [用户群](https://qm.qq.com/q/mRNtLSl6uc) 或 [技术群](https://qm.qq.com/q/YYYt5rkMYc)与我们联系
 
 ## 🛠️ 进度追踪
 
@@ -286,6 +308,8 @@ Project [zhenxun_bot](https://github.com/users/HibiKier/projects/2)
 ## 🌟 特别感谢
 
 首席设计师：[酥酥/coldly-ss](https://github.com/coldly-ss)
+
+LOGO 设计：[FrostN0v0](https://github.com/FrostN0v0)
 
 ## 🙏 感谢
 
@@ -326,34 +350,68 @@ Project [zhenxun_bot](https://github.com/users/HibiKier/projects/2)
   <img src="https://contrib.rocks/image?repo=HibiKier/zhenxun_bot&max=1000" alt="contributors"/>
 </a>
 
-## 📸 WebUI 界面展示
+## 📸 WebUI 界面展示（仅展示默认主题下的 pc 端）
 
 <div style="display: flex; flex-wrap: wrap; justify-content: space-between;">
-  <div style="width: 48%; margin-bottom: 10px;">
-    <img src="./docs_image/webui00.png" alt="webui00" style="width: 100%; height: auto;">
-  </div>
-  <div style="width: 48%; margin-bottom: 10px;">
-    <img src="./docs_image/webui01.png" alt="webui01" style="width: 100%; height: auto;">
-  </div>
 
-  <div style="width: 48%; margin-bottom: 10px;">
-    <img src="./docs_image/webui02.png" alt="webui02" style="width: 100%; height: auto;">
-  </div>
-  <div style="width: 48%; margin-bottom: 10px;">
-    <img src="./docs_image/webui03.png" alt="webui03" style="width: 100%; height: auto;">
-  </div>
+#### 登录界面
 
-  <div style="width: 48%; margin-bottom: 10px;">
-    <img src="./docs_image/webui04.png" alt="webui04" style="width: 100%; height: auto;">
-  </div>
-  <div style="width: 48%; margin-bottom: 10px;">
-    <img src="./docs_image/webui05.png" alt="webui05" style="width: 100%; height: auto;">
-  </div>
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-login.jpg)
 
-  <div style="width: 48%; margin-bottom: 10px;">
-    <img src="./docs_image/webui06.png" alt="webui06" style="width: 100%; height: auto;">
-  </div>
-  <div style="width: 48%; margin-bottom: 10px;">
-    <img src="./docs_image/webui07.png" alt="webui07" style="width: 100%; height: auto;">
-  </div>
+#### API 设置
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-api.jpg)
+
+#### 仪表盘
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-dashboard.jpg)
+
+#### 仪表盘（展开）
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-dashboard1.jpg)
+
+#### 控制台
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-command.jpg)
+
+#### 插件列表
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-plugin.jpg)
+
+#### 插件列表（配置项）
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-plugin1.jpg)
+
+#### 插件商店
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-store.jpg)
+
+#### 好友/群组管理
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-manage.jpg)
+
+#### 请求管理
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-manage1.jpg)
+
+#### 数据库管理
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-database.jpg)
+
+### 文件管理
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-system.jpg)
+
+### 文件管理（文本查看）
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-system1.jpg)
+
+### 文件管理（图片查看）
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-system2.jpg)
+
+### 关于
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-about.jpg)
+
 </div>
