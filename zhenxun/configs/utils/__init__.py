@@ -91,7 +91,7 @@ class ConfigGroup(BaseModel):
     configs: dict[str, ConfigModel] = Field(default_factory=dict)
     """配置项列表"""
 
-    def get(self, c: str, default: T = None, *, build_model: bool = True) -> T | Any:
+    def get(self, c: str, default: Any = None, *, build_model: bool = True) -> Any:
         """
         获取配置项的值。如果指定了类型，会自动构建实例。
         """
@@ -257,10 +257,10 @@ class ConfigsManager:
         self,
         module: str,
         key: str,
-        default: T = None,
+        default: Any = None,
         *,
         build_model: bool = True,
-    ) -> T | Any:
+    ) -> Any:
         """
         获取指定配置值，自动构建Pydantic模型或其它类型实例。
         - 兼容Pydantic V1/V2。
