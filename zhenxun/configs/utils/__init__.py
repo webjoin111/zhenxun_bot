@@ -74,7 +74,7 @@ def parse_as(type_: type[T], obj: Any) -> T:
 
         return parse_obj_as(type_, obj)
     else:
-        from pydantic import TypeAdapter
+        from pydantic import TypeAdapter  # type: ignore
 
         return TypeAdapter(type_).validate_python(obj)
 
