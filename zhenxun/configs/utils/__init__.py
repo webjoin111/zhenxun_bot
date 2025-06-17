@@ -5,7 +5,7 @@ from typing import Any, TypeVar, get_args, get_origin
 
 import cattrs
 from nonebot.compat import model_dump
-from pydantic import VERSION, BaseModel, Field, TypeAdapter
+from pydantic import VERSION, BaseModel, Field
 from ruamel.yaml import YAML
 from ruamel.yaml.scanner import ScannerError
 

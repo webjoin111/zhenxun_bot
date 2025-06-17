@@ -74,8 +74,6 @@ def _generate_simple_config(exists_module: list[str]):
                 if _data.get(module) and k in _data[module].keys():
                     Config.set_config(module, k, _data[module][k])
                 if f"{module}:{k}".lower() in exists_module:
-                    if k == "TEST9":
-                        print()
                     _tmp_data[module][k] = Config.get_config(
                         module, k, build_model=False
                     )
