@@ -75,9 +75,23 @@ class AI:
     3. 高级方法：通过get_model_instance()直接访问
     """
 
-    def __init__(self, config: AIConfig | None = None):
-        """初始化AI服务"""
+    def __init__(
+        self, config: AIConfig | None = None, history: list[LLMMessage] | None = None
+    ):
+        """
+        初始化AI服务
+
+        Args:
+            config: AI 配置.
+            history: 可选的初始对话历史.
+        """
         self.config = config or AIConfig()
+        self.history = history or []
+
+    def clear_history(self):
+        """清空当前会话的历史记录"""
+        self.history = []
+        logger.info("AI session history cleared.")
 
     async def chat(
         self,
@@ -86,17 +100,19 @@ class AI:
         model: ModelName = None,
         **kwargs: Any,
     ) -> str:
-        """聊天对话 - 支持简单多模态输入"""
-        llm_messages: list[LLMMessage]
-
+        """
+        进行一次聊天对话。
+        此方法会自动使用和更新会话内的历史记录。
+        """
+        current_message: LLMMessage
         if isinstance(message, str):
-            llm_messages = [LLMMessage.user(message)]
+            current_message = LLMMessage.user(message)
         elif isinstance(message, list) and all(
             isinstance(part, LLMContentPart) for part in message
         ):
-            llm_messages = [LLMMessage.user(message)]
+            current_message = LLMMessage.user(message)
         elif isinstance(message, LLMMessage):
-            llm_messages = [message]
+            current_message = message
         else:
             raise LLMException(
                 f"AI.chat 不支持的消息类型: {type(message)}. "
@@ -105,9 +121,15 @@ class AI:
                 code=LLMErrorCode.API_REQUEST_FAILED,
             )
 
+        final_messages = [*self.history, current_message]
+
         response = await self._execute_generation(
-            llm_messages, model, "聊天失败", kwargs
+            final_messages, model, "聊天失败", kwargs
         )
+
+        self.history.append(current_message)
+        self.history.append(LLMMessage.assistant_text_response(response.text))
+
         return response.text
 
     async def code(
