@@ -178,41 +178,40 @@ def register_llm_configs():
     logger.info("注册 LLM 服务的配置项")
 
     llm_config = LLMConfig()
-    model_fields = LLMConfig.model_fields
 
     Config.add_plugin_config(
         AI_CONFIG_GROUP,
         "default_model_name",
         llm_config.default_model_name,
-        help=model_fields["default_model_name"].description,
+        help="LLM服务全局默认使用的模型名称 (格式: ProviderName/ModelName)",
         type=str,
     )
     Config.add_plugin_config(
         AI_CONFIG_GROUP,
         "proxy",
         llm_config.proxy,
-        help=model_fields["proxy"].description,
+        help="LLM服务请求使用的网络代理，例如 http://127.0.0.1:7890",
         type=str,
     )
     Config.add_plugin_config(
         AI_CONFIG_GROUP,
         "timeout",
         llm_config.timeout,
-        help=model_fields["timeout"].description,
+        help="LLM服务API请求超时时间（秒）",
         type=int,
     )
     Config.add_plugin_config(
         AI_CONFIG_GROUP,
         "max_retries_llm",
         llm_config.max_retries_llm,
-        help=model_fields["max_retries_llm"].description,
+        help="LLM服务请求失败时的最大重试次数",
         type=int,
     )
     Config.add_plugin_config(
         AI_CONFIG_GROUP,
         "retry_delay_llm",
         llm_config.retry_delay_llm,
-        help=model_fields["retry_delay_llm"].description,
+        help="LLM服务请求重试的基础延迟时间（秒）",
         type=int,
     )
 
@@ -220,7 +219,7 @@ def register_llm_configs():
         AI_CONFIG_GROUP,
         PROVIDERS_CONFIG_KEY,
         get_default_providers(),
-        help=model_fields["providers"].description,
+        help="配置多个 AI 服务提供商及其模型信息",
         default_value=[],
         type=list[ProviderConfig],
     )
