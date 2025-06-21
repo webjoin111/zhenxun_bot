@@ -287,8 +287,10 @@ class ConfigsManager:
             try:
                 return config.arg_parser(value_to_process)
             except Exception as e:
-                logger.warning(
-                    f"arg_parser 执行失败 (key: {key})，将尝试其他方法。", e=e
+                logger.debug(
+                    f"配置项类型转换 MODULE: [<u><y>{module}</y></u>]"
+                    f" | KEY: [<u><y>{key}</y></u>] 将使用原始值",
+                    e=e,
                 )
 
         if config.type:
