@@ -1,14 +1,20 @@
+import nonebot
 from nonebot.utils import is_coroutine_callable
 from tortoise import Tortoise
 from tortoise.connection import connections
 from tortoise.models import Model as Model_
 
 from zhenxun.configs.config import BotConfig
+from zhenxun.utils.exception import HookPriorityException
+from zhenxun.utils.manager.priority_manager import PriorityLifecycle
 
 from .log import logger
 
 SCRIPT_METHOD = []
 MODELS: list[str] = []
+
+
+driver = nonebot.get_driver()
 
 
 class Model(Model_):
@@ -26,7 +32,7 @@ class Model(Model_):
             SCRIPT_METHOD.append((cls.__module__, func))
 
 
-class DbUrlIsNode(Exception):
+class DbUrlIsNode(HookPriorityException):
     """
     数据库链接地址为空
     """
@@ -42,32 +48,25 @@ class DbConnectError(Exception):
     pass
 
 
+@PriorityLifecycle.on_startup(priority=1)
 async def init():
     if not BotConfig.db_url:
-        raise DbUrlIsNode("数据库配置为空，请在.env.dev中配置DB_URL...")
+        # raise DbUrlIsNode("数据库配置为空，请在.env.dev中配置DB_URL...")
+        error = f"""
+**********************************************************************
+🌟 **************************** 配置为空 ************************* 🌟
+🚀 请打开 WebUi 进行基础配置 🚀
+🌐 配置地址：http://{driver.config.host}:{driver.config.port}/#/configure 🌐
+***********************************************************************
+***********************************************************************
+        """
+        raise DbUrlIsNode("\n" + error.strip())
     try:
-        # 解析数据库URL
-        db_type = BotConfig.get_sql_type()
-
-        # 添加连接池配置和超时设置
-        if db_type == "postgres":
-            # PostgreSQL连接池配置
-            # 使用更详细的配置方式
-            await Tortoise.init(
-                db_url=BotConfig.db_url,
-                modules={"models": MODELS},
-                timezone="Asia/Shanghai",
-            )
-
-            # 添加连接监控
-            logger.debug("数据库连接已初始化，已启用连接监控")
-        else:
-            # 其他数据库类型使用默认配置
-            await Tortoise.init(
-                db_url=BotConfig.db_url,
-                modules={"models": MODELS},
-                timezone="Asia/Shanghai",
-            )
+        await Tortoise.init(
+            db_url=BotConfig.db_url,
+            modules={"models": MODELS},
+            timezone="Asia/Shanghai",
+        )
         if SCRIPT_METHOD:
             db = Tortoise.get_connection("default")
             logger.debug(

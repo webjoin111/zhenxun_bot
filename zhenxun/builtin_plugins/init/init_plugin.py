@@ -20,6 +20,7 @@ from zhenxun.utils.enum import (
     PluginLimitType,
     PluginType,
 )
+from zhenxun.utils.manager.priority_manager import PriorityLifecycle
 
 from .manager import manager
 
@@ -95,35 +96,11 @@ async def _handle_setting(
         )
 
 
-async def fix_db_schema():
-    """修复数据库架构问题"""
-    from tortoise.connection import connections
-
-    conn = connections.get("default")
-    # 检查是否存在superuser列并处理
-    try:
-        await conn.execute_query("""
-            DO $$
-            BEGIN
-                IF EXISTS (SELECT 1 FROM information_schema.columns
-                        WHERE table_name='plugin_info' AND column_name='superuser') THEN
-                    ALTER TABLE plugin_info DROP COLUMN superuser;
-                END IF;
-            END $$;
-        """)
-        logger.info("数据库架构检查完成")
-    except Exception as e:
-        logger.error(f"数据库架构修复失败: {e}")
-
-
-@driver.on_startup
+@PriorityLifecycle.on_startup(priority=5)
 async def _():
     """
     初始化插件数据配置
     """
-    # 修复数据库架构问题
-    await fix_db_schema()
-
     plugin_list: list[PluginInfo] = []
     limit_list: list[PluginLimit] = []
     module2id = {}
@@ -140,42 +117,47 @@ async def _():
             create_list.append(plugin)
         else:
             plugin.id = module2id[plugin.module_path]
-            # 确保只更新应该来自插件元数据的字段
             await plugin.save(
                 update_fields=[
                     "name",
                     "author",
                     "version",
-                    "plugin_type",
                     "admin_level",
+                    "plugin_type",
                     "is_show",
-                    "ignore_prompt",
-                    # 移除了 menu_type
-                    # 确保 level, default_status, limit_superuser,
-                    # cost_gold, impression, status, block_type 等用户配置不在此列表
                 ]
             )
-
-            # # 验证更新是否成功
-            # updated_plugin = await PluginInfo.get(id=plugin.id)
-            # if updated_plugin.menu_type != plugin.menu_type:
-            #     logger.warning(
-            #         f"插件 {plugin.name} 的menu_type更新失败: "
-            #         f"期望值 '{plugin.menu_type}', "
-            #         f"实际值 '{updated_plugin.menu_type}'"
-            #     )
-            #     # 尝试单独更新menu_type
-            #     updated_plugin.menu_type = plugin.menu_type
-            #     await updated_plugin.save(update_fields=["menu_type"])
-
             update_list.append(plugin)
-
     if create_list:
         await PluginInfo.bulk_create(create_list, 10)
-
-    # 对于批量更新操作，逐个更新替代批量操作
-    # 这里不使用被注释的批量更新代码，而是在上面的循环中已经处理
-
+    # if update_list:
+    #     # TODO: 批量更新无法更新plugin_type: tortoise.exceptions.OperationalError:
+    #           column "superuser" does not exist
+    #     pass
+    # await PluginInfo.bulk_update(
+    #     update_list,
+    #     ["name", "author", "version", "admin_level", "plugin_type"],
+    #     10,
+    # )
+    # for limit in limit_list:
+    #     limit_create = []
+    #     plugins = []
+    #     if module_path_list := [limit.module_path for limit in limit_list]:
+    #         plugins = await PluginInfo.get_plugins(module_path__in=module_path_list)
+    #     if plugins:
+    #         for limit in limit_list:
+    #             if lmt := [p for p in plugins if p.module_path == limit.module_path]:
+    #                 plugin = lmt[0]
+    #                 """不在数据库中"""
+    #                 limit_type_list = [
+    #                     _limit.limit_type
+    #                     for _limit in await plugin.plugin_limit.all()  # type: ignore
+    #                 ]
+    #                 if limit.limit_type not in limit_type_list:
+    #                     limit.plugin = plugin
+    #                     limit_create.append(limit)
+    #     if limit_create:
+    #         await PluginLimit.bulk_create(limit_create, 10)
     await data_migration()
     await PluginInfo.filter(module_path__in=load_plugin).update(load_status=True)
     await PluginInfo.filter(module_path__not_in=load_plugin).update(load_status=False)
@@ -260,7 +242,6 @@ async def limit_migration():
                         limit.cd = _limit["cd"]
                     if limit.watch_type == PluginLimitType.COUNT:
                         limit.max_count = _limit["count"]
-                    # 改为逐个保存
                     await limit.save()
                     update_list.append(limit)
             for s in [e for e in exits_limit if e not in _not_create_type]:
@@ -295,7 +276,8 @@ async def limit_migration():
                             max_count=_limit.get("max_count"),
                         )
                     )
-        # 注释掉批量更新，使用单个保存方式
+        # TODO: 批量错误 tortoise.exceptions.OperationalError:
+        # syntax error at or near "ALL"
         # if update_list:
         #     await PluginLimit.bulk_update(
         #         update_list,
@@ -336,28 +318,17 @@ async def plugin_migration():
                         )
                         plugin.menu_type = plugin_data.get("plugin_type", ["功能"])[0]
                         plugin.cost_gold = plugin_data.get("cost_gold", 0)
-                        # 逐个保存替代批量更新
-                        await plugin.save(
-                            update_fields=[
-                                "default_status",
-                                "level",
-                                "limit_superuser",
-                                "menu_type",
-                                "cost_gold",
-                            ]
-                        )
-                # 注释掉批量更新，已在循环中处理
-                # await PluginInfo.bulk_update(
-                #     plugins,
-                #     [
-                #         "default_status",
-                #         "level",
-                #         "limit_superuser",
-                #         "menu_type",
-                #         "cost_gold",
-                #     ],
-                #     10,
-                # )
+                await PluginInfo.bulk_update(
+                    plugins,
+                    [
+                        "default_status",
+                        "level",
+                        "limit_superuser",
+                        "menu_type",
+                        "cost_gold",
+                    ],
+                    10,
+                )
         setting_file.unlink()
         logger.info("迁移插件setting数据完成!")
     if plugin_file.exists():
@@ -377,9 +348,9 @@ async def plugin_migration():
                         elif get_block == "group":
                             block_type = BlockType.GROUP
                         plugin.block_type = block_type
-                        # 逐个保存替代批量更新
                         await plugin.save(update_fields=["status", "block_type"])
-                # 注释掉批量更新，已在循环中处理
+                # TODO: tortoise.exceptions.OperationalError: syntax error at
+                # or near "ALL"
                 # await PluginInfo.bulk_update(plugins, ["status", "block_type"], 10)
         plugin_file.unlink()
         logger.info("迁移插件数据完成!")
@@ -438,10 +409,9 @@ async def group_migration():
                             )
                         )
                 if update_list:
-                    # 使用批量更新，因为这里的字段类型不会导致SQL错误
                     await GroupConsole.bulk_update(
                         update_list,
-                        ["is_super", "status", "block_plugin", "block_task", "level"],
+                        ["is_super", "status", "block_plugin", "block_task"],
                         10,
                     )
                 if create_list:
