@@ -68,7 +68,7 @@ async def _(bot: Bot, event: GroupIncreaseNoticeEvent):
 
 @scheduler.scheduled_job(
     "interval",
-    minutes=5,
+    minutes=35,
 )
 async def _():
     for bot in nonebot.get_bots().values():
