@@ -14,6 +14,7 @@ from zhenxun.services.log import logger
 from .config import CommonOverrides, LLMGenerationConfig
 from .config.providers import get_ai_config
 from .manager import get_global_default_model_name, get_model_instance
+from .tools import tool_registry
 from .types import (
     EmbeddingTaskType,
     LLMContentPart,
@@ -221,59 +222,52 @@ class AI:
         *,
         instruction: str = "",
         model: ModelName = None,
-        tools: list[dict[str, Any]] | None = None,
+        use_tools: list[str] | None = None,
         tool_config: dict[str, Any] | None = None,
+        activated_tools: list[LLMTool] | None = None,
+        history: list[LLMMessage] | None = None,
         **kwargs: Any,
-    ) -> str | LLMResponse:
+    ) -> LLMResponse:
         """
         内容分析 - 接收 UniMessage 物件进行多模态分析和工具呼叫。
-        这是处理复杂互动的主要方法。
         """
         content_parts = await unimsg_to_llm_parts(message)
 
         final_messages: list[LLMMessage] = []
+        if history:
+            final_messages.extend(history)
+
         if instruction:
-            final_messages.append(LLMMessage.system(instruction))
+            if not any(msg.role == "system" for msg in final_messages):
+                final_messages.insert(0, LLMMessage.system(instruction))
 
         if not content_parts:
-            if instruction:
+            if instruction and not history:
                 final_messages.append(LLMMessage.user(instruction))
-            else:
+            elif not history:
                 raise LLMException(
                     "分析内容为空或无法处理。", code=LLMErrorCode.API_REQUEST_FAILED
                 )
         else:
             final_messages.append(LLMMessage.user(content_parts))
 
-        llm_tools = None
-        if tools:
-            llm_tools = []
-            for tool_dict in tools:
-                if isinstance(tool_dict, dict):
-                    if "name" in tool_dict and "description" in tool_dict:
-                        llm_tool = LLMTool(
-                            type="function",
-                            function={
-                                "name": tool_dict["name"],
-                                "description": tool_dict["description"],
-                                "parameters": tool_dict.get("parameters", {}),
-                            },
-                        )
-                        llm_tools.append(llm_tool)
-                    else:
-                        llm_tools.append(LLMTool(**tool_dict))
-                else:
-                    llm_tools.append(tool_dict)
+        llm_tools: list[LLMTool] | None = activated_tools
+        if not llm_tools and use_tools:
+            try:
+                llm_tools = tool_registry.get_tools(use_tools)
+                logger.debug(f"已从注册表加载工具定义: {use_tools}")
+            except ValueError as e:
+                raise LLMException(
+                    f"加载工具定义失败: {e}",
+                    code=LLMErrorCode.CONFIGURATION_ERROR,
+                    cause=e,
+                )
 
         tool_choice = None
         if tool_config:
             mode = tool_config.get("mode", "auto")
-            if mode == "auto":
-                tool_choice = "auto"
-            elif mode == "any":
-                tool_choice = "any"
-            elif mode == "none":
-                tool_choice = "none"
+            if mode in ["auto", "any", "none"]:
+                tool_choice = mode
 
         response = await self._execute_generation(
             final_messages,
@@ -284,9 +278,7 @@ class AI:
             tool_choice=tool_choice,
         )
 
-        if response.tool_calls:
-            return response
-        return response.text
+        return response
 
     async def _execute_generation(
         self,
@@ -298,7 +290,7 @@ class AI:
         tool_choice: str | dict[str, Any] | None = None,
         base_config: LLMGenerationConfig | None = None,
     ) -> LLMResponse:
-        """通用的生成执行方法，封装重复的模型获取、配置合并和异常处理逻辑"""
+        """通用的生成执行方法，封装模型获取和单次API调用"""
         try:
             resolved_model_name = self._resolve_model_name(
                 model_name or self.config.model
@@ -311,7 +303,9 @@ class AI:
                 resolved_model_name, override_config=final_config_dict
             ) as model_instance:
                 return await model_instance.generate_response(
-                    messages, tools=llm_tools, tool_choice=tool_choice
+                    messages,
+                    tools=llm_tools,
+                    tool_choice=tool_choice,
                 )
         except LLMException:
             raise
@@ -454,7 +448,7 @@ async def analyze(
     *,
     instruction: str = "",
     model: ModelName = None,
-    tools: list[dict[str, Any]] | None = None,
+    use_tools: list[str] | None = None,
     tool_config: dict[str, Any] | None = None,
     **kwargs: Any,
 ) -> str | LLMResponse:
@@ -464,23 +458,10 @@ async def analyze(
         message,
         instruction=instruction,
         model=model,
-        tools=tools,
+        use_tools=use_tools,
         tool_config=tool_config,
         **kwargs,
     )
-
-
-async def analyze_with_images(
-    text: str,
-    images: list[str | Path | bytes] | str | Path | bytes,
-    *,
-    instruction: str = "",
-    model: ModelName = None,
-    **kwargs: Any,
-) -> str | LLMResponse:
-    """图片分析便捷函数"""
-    message = create_multimodal_message(text=text, images=images)
-    return await analyze(message, instruction=instruction, model=model, **kwargs)
 
 
 async def analyze_multimodal(
@@ -528,3 +509,87 @@ async def embed(
     """文本嵌入便捷函数"""
     ai = AI()
     return await ai.embed(texts, model=model, task_type=task_type, **kwargs)
+
+
+async def pipeline_chat(
+    message: UniMessage | str | list[LLMContentPart],
+    model_chain: list[ModelName],
+    *,
+    initial_instruction: str = "",
+    final_instruction: str = "",
+    **kwargs: Any,
+) -> LLMResponse:
+    """
+    AI模型链式调用，前一个模型的输出作为下一个模型的输入。
+
+    Args:
+        message: 初始输入消息（支持多模态）
+        model_chain: 模型名称列表
+        initial_instruction: 第一个模型的系统指令
+        final_instruction: 最后一个模型的系统指令
+        **kwargs: 传递给模型实例的其他参数
+
+    Returns:
+        LLMResponse: 最后一个模型的响应结果
+    """
+    if not model_chain:
+        raise ValueError("模型链`model_chain`不能为空。")
+
+    current_content: str | list[LLMContentPart]
+    if isinstance(message, str):
+        current_content = message
+    elif isinstance(message, list):
+        current_content = message
+    else:
+        current_content = await unimsg_to_llm_parts(message)
+
+    final_response: LLMResponse | None = None
+
+    for i, model_name in enumerate(model_chain):
+        if not model_name:
+            raise ValueError(f"模型链中第 {i + 1} 个模型名称为空。")
+
+        is_first_step = i == 0
+        is_last_step = i == len(model_chain) - 1
+
+        messages_for_step: list[LLMMessage] = []
+        instruction_for_step = ""
+        if is_first_step and initial_instruction:
+            instruction_for_step = initial_instruction
+        elif is_last_step and final_instruction:
+            instruction_for_step = final_instruction
+
+        if instruction_for_step:
+            messages_for_step.append(LLMMessage.system(instruction_for_step))
+
+        messages_for_step.append(LLMMessage.user(current_content))
+
+        logger.info(
+            f"Pipeline Step [{i + 1}/{len(model_chain)}]: "
+            f"使用模型 '{model_name}' 进行处理..."
+        )
+        try:
+            async with await get_model_instance(model_name, **kwargs) as model:
+                response = await model.generate_response(messages_for_step)
+            final_response = response
+            current_content = response.text.strip()
+            if not current_content and not is_last_step:
+                logger.warning(
+                    f"模型 '{model_name}' 在中间步骤返回了空内容，流水线可能无法继续。"
+                )
+                break
+
+        except Exception as e:
+            logger.error(f"在模型链的第 {i + 1} 步 ('{model_name}') 出错: {e}", e=e)
+            raise LLMException(
+                f"流水线在模型 '{model_name}' 处执行失败: {e}",
+                code=LLMErrorCode.GENERATION_FAILED,
+                cause=e,
+            )
+
+    if final_response is None:
+        raise LLMException(
+            "AI流水线未能产生任何响应。", code=LLMErrorCode.GENERATION_FAILED
+        )
+
+    return final_response

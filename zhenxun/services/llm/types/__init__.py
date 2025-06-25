@@ -26,6 +26,7 @@ from .models import (
     ToolMetadata,
     UsageInfo,
 )
+from .protocols import MCPCompatible
 
 __all__ = [
     "EmbeddingTaskType",
@@ -41,6 +42,7 @@ __all__ = [
     "LLMTool",
     "LLMToolCall",
     "LLMToolFunction",
+    "MCPCompatible",
     "ModelDetail",
     "ModelInfo",
     "ModelName",

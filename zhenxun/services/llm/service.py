@@ -5,7 +5,7 @@ LLM 模型实现类
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
 import json
 from typing import Any
 
@@ -30,6 +30,7 @@ from .types import (
     ModelDetail,
     ProviderConfig,
 )
+from .utils import _sanitize_request_body_for_logging
 
 
 class LLMModelBase(ABC):
@@ -154,6 +155,17 @@ class LLMModel(LLMModelBase):
                 task_type=task_type,
             )
 
+            logger.info(
+                f"🔤 发起嵌入请求 - 模型: {self.provider_name}/{self.model_name}"
+            )
+            logger.debug(f"📡 嵌入请求URL: {request_data.url}")
+            masked_key = (
+                f"{api_key[:8]}...{api_key[-4:] if len(api_key) > 12 else '***'}"
+            )
+            logger.debug(f"🔑 API密钥: {masked_key}")
+            logger.debug(f"📋 嵌入请求头: {dict(request_data.headers)}")
+            logger.debug(f"📝 嵌入文本数量: {len(texts)}")
+
             http_response = await http_client.post(
                 request_data.url,
                 headers=request_data.headers,
@@ -218,7 +230,7 @@ class LLMModel(LLMModelBase):
         adapter,
         messages: list[LLMMessage],
         config: LLMGenerationConfig | None,
-        tools_dict: list[dict[str, Any]] | None,
+        tools: list[LLMTool] | None,
         tool_choice: str | dict[str, Any] | None,
         http_client: LLMHttpClient,
     ):
@@ -233,7 +245,7 @@ class LLMModel(LLMModelBase):
             adapter,
             messages,
             config,
-            tools_dict,
+            tools,
             tool_choice,
             http_client,
             retry_config=retry_config,
@@ -246,7 +258,7 @@ class LLMModel(LLMModelBase):
         adapter,
         messages: list[LLMMessage],
         config: LLMGenerationConfig | None,
-        tools_dict: list[dict[str, Any]] | None,
+        tools: list[LLMTool] | None,
         tool_choice: str | dict[str, Any] | None,
         http_client: LLMHttpClient,
         failed_keys: set[str] | None = None,
@@ -255,14 +267,28 @@ class LLMModel(LLMModelBase):
         api_key = await self._select_api_key(failed_keys)
 
         try:
-            request_data = adapter.prepare_advanced_request(
+            request_data = await adapter.prepare_advanced_request(
                 model=self,
                 api_key=api_key,
                 messages=messages,
                 config=config,
-                tools=tools_dict,
+                tools=tools,
                 tool_choice=tool_choice,
             )
+
+            logger.info(
+                f"🌐 发起LLM请求 - 模型: {self.provider_name}/{self.model_name}"
+            )
+            logger.debug(f"📡 请求URL: {request_data.url}")
+            masked_key = (
+                f"{api_key[:8]}...{api_key[-4:] if len(api_key) > 12 else '***'}"
+            )
+            logger.debug(f"🔑 API密钥: {masked_key}")
+            logger.debug(f"📋 请求头: {dict(request_data.headers)}")
+
+            sanitized_body = _sanitize_request_body_for_logging(request_data.body)
+            request_body_str = json.dumps(sanitized_body, ensure_ascii=False, indent=2)
+            logger.debug(f"📦 请求体: {request_body_str}")
 
             http_response = await http_client.post(
                 request_data.url,
@@ -270,11 +296,15 @@ class LLMModel(LLMModelBase):
                 json=request_data.body,
             )
 
+            logger.debug(f"📥 响应状态码: {http_response.status_code}")
+            logger.debug(f"📄 响应头: {dict(http_response.headers)}")
+
             if http_response.status_code != 200:
                 error_text = http_response.text
                 logger.error(
-                    f"HTTP请求失败: {http_response.status_code} - {error_text}"
+                    f"❌ HTTP请求失败: {http_response.status_code} - {error_text}"
                 )
+                logger.debug(f"💥 完整错误响应: {error_text}")
 
                 await self.key_store.record_failure(api_key, http_response.status_code)
 
@@ -299,6 +329,11 @@ class LLMModel(LLMModelBase):
 
             try:
                 response_json = http_response.json()
+                response_json_str = json.dumps(
+                    response_json, ensure_ascii=False, indent=2
+                )
+                logger.debug(f"📋 响应JSON: {response_json_str}")
+
                 response_data = adapter.parse_response(
                     model=self,
                     response_json=response_json,
@@ -347,6 +382,10 @@ class LLMModel(LLMModelBase):
                     )
 
             await self.key_store.record_success(api_key)
+            logger.debug(f"✅ API密钥使用成功: {masked_key}")
+            logger.info(
+                f"🎯 LLM响应解析完成 - 文本长度: {len(llm_response.text or '')}"
+            )
 
             return llm_response
 
@@ -439,11 +478,11 @@ class LLMModel(LLMModelBase):
         config: LLMGenerationConfig | None = None,
         tools: list[LLMTool] | None = None,
         tool_choice: str | dict[str, Any] | None = None,
-        tool_executor: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
-        max_tool_iterations: int = 5,
         **kwargs: Any,
     ) -> LLMResponse:
-        """生成高级响应 - 实现完整的工具调用循环"""
+        """
+        生成高级响应。
+        """
         self._check_not_closed()
 
         from .adapters import get_adapter_for_api_type
@@ -468,109 +507,43 @@ class LLMModel(LLMModelBase):
             merged_dict.update(config.to_dict())
             final_request_config = LLMGenerationConfig(**merged_dict)
 
-        tools_dict: list[dict[str, Any]] | None = None
-        if tools:
-            tools_dict = []
-            for tool in tools:
-                if hasattr(tool, "model_dump"):
-                    model_dump_func = getattr(tool, "model_dump")
-                    tools_dict.append(model_dump_func(exclude_none=True))
-                elif isinstance(tool, dict):
-                    tools_dict.append(tool)
-                else:
-                    try:
-                        tools_dict.append(dict(tool))
-                    except (TypeError, ValueError):
-                        logger.warning(f"工具 '{tool}' 无法转换为字典，已忽略。")
-
         http_client = await self._get_http_client()
-        current_messages = list(messages)
 
-        for iteration in range(max_tool_iterations):
-            logger.debug(f"工具调用循环迭代: {iteration + 1}/{max_tool_iterations}")
+        async with AsyncExitStack() as stack:
+            activated_tools = []
+            if tools:
+                for tool in tools:
+                    if tool.type == "mcp" and callable(tool.mcp_session):
+                        func_obj = getattr(tool.mcp_session, "func", None)
+                        tool_name = (
+                            getattr(func_obj, "__name__", "unknown")
+                            if func_obj
+                            else "unknown"
+                        )
+                        logger.debug(f"正在激活 MCP 工具会话: {tool_name}")
+
+                        active_session = await stack.enter_async_context(
+                            tool.mcp_session()
+                        )
+
+                        activated_tools.append(
+                            LLMTool.from_mcp_session(
+                                session=active_session, annotations=tool.annotations
+                            )
+                        )
+                    else:
+                        activated_tools.append(tool)
 
             llm_response = await self._execute_with_smart_retry(
                 adapter,
-                current_messages,
+                messages,
                 final_request_config,
-                tools_dict if iteration == 0 else None,
-                tool_choice if iteration == 0 else None,
+                activated_tools if activated_tools else None,
+                tool_choice,
                 http_client,
             )
 
-            response_tool_calls = llm_response.tool_calls or []
-
-            if not response_tool_calls or not tool_executor:
-                logger.debug("模型未请求工具调用，或未提供工具执行器。返回当前响应。")
-                return llm_response
-
-            logger.info(f"模型请求执行 {len(response_tool_calls)} 个工具。")
-
-            assistant_message_content = llm_response.text if llm_response.text else ""
-            current_messages.append(
-                LLMMessage.assistant_tool_calls(
-                    content=assistant_message_content, tool_calls=response_tool_calls
-                )
-            )
-
-            tool_response_messages: list[LLMMessage] = []
-            for tool_call in response_tool_calls:
-                tool_name = tool_call.function.name
-                try:
-                    tool_args_dict = json.loads(tool_call.function.arguments)
-                    logger.debug(f"执行工具: {tool_name}，参数: {tool_args_dict}")
-
-                    tool_result = await tool_executor(tool_name, tool_args_dict)
-                    logger.debug(
-                        f"工具 '{tool_name}' 执行结果: {str(tool_result)[:200]}..."
-                    )
-
-                    tool_response_messages.append(
-                        LLMMessage.tool_response(
-                            tool_call_id=tool_call.id,
-                            function_name=tool_name,
-                            result=tool_result,
-                        )
-                    )
-                except json.JSONDecodeError as e:
-                    logger.error(
-                        f"工具 '{tool_name}' 参数JSON解析失败: "
-                        f"{tool_call.function.arguments}, 错误: {e}"
-                    )
-                    tool_response_messages.append(
-                        LLMMessage.tool_response(
-                            tool_call_id=tool_call.id,
-                            function_name=tool_name,
-                            result={
-                                "error": "Argument JSON parsing failed",
-                                "details": str(e),
-                            },
-                        )
-                    )
-                except Exception as e:
-                    logger.error(f"执行工具 '{tool_name}' 失败: {e}", e=e)
-                    tool_response_messages.append(
-                        LLMMessage.tool_response(
-                            tool_call_id=tool_call.id,
-                            function_name=tool_name,
-                            result={
-                                "error": "Tool execution failed",
-                                "details": str(e),
-                            },
-                        )
-                    )
-
-            current_messages.extend(tool_response_messages)
-
-        logger.warning(f"已达到最大工具调用迭代次数 ({max_tool_iterations})。")
-        raise LLMException(
-            "已达到最大工具调用迭代次数，但模型仍在请求工具调用或未提供最终文本回复。",
-            code=LLMErrorCode.GENERATION_FAILED,
-            details={
-                "iterations": max_tool_iterations,
-                "last_messages": current_messages[-2:],
-            },
-        )
+        return llm_response
 
     async def generate_embeddings(
         self,

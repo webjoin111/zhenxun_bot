@@ -1,15 +1,16 @@
 """
 OpenAI API 适配器
 
-支持 OpenAI、DeepSeek 和其他 OpenAI 兼容的 API 服务。
+支持 OpenAI、DeepSeek、智谱AI 和其他 OpenAI 兼容的 API 服务。
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .base import OpenAICompatAdapter, RequestData
 
 if TYPE_CHECKING:
     from ..service import LLMModel
+    from ..types.enums import EmbeddingTaskType
 
 
 class OpenAIAdapter(OpenAICompatAdapter):
@@ -21,37 +22,46 @@ class OpenAIAdapter(OpenAICompatAdapter):
 
     @property
     def supported_api_types(self) -> list[str]:
-        return ["openai", "deepseek", "general_openai_compat"]
+        return ["openai", "deepseek", "zhipu", "general_openai_compat", "ark"]
 
-    def get_chat_endpoint(self) -> str:
+    def get_chat_endpoint(self, model: "LLMModel") -> str:
         """返回聊天完成端点"""
+        if model.api_type == "ark":
+            return "/api/v3/chat/completions"
+        if model.api_type == "zhipu":
+            return "/api/paas/v4/chat/completions"
         return "/v1/chat/completions"
 
     def get_embedding_endpoint(self) -> str:
         """返回嵌入端点"""
         return "/v1/embeddings"
 
-    def prepare_simple_request(
+    def prepare_embedding_request(
         self,
         model: "LLMModel",
         api_key: str,
-        prompt: str,
-        history: list[dict[str, str]] | None = None,
+        texts: list[str],
+        task_type: "EmbeddingTaskType | str",
+        **kwargs: Any,
     ) -> RequestData:
-        """准备简单文本生成请求 - OpenAI优化实现"""
-        url = self.get_api_url(model, self.get_chat_endpoint())
-        headers = self.get_base_headers(api_key)
+        """准备嵌入请求 - OpenAI兼容格式"""
+        _ = task_type
 
-        messages = []
-        if history:
-            messages.extend(history)
-        messages.append({"role": "user", "content": prompt})
+        # 根据 api_type 动态选择端点
+        if model.api_type == "zhipu":
+            endpoint = "/v4/embeddings"
+        else:
+            endpoint = self.get_embedding_endpoint()
+
+        url = self.get_api_url(model, endpoint)
+        headers = self.get_base_headers(api_key)
 
         body = {
             "model": model.model_name,
-            "messages": messages,
+            "input": texts,
         }
 
-        body = self.apply_config_override(model, body)
+        if kwargs:
+            body.update(kwargs)
 
         return RequestData(url=url, headers=headers, body=body)
