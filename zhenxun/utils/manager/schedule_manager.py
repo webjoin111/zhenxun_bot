@@ -421,7 +421,7 @@ class SchedulerManager:
             if not is_valid:
                 return False, str(result)
 
-            schedule.job_kwargs = result # type: ignore
+            schedule.job_kwargs = result  # type: ignore
             updated_fields.append("job_kwargs")
 
         if not updated_fields:
