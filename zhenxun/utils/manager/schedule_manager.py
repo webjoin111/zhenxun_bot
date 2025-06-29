@@ -236,8 +236,17 @@ class SchedulerManager:
             return False, f"插件 '{plugin_name}' 的参数模型配置错误"
 
         try:
-            validated_model = params_model.model_validate(job_kwargs)
-            return True, validated_model.model_dump()
+            model_validate = getattr(params_model, "model_validate", None)
+            if not model_validate:
+                return False, f"插件 '{plugin_name}' 的参数模型不支持验证"
+
+            validated_model = model_validate(job_kwargs)
+
+            model_dump = getattr(validated_model, "model_dump", None)
+            if not model_dump:
+                return False, f"插件 '{plugin_name}' 的参数模型不支持导出"
+
+            return True, model_dump()
         except ValidationError as e:
             errors = [f"  - {err['loc'][0]}: {err['msg']}" for err in e.errors()]
             error_str = "\n".join(errors)

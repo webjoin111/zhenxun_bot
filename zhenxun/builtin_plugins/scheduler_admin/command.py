@@ -501,8 +501,23 @@ async def _(
             )
 
         try:
-            validated_model = params_model.model_validate(raw_kwargs)
-            job_kwargs = validated_model.model_dump()
+            model_validate = getattr(params_model, "model_validate", None)
+            if not model_validate:
+                await schedule_cmd.finish(
+                    f"插件 '{plugin_name}' 的参数模型不支持验证。"
+                )
+                return
+
+            validated_model = model_validate(raw_kwargs)
+
+            model_dump = getattr(validated_model, "model_dump", None)
+            if not model_dump:
+                await schedule_cmd.finish(
+                    f"插件 '{plugin_name}' 的参数模型不支持导出。"
+                )
+                return
+
+            job_kwargs = model_dump()
         except ValidationError as e:
             errors = [f"  - {err['loc'][0]}: {err['msg']}" for err in e.errors()]
             error_str = "\n".join(errors)
@@ -740,8 +755,23 @@ async def _(
             )
 
         try:
-            validated_model = params_model.model_validate(raw_kwargs)
-            job_kwargs = validated_model.model_dump(exclude_unset=True)
+            model_validate = getattr(params_model, "model_validate", None)
+            if not model_validate:
+                await schedule_cmd.finish(
+                    f"插件 '{schedule.plugin_name}' 的参数模型不支持验证。"
+                )
+                return
+
+            validated_model = model_validate(raw_kwargs)
+
+            model_dump = getattr(validated_model, "model_dump", None)
+            if not model_dump:
+                await schedule_cmd.finish(
+                    f"插件 '{schedule.plugin_name}' 的参数模型不支持导出。"
+                )
+                return
+
+            job_kwargs = model_dump(exclude_unset=True)
         except ValidationError as e:
             errors = [f"  - {err['loc'][0]}: {err['msg']}" for err in e.errors()]
             error_str = "\n".join(errors)
@@ -773,10 +803,11 @@ async def _():
             message_parts.append(f"{i}. {plugin_name} - ⚠️ 参数模型配置错误")
             continue
 
-        if params_model.model_fields:
+        model_fields = getattr(params_model, "model_fields", None)
+        if model_fields:
             param_info = ", ".join(
                 f"{field_name}({_get_type_name(field_info.annotation)})"
-                for field_name, field_info in params_model.model_fields.items()
+                for field_name, field_info in model_fields.items()
             )
             message_parts.append(f"{i}. {plugin_name} - 参数: {param_info}")
         else:
