@@ -218,7 +218,7 @@ class AI:
 
     async def analyze(
         self,
-        message: UniMessage,
+        message: UniMessage | None,
         *,
         instruction: str = "",
         model: ModelName = None,
@@ -231,7 +231,7 @@ class AI:
         """
         内容分析 - 接收 UniMessage 物件进行多模态分析和工具呼叫。
         """
-        content_parts = await unimsg_to_llm_parts(message)
+        content_parts = await unimsg_to_llm_parts(message or UniMessage())
 
         final_messages: list[LLMMessage] = []
         if history:
@@ -444,7 +444,7 @@ async def search(
 
 
 async def analyze(
-    message: UniMessage,
+    message: UniMessage | None,
     *,
     instruction: str = "",
     model: ModelName = None,
