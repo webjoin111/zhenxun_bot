@@ -129,19 +129,13 @@ def get_async_client(
 
 class AsyncHttpx:
     """
-    一个高级的、健壮的异步HTTP客户端工具类。
+    高性能异步HTTP客户端工具类。
 
-    设计理念:
-    - **全局共享客户端**: 默认情况下，所有请求都通过一个在应用启动时初始化的全局
-      `httpx.AsyncClient` 实例发出。这个实例共享连接池，提高了效率和性能。
-    - **向后兼容与灵活性**: 完全兼容旧的API，同时提供了两种方式来处理需要
-      特殊网络配置（如不同代理、超时）的请求：
-        1. **单次请求覆盖**: 在调用 `get`, `post` 等方法时，直接传入 `proxies`,
-           `timeout` 等参数，将为该次请求创建一个临时的、独立的客户端。
-        2. **临时客户端上下文**: 使用 `temporary_client()` 上下文管理器，可以
-           获取一个独立的、可配置的客户端，用于执行一系列需要相同特殊配置的请求。
-    - **健壮性**: 内置了自动重试、多镜像URL回退（fallback）机制，并提供了便捷的
-      JSON解析和文件下载方法。
+    特性:
+    - 全局共享连接池，提升性能
+    - 支持临时客户端配置（代理、超时等）
+    - 内置重试机制和多URL回退
+    - 提供JSON解析和文件下载功能
     """
 
     CLIENT_KEY: ClassVar[list[str]] = [
@@ -149,7 +143,6 @@ class AsyncHttpx:
         "proxies",
         "proxy",
         "verify",
-        "headers",
     ]
 
     default_proxy: ClassVar[dict[str, str] | None] = (
@@ -370,10 +363,11 @@ class AsyncHttpx:
         """
         [私有] 执行单个HTTP请求并解析JSON，用于内部统一处理。
         """
+        client_kwargs, request_kwargs = cls._split_kwargs(kwargs)
+
         async with cls._get_active_client_context(
-            client=client, **kwargs
+            client=client, **client_kwargs
         ) as active_client:
-            _, request_kwargs = cls._split_kwargs(kwargs)
             response = await active_client.request(method, url, **request_kwargs)
             response.raise_for_status()
             return response.json()
@@ -487,25 +481,33 @@ class AsyncHttpx:
         """
         执行单个流式下载的私有方法，被重试装饰器包裹。
         """
+        client_kwargs, request_kwargs = cls._split_kwargs(kwargs)
+        show_progress = request_kwargs.pop("show_progress", False)
+
         async with cls._get_active_client_context(
-            client=client, **kwargs
+            client=client, **client_kwargs
         ) as active_client:
-            async with active_client.stream("GET", url, **kwargs) as response:
+            async with active_client.stream("GET", url, **request_kwargs) as response:
                 response.raise_for_status()
                 total = int(response.headers.get("Content-Length", 0))
 
-                with Progress(
-                    TextColumn(path.name),
-                    "[progress.percentage]{task.percentage:>3.0f}%",
-                    BarColumn(bar_width=None),
-                    DownloadColumn(),
-                    TransferSpeedColumn(),
-                ) as progress:
-                    task_id = progress.add_task("Download", total=total)
+                if show_progress:
+                    with Progress(
+                        TextColumn(path.name),
+                        "[progress.percentage]{task.percentage:>3.0f}%",
+                        BarColumn(bar_width=None),
+                        DownloadColumn(),
+                        TransferSpeedColumn(),
+                    ) as progress:
+                        task_id = progress.add_task("Download", total=total)
+                        async with aiofiles.open(path, "wb") as f:
+                            async for chunk in response.aiter_bytes():
+                                await f.write(chunk)
+                                progress.update(task_id, advance=len(chunk))
+                else:
                     async with aiofiles.open(path, "wb") as f:
                         async for chunk in response.aiter_bytes():
                             await f.write(chunk)
-                            progress.update(task_id, advance=len(chunk))
 
     @classmethod
     async def download_file(
@@ -514,6 +516,7 @@ class AsyncHttpx:
         path: str | Path,
         *,
         stream: bool = False,
+        show_progress: bool = False,
         client: AsyncClient | None = None,
         **kwargs,
     ) -> bool:
@@ -526,6 +529,7 @@ class AsyncHttpx:
             url: 单个文件 URL 或一个备用 URL 列表。
             path: 文件保存的本地路径。
             stream: (可选) 是否使用流式下载，适用于大文件，默认为 False。
+            show_progress: (可选) 当 stream=True 时，是否显示下载进度条。默认为 False。
             client: (可选) 指定的HTTP客户端。
             **kwargs: 其他所有传递给 get() 方法或 httpx.stream() 的参数。
 
@@ -541,7 +545,9 @@ class AsyncHttpx:
                 async with aiofiles.open(path, "wb") as f:
                     await f.write(content)
             else:
-                await cls._stream_download(current_url, path, **worker_kwargs)
+                await cls._stream_download(
+                    current_url, path, show_progress=show_progress, **worker_kwargs
+                )
 
             logger.info(
                 f"下载 {current_url} 成功 -> {path.absolute()}",
