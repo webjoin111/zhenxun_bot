@@ -238,7 +238,7 @@ class AsyncHttpx:
         """
         通用执行器，按顺序尝试多个URL，直到成功。
 
-        Args:
+        参数:
             urls: 单个URL或URL列表。
             worker: 一个接受单个URL和其他kwargs并执行请求的协程函数。
             client: 可选的HTTP客户端。
@@ -280,15 +280,6 @@ class AsyncHttpx:
     ) -> Response:
         """发送 GET 请求，并返回第一个成功的响应。
 
-        说明:
-            本方法是 httpx.get 的高级包装，增加了多链接尝试、自动重试和统一的
-            客户端管理。如果提供 URL 列表，它将依次尝试直到成功为止。
-
-        用法建议:
-            - **常规使用**: `await AsyncHttpx.get(url)` 将使用全局客户端。
-            - **单次覆盖配置**: `await AsyncHttpx.get(url, timeout=5, proxies=None)`
-              将为本次请求创建一个独立的临时客户端。
-
         参数:
             url: 单个请求 URL 或一个 URL 列表。
             follow_redirects: 是否跟随重定向。
@@ -302,7 +293,7 @@ class AsyncHttpx:
         返回:
             Response: httpx 的响应对象。
 
-        Raises:
+        异常:
             AllURIsFailedError: 当所有提供的URL都请求失败时抛出。
         """
 
@@ -385,11 +376,6 @@ class AsyncHttpx:
         """
         发送GET请求并自动解析为JSON，支持重试和多链接尝试。
 
-        说明:
-            这是一个高度便捷的方法，封装了请求、重试、JSON解析和错误处理。
-            它会在网络错误或JSON解析错误时自动重试。
-            如果所有尝试都失败，它会安全地返回一个默认值。
-
         参数:
             url: 单个请求 URL 或一个备用 URL 列表。
             default: (可选) 当所有尝试都失败时返回的默认值，默认为None。
@@ -402,7 +388,7 @@ class AsyncHttpx:
         返回:
             Any: 解析后的JSON数据，或在失败时返回 `default` 值。
 
-        Raises:
+        异常:
             AllURIsFailedError: 当 `raise_on_failure` 为 True 且所有URL都请求失败时抛出
         """
 
@@ -576,10 +562,6 @@ class AsyncHttpx:
     ) -> list[bool]:
         """并发下载多个文件，支持为每个文件提供备用镜像链接。
 
-        说明:
-            使用 asyncio.Semaphore 来控制并发请求的数量。
-            对于 url_list 中的每个元素，如果它是一个列表，则会依次尝试直到下载成功。
-
         参数:
             url_list: 包含所有文件下载任务的列表。每个元素可以是：
                       - 一个字符串 (str): 代表该任务的唯一URL。
@@ -628,9 +610,6 @@ class AsyncHttpx:
     async def get_fastest_mirror(cls, url_list: list[str]) -> list[str]:
         """测试并返回最快的镜像地址。
 
-        说明:
-            通过并发发送 HEAD 请求来测试每个 URL 的响应时间和可用性，并按响应速度排序。
-
         参数:
             url_list: 需要测试的镜像 URL 列表。
 
@@ -674,23 +653,12 @@ class AsyncHttpx:
         """
         创建一个临时的、可配置的HTTP客户端上下文，并直接返回该客户端实例。
 
-        此方法返回一个标准的 `httpx.AsyncClient`，它不使用全局连接池，
-        拥有独立的配置(如代理、headers、超时等)，并在退出上下文后自动关闭。
-        适用于需要用一套特殊网络配置执行一系列请求的场景。
-
-        用法:
-            async with AsyncHttpx.temporary_client(proxies=None, timeout=5) as client:
-                # client 是一个标准的 httpx.AsyncClient 实例
-                response1 = await client.get("http://some.internal.api/1")
-                response2 = await client.get("http://some.internal.api/2")
-                data = response2.json()
-
         参数:
             **kwargs: 所有传递给 `httpx.AsyncClient` 构造函数的参数。
                       例如: `proxies`, `headers`, `verify`, `timeout`,
                       `follow_redirects`。
 
-        Yields:
+        返回:
             httpx.AsyncClient: 一个配置好的、临时的客户端实例。
         """
         async with get_async_client(**kwargs) as client:
