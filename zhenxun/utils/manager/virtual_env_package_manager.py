@@ -3,11 +3,19 @@ import subprocess
 from subprocess import CalledProcessError
 from typing import ClassVar
 
+from zhenxun.configs.config import Config
 from zhenxun.services.log import logger
 
 BAT_FILE = Path() / "win启动.bat"
 
 LOG_COMMAND = "VirtualEnvPackageManager"
+
+Config.add_plugin_config(
+    "virtualenv",
+    "python_path",
+    None,
+    help="虚拟环境python路径，为空时使用系统环境的poetry",
+)
 
 
 class VirtualEnvPackageManager:
@@ -21,7 +29,11 @@ class VirtualEnvPackageManager:
 
     @classmethod
     def __get_command(cls) -> list[str]:
-        return cls.WIN_COMMAND if BAT_FILE.exists() else cls.DEFAULT_COMMAND
+        if path := Config.get_config("virtualenv", "python_path"):
+            return [path, "-m", "pip"]
+        return (
+            cls.WIN_COMMAND.copy() if BAT_FILE.exists() else cls.DEFAULT_COMMAND.copy()
+        )
 
     @classmethod
     def install(cls, package: list[str] | str):
@@ -47,8 +59,10 @@ class VirtualEnvPackageManager:
                 f"安装虚拟环境包指令执行完成: {result.stdout}",
                 LOG_COMMAND,
             )
+            return result.stdout
         except CalledProcessError as e:
             logger.error(f"安装虚拟环境包指令执行失败: {e.stderr}.", LOG_COMMAND)
+            return e.stderr
 
     @classmethod
     def uninstall(cls, package: list[str] | str):
@@ -62,6 +76,7 @@ class VirtualEnvPackageManager:
         try:
             command = cls.__get_command()
             command.append("uninstall")
+            command.append("-y")
             command.append(" ".join(package))
             logger.info(f"执行虚拟环境卸载包指令: {command}", LOG_COMMAND)
             result = subprocess.run(
@@ -74,8 +89,10 @@ class VirtualEnvPackageManager:
                 f"卸载虚拟环境包指令执行完成: {result.stdout}",
                 LOG_COMMAND,
             )
+            return result.stdout
         except CalledProcessError as e:
             logger.error(f"卸载虚拟环境包指令执行失败: {e.stderr}.", LOG_COMMAND)
+            return e.stderr
 
     @classmethod
     def update(cls, package: list[str] | str):
@@ -99,8 +116,10 @@ class VirtualEnvPackageManager:
                 text=True,
             )
             logger.debug(f"更新虚拟环境包指令执行完成: {result.stdout}", LOG_COMMAND)
+            return result.stdout
         except CalledProcessError as e:
             logger.error(f"更新虚拟环境包指令执行失败: {e.stderr}.", LOG_COMMAND)
+            return e.stderr
 
     @classmethod
     def install_requirement(cls, requirement_file: Path):
@@ -130,11 +149,13 @@ class VirtualEnvPackageManager:
                 f"安装虚拟环境依赖文件指令执行完成: {result.stdout}",
                 LOG_COMMAND,
             )
+            return result.stdout
         except CalledProcessError as e:
             logger.error(
                 f"安装虚拟环境依赖文件指令执行失败: {e.stderr}.",
                 LOG_COMMAND,
             )
+            return e.stderr
 
     @classmethod
     def list(cls) -> str:
