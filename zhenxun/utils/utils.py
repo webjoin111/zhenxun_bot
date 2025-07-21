@@ -12,10 +12,7 @@ import pypinyin
 from zhenxun.configs.config import Config
 from zhenxun.services.log import logger
 
-from .limiters import (  # noqa: F401
-    FreqLimiter,
-    UserBlockLimiter,
-)
+from .limiters import CountLimiter, FreqLimiter, UserBlockLimiter  # noqa: F401
 
 
 @dataclass

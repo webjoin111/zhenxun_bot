@@ -1,7 +1,7 @@
 import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
-import json
+import os
 from pathlib import Path
 import time
 from typing import Any, ClassVar, cast
@@ -17,11 +17,13 @@ from rich.progress import (
     TextColumn,
     TransferSpeedColumn,
 )
+import ujson as json
 
 from zhenxun.configs.config import BotConfig
 from zhenxun.services.log import logger
 from zhenxun.utils.decorator.retry import Retry
 from zhenxun.utils.exception import AllURIsFailedError
+from zhenxun.utils.manager.priority_manager import PriorityLifecycle
 from zhenxun.utils.user_agent import get_user_agent
 
 from .browser import AsyncPlaywright, BrowserIsNone  # noqa: F401
@@ -32,16 +34,14 @@ driver = nonebot.get_driver()
 _client: AsyncClient | None = None
 
 
-@driver.on_startup
-async def _init_client():
+@PriorityLifecycle.on_startup(priority=0)
+async def _():
     """
     在Bot启动时初始化全局httpx客户端。
     """
     global _client
-    proxy_url = BotConfig.system_proxy if BotConfig.system_proxy else None
-
     client_kwargs = {}
-    if proxy_url:
+    if proxy_url := BotConfig.system_proxy or None:
         try:
             version_parts = httpx.__version__.split(".")
             major = int("".join(c for c in version_parts[0] if c.isdigit()))
@@ -71,7 +71,7 @@ async def _init_client():
 
 
 @driver.on_shutdown
-async def _close_client():
+async def _():
     """
     在Bot关闭时关闭全局httpx客户端。
     """
@@ -84,8 +84,16 @@ def get_client() -> AsyncClient:
     """
     获取全局 httpx.AsyncClient 实例。
     """
+    global _client
     if not _client:
-        raise RuntimeError("全局 httpx.AsyncClient 未初始化，请检查启动流程。")
+        if not os.environ.get("PYTEST_CURRENT_TEST"):
+            raise RuntimeError("全局 httpx.AsyncClient 未初始化，请检查启动流程。")
+        # 在测试环境中创建临时客户端
+        logger.warning("在测试环境中创建临时HTTP客户端", "HTTPClient")
+        _client = httpx.AsyncClient(
+            headers=get_user_agent(),
+            follow_redirects=True,
+        )
     return _client
 
 
@@ -165,11 +173,7 @@ class AsyncHttpx:
         use_proxy = final_config.pop("use_proxy", True)
 
         if "proxies" not in final_config and "proxy" not in final_config:
-            if use_proxy:
-                final_config["proxies"] = cls.default_proxy
-            else:
-                final_config["proxies"] = None
-
+            final_config["proxies"] = cls.default_proxy if use_proxy else None
         return final_config
 
     @classmethod
@@ -205,8 +209,7 @@ class AsyncHttpx:
         """
         [内部] 执行单次HTTP请求的私有核心方法，被重试装饰器包裹。
         """
-        response = await client.request(method, url, **kwargs)
-        return response
+        return await client.request(method, url, **kwargs)
 
     @classmethod
     async def _single_request(
