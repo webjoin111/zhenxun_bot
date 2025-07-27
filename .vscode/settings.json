@@ -66,5 +66,8 @@
     "titleBar.activeBackground": "#671886",
     "titleBar.activeForeground": "#FCF9FE"
   },
-  "files.exclude": {}
+  "files.exclude": {},
+  "python-envs.defaultEnvManager": "ms-python.python:poetry",
+  "python-envs.defaultPackageManager": "ms-python.python:poetry",
+  "python-envs.pythonProjects": []
 }
