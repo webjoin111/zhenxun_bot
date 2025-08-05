@@ -86,7 +86,7 @@ async def _execute_single_job_instance(schedule: ScheduledJob, bot):
                     params_model, BaseModel
                 ):
                     params_instance = parse_as(params_model, context.job_kwargs)
-                    injected_params["params"] = params_instance # type: ignore
+                    injected_params["params"] = params_instance  # type: ignore
             except Exception as e:
                 logger.error(
                     f"任务 {schedule.id} (目标: {group_id}) 参数验证失败: {e}", e=e
@@ -94,7 +94,7 @@ async def _execute_single_job_instance(schedule: ScheduledJob, bot):
                 raise
 
         async def wrapper(bot: Bot):
-            return await task_meta["func"](bot=bot, **injected_params) # type: ignore
+            return await task_meta["func"](bot=bot, **injected_params)  # type: ignore
 
         dependent = Dependent.parse(
             call=wrapper,
