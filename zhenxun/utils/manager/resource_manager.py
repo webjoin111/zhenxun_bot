@@ -3,6 +3,7 @@ from pathlib import Path
 import shutil
 import zipfile
 
+from zhenxun.configs.config import Config
 from zhenxun.configs.path_config import FONT_PATH
 from zhenxun.services.log import logger
 from zhenxun.utils.github_utils import GithubUtils
@@ -28,6 +29,10 @@ class ResourceManager:
 
     @classmethod
     async def init_resources(cls, force: bool = False):
+        if not Config.get_config("about", "AUTO_DOWNLOAD_RESOURCES") and not force:
+            logger.info("根据配置，已跳过启动时资源自动检查与下载。")
+            return
+
         if (FONT_PATH.exists() and os.listdir(FONT_PATH)) and not force:
             return
         if cls.TMP_PATH.exists():

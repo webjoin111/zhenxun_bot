@@ -7,7 +7,7 @@ from nonebot_plugin_alconna import Alconna, Arparma, on_alconna
 from nonebot_plugin_uninfo import Uninfo
 
 from zhenxun.configs.path_config import DATA_PATH
-from zhenxun.configs.utils import PluginExtraData
+from zhenxun.configs.utils import PluginExtraData, RegisterConfig
 from zhenxun.services.log import logger
 from zhenxun.utils.message import MessageUtils
 from zhenxun.utils.platform import PlatformUtils
@@ -19,7 +19,20 @@ __plugin_meta__ = PluginMetadata(
     指令：
         关于
     """.strip(),
-    extra=PluginExtraData(author="HibiKier", version="0.1", menu_type="其他").to_dict(),
+    extra=PluginExtraData(
+        author="HibiKier",
+        version="0.1",
+        menu_type="其他",
+        configs=[
+            RegisterConfig(
+                key="AUTO_DOWNLOAD_RESOURCES",
+                value=True,
+                help="是否在启动时自动下载缺失的核心资源文件(如字体)",
+                default_value=True,
+                type=bool,
+            )
+        ],
+    ).to_dict(),
 )
 
 
