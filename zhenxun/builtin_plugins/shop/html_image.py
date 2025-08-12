@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from tortoise.expressions import Q
 
 from zhenxun.configs.config import BotConfig
-from zhenxun.configs.path_config import TEMPLATE_PATH
+from zhenxun.configs.path_config import THEMES_PATH
 from zhenxun.models.goods_info import GoodsInfo
 from zhenxun.utils._build_image import BuildImage
 
@@ -77,13 +77,14 @@ async def html_image() -> bytes:
         GoodsItem(goods_list=value, partition=partition)
         for partition, value in partition_dict.items()
     ]
+    template_dir = THEMES_PATH / "default" / "templates" / "shop"
     return await template_to_pic(
-        template_path=str((TEMPLATE_PATH / "shop").absolute()),
+        template_path=str(template_dir.absolute()),
         template_name="main.html",
         templates={"name": BotConfig.self_nickname, "data_list": data_list},
         pages={
             "viewport": {"width": 850, "height": 1024},
-            "base_url": f"file://{TEMPLATE_PATH}",
+            "base_url": f"file://{THEMES_PATH.parent.absolute()}",
         },
         wait=2,
     )
