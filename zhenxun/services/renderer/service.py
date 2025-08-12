@@ -379,7 +379,7 @@ class RendererService:
                         data_str = json.dumps(data or {}, sort_keys=True)
                     cache_key_str = f"{template_name}:{data_str}"
                     cache_filename = (
-                        f"{hashlib.md5(cache_key_str.encode()).hexdigest()}.png"
+                        f"{hashlib.sha256(cache_key_str.encode()).hexdigest()}.png"
                     )
                     cache_path = UI_CACHE_PATH / cache_filename
 
