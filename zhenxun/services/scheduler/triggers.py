@@ -13,7 +13,7 @@ class BaseTrigger(BaseModel):
 class CronTrigger(BaseTrigger):
     """Cron 触发器配置"""
 
-    trigger_type: Literal["cron"] = "cron" # type: ignore
+    trigger_type: Literal["cron"] = "cron"  # type: ignore
     year: int | str | None = None
     month: int | str | None = None
     day: int | str | None = None
@@ -31,7 +31,7 @@ class CronTrigger(BaseTrigger):
 class IntervalTrigger(BaseTrigger):
     """Interval 触发器配置"""
 
-    trigger_type: Literal["interval"] = "interval" # type: ignore
+    trigger_type: Literal["interval"] = "interval"  # type: ignore
     weeks: int = 0
     days: int = 0
     hours: int = 0
@@ -46,7 +46,7 @@ class IntervalTrigger(BaseTrigger):
 class DateTrigger(BaseTrigger):
     """Date 触发器配置"""
 
-    trigger_type: Literal["date"] = "date" # type: ignore
+    trigger_type: Literal["date"] = "date"  # type: ignore
     run_date: datetime | str
     timezone: str | None = None
 

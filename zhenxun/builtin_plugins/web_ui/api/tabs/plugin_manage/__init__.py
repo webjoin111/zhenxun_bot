@@ -4,13 +4,15 @@ from fastapi.responses import JSONResponse
 from zhenxun.models.plugin_info import PluginInfo as DbPluginInfo
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import BlockType, PluginType
+from zhenxun.utils.manager.virtual_env_package_manager import VirtualEnvPackageManager
 
 from ....base_model import Result
-from ....utils import authentication
+from ....utils import authentication, clear_help_image
 from .data_source import ApiDataSource
 from .model import (
     BatchUpdatePlugins,
     BatchUpdateResult,
+    InstallDependenciesPayload,
     PluginCount,
     PluginDetail,
     PluginInfo,
@@ -33,7 +35,8 @@ async def _(
     plugin_type: list[PluginType] = Query(None), menu_type: str | None = None
 ) -> Result[list[PluginInfo]]:
     try:
-        return Result.ok(await ApiDataSource.get_plugin_list(plugin_type, menu_type), "拿到信息啦!")
+        result = await ApiDataSource.get_plugin_list(plugin_type, menu_type)
+        return Result.ok(result, "拿到信息啦!")
     except Exception as e:
         logger.error(f"{router.prefix}/get_plugin_list 调用错误", "WebUi", e=e)
         return Result.fail(f"发生了一点错误捏 {type(e)}: {e}")
@@ -79,6 +82,7 @@ async def _() -> Result[PluginCount]:
 async def _(param: UpdatePlugin) -> Result:
     try:
         await ApiDataSource.update_plugin(param)
+        clear_help_image()
         return Result.ok(info="已经帮你写好啦!")
     except (ValueError, KeyError):
         return Result.fail("插件数据不存在...")
@@ -106,6 +110,7 @@ async def _(param: PluginSwitch) -> Result:
             db_plugin.block_type = None
             db_plugin.status = True
         await db_plugin.save()
+        clear_help_image()
         return Result.ok(info="成功改变了开关状态!")
     except Exception as e:
         logger.error(f"{router.prefix}/change_switch 调用错误", "WebUi", e=e)
@@ -122,7 +127,11 @@ async def _(param: PluginSwitch) -> Result:
 async def _() -> Result[list[str]]:
     try:
         menu_type_list = []
-        result = await DbPluginInfo.filter(load_status=True).annotate().values_list("menu_type", flat=True)
+        result = (
+            await DbPluginInfo.filter(load_status=True)
+            .annotate()
+            .values_list("menu_type", flat=True)
+        )
         for r in result:
             if r not in menu_type_list and r:
                 menu_type_list.append(r)
@@ -141,7 +150,8 @@ async def _() -> Result[list[str]]:
 )
 async def _(module: str) -> Result[PluginDetail]:
     try:
-        return Result.ok(await ApiDataSource.get_plugin_detail(module), "已经帮你写好啦!")
+        detail = await ApiDataSource.get_plugin_detail(module)
+        return Result.ok(detail, "已经帮你写好啦!")
     except (ValueError, KeyError):
         return Result.fail("插件数据不存在...")
     except Exception as e:
@@ -154,9 +164,11 @@ async def _(module: str) -> Result[PluginDetail]:
     dependencies=[authentication()],
     response_model=Result[BatchUpdateResult],
     response_class=JSONResponse,
-    summary="批量更新插件配置",
+    description="批量更新插件配置",
 )
-async def batch_update_plugin_config_api(params: BatchUpdatePlugins) -> Result[BatchUpdateResult]:
+async def _(
+    params: BatchUpdatePlugins,
+) -> Result[BatchUpdateResult]:
     """批量更新插件配置，如开关、类型等"""
     try:
         result_dict = await ApiDataSource.batch_update_plugins(params=params)
@@ -165,6 +177,7 @@ async def batch_update_plugin_config_api(params: BatchUpdatePlugins) -> Result[B
             updated_count=result_dict["updated_count"],
             errors=result_dict["errors"],
         )
+        clear_help_image()
         return Result.ok(result_model, "插件配置更新完成")
     except Exception as e:
         logger.error(f"{router.prefix}/plugins/batch_update 调用错误", "WebUi", e=e)
@@ -173,17 +186,23 @@ async def batch_update_plugin_config_api(params: BatchUpdatePlugins) -> Result[B
 
 # 新增：重命名菜单类型路由
 @router.put(
-    "/menu_type/rename", dependencies=[authentication()], response_model=Result, summary="重命名菜单类型"
+    "/menu_type/rename",
+    dependencies=[authentication()],
+    response_model=Result,
+    description="重命名菜单类型",
 )
-async def rename_menu_type_api(payload: RenameMenuTypePayload) -> Result:
+async def _(payload: RenameMenuTypePayload) -> Result[str]:
     try:
         result = await ApiDataSource.rename_menu_type(
-            old_name=payload.old_name, new_name=payload.new_name)
+            old_name=payload.old_name, new_name=payload.new_name
+        )
         if result.get("success"):
+            clear_help_image()
             return Result.ok(
                 info=result.get(
                     "info",
-                    f"成功将 {result.get('updated_count', 0)} 个插件的菜单类型从 '{payload.old_name}' 修改为 '{payload.new_name}'",
+                    f"成功将 {result.get('updated_count', 0)} 个插件的菜单类型从 "
+                    f"'{payload.old_name}' 修改为 '{payload.new_name}'",
                 )
             )
         else:
@@ -196,3 +215,24 @@ async def rename_menu_type_api(payload: RenameMenuTypePayload) -> Result:
     except Exception as e:
         logger.error(f"{router.prefix}/menu_type/rename 调用错误", "WebUi", e=e)
         return Result.fail(info=f"发生未知错误: {type(e).__name__}")
+
+
+@router.post(
+    "/install_dependencies",
+    dependencies=[authentication()],
+    response_model=Result,
+    response_class=JSONResponse,
+    description="安装/卸载依赖",
+)
+async def _(payload: InstallDependenciesPayload) -> Result:
+    try:
+        if not payload.dependencies:
+            return Result.fail("依赖列表不能为空")
+        if payload.handle_type == "install":
+            result = await VirtualEnvPackageManager.install(payload.dependencies)
+        else:
+            result = await VirtualEnvPackageManager.uninstall(payload.dependencies)
+        return Result.ok(result)
+    except Exception as e:
+        logger.error(f"{router.prefix}/install_dependencies 调用错误", "WebUi", e=e)
+        return Result.fail(f"发生了一点错误捏 {type(e)}: {e}")

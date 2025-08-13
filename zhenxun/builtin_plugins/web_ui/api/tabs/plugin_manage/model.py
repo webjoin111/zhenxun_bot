@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -78,6 +78,13 @@ class PluginInfo(BaseModel):
     author: str | None = None
     """作者"""
     block_type: BlockType | None = Field(None, description="插件禁用状态 (None: 启用)")
+    """禁用状态"""
+    is_builtin: bool = False
+    """是否为内置插件"""
+    allow_switch: bool = True
+    """是否允许开关"""
+    allow_setting: bool = True
+    """是否允许设置"""
 
 
 class PluginConfig(BaseModel):
@@ -114,12 +121,14 @@ class BatchUpdatePluginItem(BaseModel):
     default_status: bool | None = Field(None, description="默认状态(开关)")
     menu_type: str | None = Field(None, description="菜单类型")
     block_type: BlockType | None = Field(
-        None, description="插件禁用状态 (None: 启用, ALL: 禁用)")
+        None, description="插件禁用状态 (None: 启用, ALL: 禁用)"
+    )
 
 
 class BatchUpdatePlugins(BaseModel):
     updates: list[BatchUpdatePluginItem] = Field(
-        ..., description="要批量更新的插件列表")
+        ..., description="要批量更新的插件列表"
+    )
 
 
 class PluginDetail(PluginInfo):
@@ -149,5 +158,19 @@ class BatchUpdateResult(BaseModel):
     """是否全部成功"""
     updated_count: int = Field(..., description="更新成功的数量")
     """更新成功的数量"""
-    errors: list[dict[str, str]] = Field(default_factory=list, description="错误信息列表")
+    errors: list[dict[str, str]] = Field(
+        default_factory=list, description="错误信息列表"
+    )
     """错误信息列表"""
+
+
+class InstallDependenciesPayload(BaseModel):
+    """
+    安装依赖
+    """
+
+    handle_type: Literal["install", "uninstall"] = Field(..., description="处理类型")
+    """处理类型"""
+
+    dependencies: list[str] = Field(..., description="依赖列表")
+    """依赖列表"""

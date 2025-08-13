@@ -52,6 +52,10 @@ class ApiDataSource:
                 status=plugin.status,
                 author=plugin.author,
                 block_type=plugin.block_type,
+                is_builtin="builtin_plugins" in plugin.module_path
+                or plugin.plugin_type == PluginType.HIDDEN,
+                allow_setting=plugin.plugin_type != PluginType.HIDDEN,
+                allow_switch=plugin.plugin_type != PluginType.HIDDEN,
             )
             plugin_list.append(plugin_info)
         return plugin_list
@@ -163,7 +167,7 @@ class ApiDataSource:
                 )
 
         return {
-            "success": len(errors) == 0,
+            "success": not errors,
             "updated_count": updated_count + bulk_updated_count,
             "errors": errors,
         }
@@ -180,19 +184,24 @@ class ApiDataSource:
             config: ConfigGroup
 
         返回:
-            lPluginConfig: 配置数据
+            PluginConfig: 配置数据
         """
         type_str = ""
         type_inner = None
-        if r := re.search(r"<class '(.*)'>", str(config.configs[cfg].type)):
+        ct = str(config.configs[cfg].type)
+        if r := re.search(r"<class '(.*)'>", ct):
             type_str = r[1]
-        elif r := re.search(r"typing\.(.*)\[(.*)\]", str(config.configs[cfg].type)):
+        elif (r := re.search(r"typing\.(.*)\[(.*)\]", ct)) or (
+            r := re.search(r"(.*)\[(.*)\]", ct)
+        ):
             type_str = r[1]
             if type_str:
                 type_str = type_str.lower()
             type_inner = r[2]
             if type_inner:
                 type_inner = [x.strip() for x in type_inner.split(",")]
+        else:
+            type_str = ct
         return PluginConfig(
             module=module,
             key=cfg,
@@ -220,18 +229,19 @@ class ApiDataSource:
             return {
                 "success": True,
                 "updated_count": 0,
-                "info": "新旧名称相同，无需更新"
+                "info": "新旧名称相同，无需更新",
             }
 
         # 检查新名称是否已存在（理论上前端会校验，后端再保险一次）
         exists = await DbPluginInfo.filter(menu_type=new_name).exists()
         if exists:
-             raise ValueError(f"新的菜单类型名称 '{new_name}' 已被其他插件使用")
+            raise ValueError(f"新的菜单类型名称 '{new_name}' 已被其他插件使用")
 
         try:
             # 使用 filter().update() 进行批量更新
             updated_count = await DbPluginInfo.filter(menu_type=old_name).update(
-                menu_type=new_name)
+                menu_type=new_name
+            )
             return {"success": True, "updated_count": updated_count}
         except Exception as e:
             # 可以添加更详细的日志记录

@@ -10,7 +10,9 @@ from zhenxun.configs.config import Config as gConfig
 from zhenxun.configs.utils import PluginExtraData, RegisterConfig
 from zhenxun.services.log import logger, logger_
 from zhenxun.utils.enum import PluginType
+from zhenxun.utils.manager.priority_manager import PriorityLifecycle
 
+from .api.configure import router as configure_router
 from .api.logs import router as ws_log_routes
 from .api.logs.log_manager import LOG_STORAGE
 from .api.menu import router as menu_router
@@ -81,6 +83,7 @@ BaseApiRouter.include_router(database_router)
 BaseApiRouter.include_router(plugin_router)
 BaseApiRouter.include_router(system_router)
 BaseApiRouter.include_router(menu_router)
+BaseApiRouter.include_router(configure_router)
 
 WsApiRouter = APIRouter(prefix="/zhenxun/socket")
 
@@ -89,10 +92,10 @@ WsApiRouter.include_router(status_routes)
 WsApiRouter.include_router(chat_routes)
 
 
-@driver.on_startup
+@PriorityLifecycle.on_startup(priority=0)
 async def _():
     try:
-
+        # 存储任务引用的列表，防止任务被垃圾回收
         _tasks = []
 
         async def log_sink(message: str):
@@ -104,10 +107,8 @@ async def _():
                     logger.warning("Web Ui log_sink", e=e)
             if not loop:
                 loop = asyncio.new_event_loop()
-            task = loop.create_task(LOG_STORAGE.add(message.rstrip("\n")))
-            _tasks.append(task)
-            while _tasks and _tasks[0].done():
-                _tasks.pop(0)
+            # 存储任务引用到外部列表中
+            _tasks.append(loop.create_task(LOG_STORAGE.add(message.rstrip("\n"))))
 
         logger_.add(
             log_sink, colorize=True, filter=default_filter, format=default_format
