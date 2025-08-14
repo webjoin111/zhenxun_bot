@@ -34,4 +34,3 @@ class PluginMenuBuilder(BaseBuilder[PluginMenuData]):
         for category in categories:
             self.add_category(category)
         return self
-

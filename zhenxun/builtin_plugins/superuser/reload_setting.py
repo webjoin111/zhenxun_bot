@@ -62,7 +62,6 @@ async def _(session: EventSession, arparma: Arparma):
     await MessageUtils.build_message("重载完成!").send(reply_to=True)
 
 
-
 @scheduler.scheduled_job(
     "interval",
     seconds=Config.get_config("reload_setting", "AUTO_RELOAD_TIME", 180),
