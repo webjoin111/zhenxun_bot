@@ -123,7 +123,7 @@ class RendererService:
 
                 resolved_data_dict = {}
                 for key, value in data_dict.items():
-                    if is_coroutine_callable(value): # type: ignore
+                    if is_coroutine_callable(value):  # type: ignore
                         resolved_data_dict[key] = await value
                     else:
                         resolved_data_dict[key] = value
