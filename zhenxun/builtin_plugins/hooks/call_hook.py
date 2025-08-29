@@ -1,4 +1,3 @@
-import re
 from typing import Any
 
 from nonebot.adapters import Bot, Message
@@ -9,6 +8,8 @@ from zhenxun.services.log import logger
 from zhenxun.utils.enum import BotSentType
 from zhenxun.utils.manager.message_manager import MessageManager
 from zhenxun.utils.platform import PlatformUtils
+
+LOG_COMMAND = "MessageHook"
 
 
 def replace_message(message: Message) -> str:
@@ -39,36 +40,6 @@ def replace_message(message: Message) -> str:
     return result
 
 
-def format_message_for_log(message: Any) -> str:
-    """格式化消息内容用于日志记录，避免显示过长的base64内容
-
-    参数:
-        message: 任意类型的消息对象
-
-    返回:
-        str: 格式化后的消息文本，适合日志记录
-    """
-    if isinstance(message, Message):
-        return replace_message(message)
-
-    message_str = str(message)
-
-    base64_pattern = r"(file=)?base64://[A-Za-z0-9+/=]{50,}"
-    if re.search(base64_pattern, message_str):
-        original_length = len(message_str)
-        message_str = re.sub(
-            base64_pattern,
-            lambda m: f"[图片:base64,长度:{len(m.group())}]",
-            message_str,
-        )
-        if len(message_str) > 500:
-            message_str = message_str[:500] + f"...(总长度:{original_length})"
-    elif len(message_str) > 500:
-        message_str = message_str[:500] + f"...(总长度:{len(str(message))})"
-
-    return message_str
-
-
 @Bot.on_called_api
 async def handle_api_result(
     bot: Bot, exception: Exception | None, api: str, data: dict[str, Any], result: Any
@@ -85,11 +56,11 @@ async def handle_api_result(
         if user_id and message_id:
             MessageManager.add(str(user_id), str(message_id))
             logger.debug(
-                f"收集消息id，user_id: {user_id}, msg_id: {message_id}", "msg_hook"
+                f"收集消息id，user_id: {user_id}, msg_id: {message_id}", LOG_COMMAND
             )
     except Exception as e:
         logger.warning(
-            f"收集消息id发生错误...data: {data}, result: {result}", "msg_hook", e=e
+            f"收集消息id发生错误...data: {data}, result: {result}", LOG_COMMAND, e=e
         )
     if not Config.get_config("hook", "RECORD_BOT_SENT_MESSAGES"):
         return
@@ -107,10 +78,10 @@ async def handle_api_result(
             else replace_message(message),
             platform=PlatformUtils.get_platform(bot),
         )
-        logger.debug(f"消息发送记录，message: {format_message_for_log(message)}")
+        logger.debug(f"消息发送记录，message: {message}")
     except Exception as e:
         logger.warning(
             f"消息发送记录发生错误...data: {data}, result: {result}",
-            "msg_hook",
+            LOG_COMMAND,
             e=e,
         )

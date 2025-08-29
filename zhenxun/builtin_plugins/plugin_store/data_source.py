@@ -5,18 +5,16 @@ import shutil
 from aiocache import cached
 import ujson as json
 
-from zhenxun import ui
 from zhenxun.builtin_plugins.plugin_store.models import StorePluginInfo
 from zhenxun.configs.path_config import TEMP_PATH
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.services.log import logger
 from zhenxun.services.plugin_init import PluginInitManager
-from zhenxun.ui.builders import TableBuilder
-from zhenxun.ui.models import StatusBadgeCell, TextCell
+from zhenxun.utils.image_utils import BuildImage, ImageTemplate, RowStyle
 from zhenxun.utils.manager.virtual_env_package_manager import VirtualEnvPackageManager
 from zhenxun.utils.repo_utils import RepoFileManager
 from zhenxun.utils.repo_utils.models import RepoFileInfo, RepoType
-from zhenxun.utils.utils import is_number
+from zhenxun.utils.utils import is_number, win_on_rm_error
 
 from .config import (
     BASE_PATH,
@@ -25,6 +23,22 @@ from .config import (
     LOG_COMMAND,
 )
 from .exceptions import PluginStoreException
+
+
+def row_style(column: str, text: str) -> RowStyle:
+    """被动技能文本风格
+
+    参数:
+        column: 表头
+        text: 文本内容
+
+    返回:
+        RowStyle: RowStyle
+    """
+    style = RowStyle()
+    if column == "-" and text == "已安装":
+        style.font_color = "#67C23A"
+    return style
 
 
 class StoreManager:
@@ -91,123 +105,61 @@ class StoreManager:
         return await PluginInfo.filter(load_status=True).values_list(*args)
 
     @classmethod
-    async def get_plugins_info(cls) -> list[bytes] | str:
+    async def get_plugins_info(cls) -> list[BuildImage] | str:
         """插件列表
 
         返回:
-            bytes | str: 返回消息
+            BuildImage | str: 返回消息
         """
         plugin_list, extra_plugin_list = await cls.get_data()
         column_name = ["-", "ID", "名称", "简介", "作者", "版本", "类型"]
         db_plugin_list = await cls.get_loaded_plugins("module", "version")
         suc_plugin = {p[0]: (p[1] or "0.1") for p in db_plugin_list}
-
-        HIGHLIGHT_COLOR = "#E6A23C"
-
-        structured_native_list = []
-        structured_extra_list = []
         index = 0
-
+        data_list = []
+        extra_data_list = []
         for plugin_info in plugin_list:
-            is_new = cls.check_version_is_new(plugin_info, suc_plugin)
-            structured_native_list.append(
-                {
-                    "is_installed": plugin_info.module in suc_plugin,
-                    "id": index,
-                    "name": plugin_info.name,
-                    "description": plugin_info.description,
-                    "author": plugin_info.author,
-                    "version_str": cls.version_check(plugin_info, suc_plugin),
-                    "type_name": plugin_info.plugin_type_name,
-                    "has_update": not is_new and plugin_info.module in suc_plugin,
-                }
+            data_list.append(
+                [
+                    "已安装" if plugin_info.module in suc_plugin else "",
+                    index,
+                    plugin_info.name,
+                    plugin_info.description,
+                    plugin_info.author,
+                    cls.version_check(plugin_info, suc_plugin),
+                    plugin_info.plugin_type_name,
+                ]
             )
             index += 1
-
         for plugin_info in extra_plugin_list:
-            is_new = cls.check_version_is_new(plugin_info, suc_plugin)
-            structured_extra_list.append(
-                {
-                    "is_installed": plugin_info.module in suc_plugin,
-                    "id": index,
-                    "name": plugin_info.name,
-                    "description": plugin_info.description,
-                    "author": plugin_info.author,
-                    "version_str": cls.version_check(plugin_info, suc_plugin),
-                    "type_name": plugin_info.plugin_type_name,
-                    "has_update": not is_new and plugin_info.module in suc_plugin,
-                }
+            extra_data_list.append(
+                [
+                    "已安装" if plugin_info.module in suc_plugin else "",
+                    index,
+                    plugin_info.name,
+                    plugin_info.description,
+                    plugin_info.author,
+                    cls.version_check(plugin_info, suc_plugin),
+                    plugin_info.plugin_type_name,
+                ]
             )
             index += 1
-
-        native_table_builder = TableBuilder(
-            title="原生插件列表", tip="通过添加/移除插件 ID 来管理插件"
-        ).set_headers(column_name)
-
-        native_rows_data = []
-        for row_data in structured_native_list:
-            row_color = HIGHLIGHT_COLOR if row_data["has_update"] else None
-            status_cell = (
-                StatusBadgeCell(text="已安装", status_type="ok")
-                if row_data["is_installed"]
-                else TextCell(content="")
-            )
-            native_rows_data.append(
-                [
-                    status_cell,
-                    TextCell(content=str(row_data["id"]), color=row_color),
-                    TextCell(content=row_data["name"], color=row_color),
-                    TextCell(content=row_data["description"], color=row_color),
-                    TextCell(content=row_data["author"], color=row_color),
-                    TextCell(
-                        content=row_data["version_str"],
-                        color=row_color,
-                        bold=bool(row_color),
-                    ),
-                    TextCell(content=row_data["type_name"], color=row_color),
-                ]
-            )
-        native_table_builder.add_rows(native_rows_data)
-        native_table_bytes = await ui.render(
-            native_table_builder.build(),
-            viewport={"width": 1400, "height": 10},
-            device_scale_factor=2,
-        )
-        extra_table_builder = TableBuilder(
-            title="第三方插件列表", tip="通过添加/移除插件 ID 来管理插件"
-        ).set_headers(column_name)
-
-        extra_rows_data = []
-        for row_data in structured_extra_list:
-            row_color = HIGHLIGHT_COLOR if row_data["has_update"] else None
-            status_cell = (
-                StatusBadgeCell(text="已安装", status_type="ok")
-                if row_data["is_installed"]
-                else TextCell(content="")
-            )
-            extra_rows_data.append(
-                [
-                    status_cell,
-                    TextCell(content=str(row_data["id"]), color=row_color),
-                    TextCell(content=row_data["name"], color=row_color),
-                    TextCell(content=row_data["description"], color=row_color),
-                    TextCell(content=row_data["author"], color=row_color),
-                    TextCell(
-                        content=row_data["version_str"],
-                        color=row_color,
-                        bold=bool(row_color),
-                    ),
-                    TextCell(content=row_data["type_name"], color=row_color),
-                ]
-            )
-        extra_table_builder.add_rows(extra_rows_data)
-        extra_table_bytes = await ui.render(
-            extra_table_builder.build(),
-            viewport={"width": 1400, "height": 10},
-            device_scale_factor=2,
-        )
-
-        return [native_table_bytes, extra_table_bytes]
+        return [
+            await ImageTemplate.table_page(
+                "原生插件列表",
+                "通过添加/移除插件 ID 来管理插件",
+                column_name,
+                data_list,
+                text_style=row_style,
+            ),
+            await ImageTemplate.table_page(
+                "第三方插件列表",
+                "通过添加/移除插件 ID 来管理插件",
+                column_name,
+                extra_data_list,
+                text_style=row_style,
+            ),
+        ]
 
     @classmethod
     async def get_plugin_by_value(
@@ -267,7 +219,7 @@ class StoreManager:
         return plugin_info, is_external
 
     @classmethod
-    async def add_plugin(cls, index_or_module: str) -> str:
+    async def add_plugin(cls, index_or_module: str, source: str | None = None) -> str:
         """添加插件
 
         参数:
@@ -289,6 +241,7 @@ class StoreManager:
             plugin_info.module_path,
             plugin_info.is_dir,
             is_external,
+            source,
         )
         return f"插件 {plugin_info.name} 安装成功! 重启后生效"
 
@@ -299,6 +252,7 @@ class StoreManager:
         module_path: str,
         is_dir: bool,
         is_external: bool = False,
+        source: str | None = None,
     ):
         """安装插件
 
@@ -309,7 +263,12 @@ class StoreManager:
             is_external: 是否是外部仓库
         """
         repo_type = RepoType.GITHUB if is_external else None
+        if source == "ali":
+            repo_type = RepoType.ALIYUN
+        elif source == "git":
+            repo_type = RepoType.GITHUB
         replace_module_path = module_path.replace(".", "/")
+        plugin_name = module_path.split(".")[-1]
         if is_dir:
             files = await RepoFileManager.list_directory_files(
                 github_url, replace_module_path, repo_type=repo_type
@@ -317,11 +276,18 @@ class StoreManager:
         else:
             files = [RepoFileInfo(path=f"{replace_module_path}.py", is_dir=False)]
         local_path = BASE_PATH / "plugins" if is_external else BASE_PATH
+        target_dir = BASE_PATH / "plugins" / plugin_name
         files = [file for file in files if not file.is_dir]
         download_files = [(file.path, local_path / file.path) for file in files]
-        await RepoFileManager.download_files(
-            github_url, download_files, repo_type=repo_type
+        result = await RepoFileManager.download_files(
+            github_url,
+            download_files,
+            repo_type=repo_type,
+            sparse_path=replace_module_path,
+            target_dir=target_dir,
         )
+        if not result.success:
+            raise PluginStoreException(result.error_message)
 
         requirement_paths = [
             file
@@ -338,6 +304,7 @@ class StoreManager:
                 await VirtualEnvPackageManager.install_requirement(requirement_file)
 
         if not is_install_req:
+            # 从仓库根目录查找文件
             rand = random.randint(1, 10000)
             requirement_path = TEMP_PATH / f"plugin_store_{rand}_req.txt"
             requirements_path = TEMP_PATH / f"plugin_store_{rand}_reqs.txt"
@@ -385,27 +352,27 @@ class StoreManager:
             return f"插件 {plugin_info.name} 不存在..."
         logger.debug(f"尝试移除插件 {plugin_info.name} 文件: {path}", LOG_COMMAND)
         if plugin_info.is_dir:
-            shutil.rmtree(path)
+            # 处理 Windows 下 .git 等目录内只读文件导致的 WinError 5
+            shutil.rmtree(path, onerror=win_on_rm_error)
         else:
             path.unlink()
         await PluginInitManager.remove(f"zhenxun.{plugin_info.module_path}")
         return f"插件 {plugin_info.name} 移除成功! 重启后生效"
 
     @classmethod
-    async def search_plugin(cls, plugin_name_or_author: str) -> bytes | str:
+    async def search_plugin(cls, plugin_name_or_author: str) -> BuildImage | str:
         """搜索插件
 
         参数:
             plugin_name_or_author: 插件名称或作者
 
         返回:
-            bytes | str: 返回消息
+            BuildImage | str: 返回消息
         """
         plugin_list, extra_plugin_list = await cls.get_data()
         all_plugin_list = plugin_list + extra_plugin_list
         db_plugin_list = await cls.get_loaded_plugins("module", "version")
         suc_plugin = {p[0]: (p[1] or "Unknown") for p in db_plugin_list}
-
         filtered_data = [
             (id, plugin_info)
             for id, plugin_info in enumerate(all_plugin_list)
@@ -413,50 +380,28 @@ class StoreManager:
             or plugin_name_or_author.lower() in plugin_info.author.lower()
         ]
 
-        if not filtered_data:
+        data_list = [
+            [
+                "已安装" if plugin_info.module in suc_plugin else "",
+                id,
+                plugin_info.name,
+                plugin_info.description,
+                plugin_info.author,
+                cls.version_check(plugin_info, suc_plugin),
+                plugin_info.plugin_type_name,
+            ]
+            for id, plugin_info in filtered_data
+        ]
+        if not data_list:
             return "未找到相关插件..."
-
-        HIGHLIGHT_COLOR = "#E6A23C"
         column_name = ["-", "ID", "名称", "简介", "作者", "版本", "类型"]
-
-        builder = TableBuilder(
-            title=f"插件搜索结果: '{plugin_name_or_author}'",
-            tip="通过添加/移除插件 ID 来管理插件",
+        return await ImageTemplate.table_page(
+            "商店插件列表",
+            "通过添加/移除插件 ID 来管理插件",
+            column_name,
+            data_list,
+            text_style=row_style,
         )
-        builder.set_headers(column_name)
-
-        rows_to_add = []
-        for id, plugin_info in filtered_data:
-            is_new = cls.check_version_is_new(plugin_info, suc_plugin)
-            has_update = not is_new and plugin_info.module in suc_plugin
-            row_color = HIGHLIGHT_COLOR if has_update else None
-
-            status_cell = (
-                StatusBadgeCell(text="已安装", status_type="ok")
-                if plugin_info.module in suc_plugin
-                else TextCell(content="")
-            )
-
-            rows_to_add.append(
-                [
-                    status_cell,
-                    TextCell(content=str(id), color=row_color),
-                    TextCell(content=plugin_info.name, color=row_color),
-                    TextCell(content=plugin_info.description, color=row_color),
-                    TextCell(content=plugin_info.author, color=row_color),
-                    TextCell(
-                        content=cls.version_check(plugin_info, suc_plugin),
-                        color=row_color,
-                        bold=has_update,
-                    ),
-                    TextCell(content=plugin_info.plugin_type_name, color=row_color),
-                ]
-            )
-
-        builder.add_rows(rows_to_add)
-
-        render_viewport = {"width": 1400, "height": 10}
-        return await ui.render(builder.build(), viewport=render_viewport)
 
     @classmethod
     async def update_plugin(cls, index_or_module: str) -> str:
@@ -582,11 +527,11 @@ class StoreManager:
                 raise PluginStoreException("插件ID不存在...")
             return all_plugin_list[idx].module
         elif isinstance(plugin_id, str):
-            result = (
-                None
-                if plugin_id not in [v.module for v in all_plugin_list]
-                else plugin_id
-            ) or next(v for v in all_plugin_list if v.name == plugin_id).module
-            if not result:
-                raise PluginStoreException("插件 Module / 名称 不存在...")
-            return result
+            if plugin_id in [v.module for v in all_plugin_list]:
+                return plugin_id
+
+            for plugin_info in all_plugin_list:
+                if plugin_info.name.lower() == plugin_id.lower():
+                    return plugin_info.module
+
+            raise PluginStoreException("插件 Module / 名称 不存在...")
