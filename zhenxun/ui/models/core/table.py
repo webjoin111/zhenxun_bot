@@ -10,6 +10,7 @@ from .text import TextSpan
 
 __all__ = [
     "BaseCell",
+    "ComponentCell",
     "ImageCell",
     "ProgressBarCell",
     "RichTextCell",
@@ -78,12 +79,20 @@ class RichTextCell(BaseCell):
     """片段之间的间距"""
 
 
+class ComponentCell(BaseCell):
+    """一个通用的单元格，可以容纳任何可渲染的组件。"""
+
+    type: str = "component"
+    component: RenderableComponent
+
+
 TableCell = (
     TextCell
     | ImageCell
     | StatusBadgeCell
     | ProgressBarCell
     | RichTextCell
+    | ComponentCell
     | str
     | int
     | float
