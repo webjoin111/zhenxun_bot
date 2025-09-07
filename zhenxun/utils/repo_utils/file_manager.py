@@ -634,6 +634,7 @@ class RepoFileManager:
             result.success = False
             result.error_message = str(e)
             return result
+
     async def get_file_last_commit_date(
         self, repo_url: str, file_path: str
     ) -> str | None:
@@ -652,8 +653,12 @@ class RepoFileManager:
             api_url = GIT_API_COMMIT_LIST_FORMAT.format(
                 owner=repo_info.owner, repo=repo_info.repo
             )
-            params = {"sha": repo_info.branch, "path": file_path,
-                      "page": 1, "per_page": 1}
+            params = {
+                "sha": repo_info.branch,
+                "path": file_path,
+                "page": 1,
+                "per_page": 1,
+            }
 
             data = await AsyncHttpx.get_json(api_url, params=params)
             if data and isinstance(data, list) and data[0]:

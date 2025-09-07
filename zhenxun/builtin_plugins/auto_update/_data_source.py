@@ -18,7 +18,6 @@ LOG_COMMAND = "AutoUpdate"
 
 
 class UpdateManager:
-
     @classmethod
     async def check_version(cls) -> str:
         """检查真寻和资源的版本"""
