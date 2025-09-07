@@ -40,6 +40,9 @@ RELEASE_SOURCE_FORMAT = (
 GIT_API_COMMIT_FORMAT = "https://api.github.com/repos/{owner}/{repo}/commits/{branch}"
 """git api commit地址格式"""
 
+GIT_API_COMMIT_LIST_FORMAT = "https://api.github.com/repos/{owner}/{repo}/commits"
+"""git api 列出commits的地址格式"""
+
 GIT_API_PROXY_COMMIT_FORMAT = (
     "https://git-api.zhenxun.org/repos/{owner}/{repo}/commits/{branch}"
 )
