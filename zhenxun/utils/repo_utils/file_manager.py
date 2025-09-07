@@ -11,6 +11,7 @@ from httpx import Response
 
 from zhenxun.services.log import logger
 from zhenxun.utils.github_utils import GithubUtils
+from zhenxun.utils.github_utils.const import GIT_API_COMMIT_LIST_FORMAT
 from zhenxun.utils.github_utils.models import AliyunTreeType, GitHubStrategy, TreeType
 from zhenxun.utils.http_utils import AsyncHttpx
 from zhenxun.utils.utils import is_binary_file
@@ -633,3 +634,33 @@ class RepoFileManager:
             result.success = False
             result.error_message = str(e)
             return result
+    async def get_file_last_commit_date(
+        self, repo_url: str, file_path: str
+    ) -> str | None:
+        """
+        获取 GitHub 仓库中指定文件的最新提交日期。
+
+        参数:
+            repo_url: 仓库的URL。
+            file_path: 文件在仓库中的路径。
+
+        返回:
+            str | None: "YYYY-MM-DD" 格式的日期字符串，如果失败则返回 None。
+        """
+        try:
+            repo_info = GithubUtils.parse_github_url(repo_url)
+            api_url = GIT_API_COMMIT_LIST_FORMAT.format(
+                owner=repo_info.owner, repo=repo_info.repo
+            )
+            params = {"sha": repo_info.branch, "path": file_path,
+                      "page": 1, "per_page": 1}
+
+            data = await AsyncHttpx.get_json(api_url, params=params)
+            if data and isinstance(data, list) and data[0]:
+                date_str = data[0]["commit"]["committer"]["date"]
+                return date_str.split("T")[0]
+        except Exception as e:
+            logger.warning(
+                f"获取 {repo_url} 中 {file_path} 的 commit 日期失败", LOG_COMMAND, e=e
+            )
+        return None
