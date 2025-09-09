@@ -133,8 +133,8 @@ async def gold_rank(session: Uninfo, group_id: str | None, num: int) -> bytes | 
                 TextCell(content=uid2name.get(user[0]) or user[0]),
                 TextCell(content=str(user[1]), bold=True),
                 ImageCell(src=platform_path.resolve().as_uri())
-                 if (platform_path := PLATFORM_PATH.get(platform))
-                 else TextCell(content=""),
+                if (platform_path := PLATFORM_PATH.get(platform))
+                else TextCell(content=""),
             ]
         )
     if group_id:
@@ -529,10 +529,10 @@ class ShopManage:
             if not prop:
                 continue
 
-            icon = ""
+            icon = None
             if prop.icon:
                 icon_path = ICON_PATH / prop.icon
-                icon = (icon_path, 33, 33) if icon_path.exists() else ""
+                icon = icon_path if icon_path.exists() else None
 
             table_rows.append(
                 [

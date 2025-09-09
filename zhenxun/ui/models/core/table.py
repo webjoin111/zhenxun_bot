@@ -64,8 +64,11 @@ class RichTextCell(BaseCell):
 
     type: Literal["rich_text"] = "rich_text"  # type: ignore
     spans: list[TextSpan] = Field(default_factory=list, description="文本片段列表")
+    """文本片段列表"""
     direction: Literal["column", "row"] = Field("column", description="片段排列方向")
+    """片段排列方向"""
     gap: str = Field("4px", description="片段之间的间距")
+    """片段之间的间距"""
 
 
 class ComponentCell(BaseCell):
@@ -93,16 +96,23 @@ class TableData(RenderableComponent):
     """通用表格的数据模型"""
 
     style_name: str | None = None
+    """应用于表格容器的样式名称"""
     title: str = Field(..., description="表格主标题")
+    """表格主标题"""
     tip: str | None = Field(None, description="表格下方的提示信息")
+    """表格下方的提示信息"""
     headers: list[str] = Field(default_factory=list, description="表头列表")
+    """表头列表"""
     rows: list[list[TableCell]] = Field(default_factory=list, description="数据行列表")
+    """数据行列表"""
     column_alignments: list[Literal["left", "center", "right"]] | None = Field(
         default=None, description="每列的对齐方式"
     )
+    """每列的对齐方式"""
     column_widths: list[str | int] | None = Field(
         default=None, description="每列的宽度 (e.g., ['50px', 'auto', 100])"
     )
+    """每列的宽度 (e.g., ['50px', 'auto', 100])"""
 
     @property
     def template_name(self) -> str:
