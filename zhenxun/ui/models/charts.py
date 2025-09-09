@@ -123,9 +123,7 @@ class EChartsData(BaseChartData):
     )
     """用于 set_option 的原始覆盖选项"""
 
-    background_image: str | None = Field(
-        None, description="用于横向柱状图的背景图片"
-    )
+    background_image: str | None = Field(None, description="用于横向柱状图的背景图片")
     """用于横向柱状图的背景图片"""
 
     def build_option(self) -> dict[str, Any]:
