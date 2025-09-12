@@ -6,7 +6,6 @@ from packaging.specifiers import SpecifierSet
 from packaging.version import InvalidVersion, Version
 
 from zhenxun.services.log import logger
-from zhenxun.utils.http_utils import AsyncHttpx
 from zhenxun.utils.manager.virtual_env_package_manager import VirtualEnvPackageManager
 from zhenxun.utils.manager.zhenxun_repo_manager import (
     ZhenxunRepoConfig,
@@ -19,20 +18,6 @@ LOG_COMMAND = "AutoUpdate"
 
 
 class UpdateManager:
-    @staticmethod
-    async def _get_latest_commit_date(owner: str, repo: str, path: str) -> str:
-        """获取文件最新 commit 日期"""
-        api_url = f"https://api.github.com/repos/{owner}/{repo}/commits"
-        params = {"path": path, "page": 1, "per_page": 1}
-        try:
-            data = await AsyncHttpx.get_json(api_url, params=params)
-            if data and isinstance(data, list) and data[0]:
-                date_str = data[0]["commit"]["committer"]["date"]
-                return date_str.split("T")[0]
-        except Exception as e:
-            logger.warning(f"获取 {owner}/{repo}/{path} 的 commit 日期失败", e=e)
-        return "获取失败"
-
     @classmethod
     async def check_version(cls) -> str:
         """检查真寻和资源的版本"""
@@ -42,11 +27,11 @@ class UpdateManager:
         dev_version_task = RepoFileManager.get_file_content(
             ZhenxunRepoConfig.ZHENXUN_BOT_GITHUB_URL, "__version__"
         )
-        bot_commit_date_task = cls._get_latest_commit_date(
-            "HibiKier", "zhenxun_bot", "__version__"
+        bot_commit_date_task = RepoFileManager.get_file_last_commit_date(
+            ZhenxunRepoConfig.ZHENXUN_BOT_GITHUB_URL, "__version__"
         )
-        res_commit_date_task = cls._get_latest_commit_date(
-            "zhenxun-org", "zhenxun-bot-resources", "__version__"
+        res_commit_date_task = RepoFileManager.get_file_last_commit_date(
+            ZhenxunRepoConfig.RESOURCE_GITHUB_URL, "__version__"
         )
 
         (
