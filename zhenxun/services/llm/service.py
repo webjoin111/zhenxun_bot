@@ -304,7 +304,7 @@ class LLMModel(LLMModelBase):
             adapter.validate_embedding_response(response_json)
             return adapter.parse_embedding_response(response_json)
 
-        parsed_data, api_key_used = await self._perform_api_call(
+        parsed_data, _api_key_used = await self._perform_api_call(
             prepare_request_func=prepare_request,
             parse_response_func=parse_response,
             http_client=http_client,
@@ -421,11 +421,39 @@ class LLMModel(LLMModelBase):
             policy = config.validation_policy
             if policy:
                 if policy.get("require_image") and not parsed_data.image_bytes:
-                    raise LLMException(
-                        "响应验证失败：要求返回图片但未找到图片数据。",
-                        code=LLMErrorCode.API_RESPONSE_INVALID,
-                        details={"policy": policy, "text_response": parsed_data.text},
-                    )
+                    if self.api_type == "gemini" and parsed_data.raw_response:
+                        usage_metadata = parsed_data.raw_response.get(
+                            "usageMetadata", {}
+                        )
+                        prompt_token_details = usage_metadata.get(
+                            "promptTokensDetails", []
+                        )
+                        prompt_had_image = any(
+                            detail.get("modality") == "IMAGE"
+                            for detail in prompt_token_details
+                        )
+
+                        if prompt_had_image:
+                            raise LLMException(
+                                "响应验证失败：模型接收了图片输入但未生成图片。",
+                                code=LLMErrorCode.API_RESPONSE_INVALID,
+                                details={
+                                    "policy": policy,
+                                    "text_response": parsed_data.text,
+                                    "raw_response": parsed_data.raw_response,
+                                },
+                            )
+                        else:
+                            logger.debug("Gemini提示词中未包含图片，跳过图片要求重试。")
+                    else:
+                        raise LLMException(
+                            "响应验证失败：要求返回图片但未找到图片数据。",
+                            code=LLMErrorCode.API_RESPONSE_INVALID,
+                            details={
+                                "policy": policy,
+                                "text_response": parsed_data.text,
+                            },
+                        )
 
         return parsed_data, api_key_used
 

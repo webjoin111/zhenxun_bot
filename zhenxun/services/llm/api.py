@@ -311,7 +311,7 @@ async def _generate_image_from_message(
     message: UniMessage,
     model: ModelName = None,
     **kwargs: Any,
-) -> bytes:
+) -> LLMResponse:
     """
     [内部] 从 UniMessage 生成图片的核心辅助函数。
     """
@@ -341,14 +341,9 @@ async def _generate_image_from_message(
 
             if not response.image_bytes:
                 error_text = response.text or "模型未返回图片数据。"
-                logger.error(f"图片生成失败: {error_text}")
-                raise LLMException(
-                    f"图片生成失败: {error_text}",
-                    code=LLMErrorCode.GENERATION_FAILED,
-                    details={"raw_response": response.raw_response},
-                )
+                logger.warning(f"图片生成调用未返回图片，返回文本内容: {error_text}")
 
-            return response.image_bytes
+            return response
     except LLMException:
         raise
     except Exception as e:
@@ -363,7 +358,7 @@ async def create_image(
     images: None = None,
     model: ModelName = None,
     **kwargs: Any,
-) -> bytes:
+) -> LLMResponse:
     """根据文本提示生成一张新图片。"""
     ...
 
@@ -375,7 +370,7 @@ async def create_image(
     images: list[Path | bytes | str] | Path | bytes | str,
     model: ModelName = None,
     **kwargs: Any,
-) -> bytes:
+) -> LLMResponse:
     """在给定图片的基础上，根据文本提示进行编辑或重新生成。"""
     ...
 
@@ -386,7 +381,7 @@ async def create_image(
     images: list[Path | bytes | str] | Path | bytes | str | None = None,
     model: ModelName = None,
     **kwargs: Any,
-) -> bytes:
+) -> LLMResponse:
     """
     智能图片生成/编辑函数。
     - 如果 `images` 为 None，执行文生图。
