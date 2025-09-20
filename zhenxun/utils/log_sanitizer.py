@@ -50,6 +50,29 @@ def _sanitize_openai_response(response_json: dict) -> dict:
         return response_json
 
 
+def _sanitize_openai_request(body: dict) -> dict:
+    """净化OpenAI兼容API的请求体，主要截断图片base64。"""
+    try:
+        sanitized_json = copy.deepcopy(body)
+        if "messages" in sanitized_json and isinstance(
+            sanitized_json["messages"], list
+        ):
+            for message in sanitized_json["messages"]:
+                if "content" in message and isinstance(message["content"], list):
+                    for i, part in enumerate(message["content"]):
+                        if part.get("type") == "image_url":
+                            if "image_url" in part and isinstance(
+                                part["image_url"], dict
+                            ):
+                                url = part["image_url"].get("url", "")
+                                message["content"][i]["image_url"]["url"] = (
+                                    _truncate_base64_string(url)
+                                )
+        return sanitized_json
+    except Exception:
+        return body
+
+
 def _sanitize_gemini_response(response_json: dict) -> dict:
     """净化Gemini API的响应体，处理文本和图片生成两种格式。"""
     try:
@@ -147,6 +170,9 @@ def sanitize_for_logging(data: Any, context: str | None = None) -> Any:
     elif context == "gemini_request":
         if isinstance(data, dict):
             return _sanitize_gemini_request(data)
+    elif context == "openai_request":
+        if isinstance(data, dict):
+            return _sanitize_openai_request(data)
     else:
         if isinstance(data, str):
             return _truncate_base64_string(data)
