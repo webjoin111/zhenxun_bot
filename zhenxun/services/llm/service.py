@@ -187,8 +187,12 @@ class LLMModel(LLMModelBase):
             logger.debug(f"🔑 API密钥: {masked_key}")
             logger.debug(f"📋 请求头: {dict(request_data.headers)}")
 
+            sanitizer_req_context_map = {"gemini": "gemini_request"}
+            sanitizer_req_context = sanitizer_req_context_map.get(
+                self.api_type, "openai_request"
+            )
             sanitized_body = sanitize_for_logging(
-                request_data.body, context="gemini_request"
+                request_data.body, context=sanitizer_req_context
             )
             request_body_str = json.dumps(sanitized_body, ensure_ascii=False, indent=2)
             logger.debug(f"📦 请求体: {request_body_str}")
