@@ -14,6 +14,7 @@ from nonebot_plugin_session import EventSession
 from zhenxun.configs.config import BotConfig
 from zhenxun.configs.utils import PluginExtraData
 from zhenxun.services.log import logger
+from zhenxun.services.tags import tag_manager
 from zhenxun.utils.enum import PluginType
 from zhenxun.utils.message import MessageUtils
 from zhenxun.utils.platform import PlatformUtils
@@ -96,6 +97,7 @@ async def _update_all_groups_task(bot: Bot, session: EventSession):
         )
         return
 
+    await tag_manager._invalidate_cache()
     summary_message = (
         f"🤖 Bot {bot_id} 所有群组信息更新任务完成！\n"
         f"总计群组: {total_count}\n"
@@ -120,6 +122,7 @@ async def _(bot: Bot, session: EventSession, arparma: Arparma):
         logger.info("更新群组成员信息", arparma.header_result, session=session)
         result = await MemberUpdateManage.update_group_member(bot, gid)
         await MessageUtils.build_message(result).finish(reply_to=True)
+        await tag_manager._invalidate_cache()
     await MessageUtils.build_message("群组id为空...").send()
 
 
@@ -133,6 +136,7 @@ async def _(bot: Bot, event: GroupIncreaseNoticeEvent):
             session=event.user_id,
             group_id=event.group_id,
         )
+        await tag_manager._invalidate_cache()
 
 
 @scheduler.scheduled_job(
@@ -160,3 +164,5 @@ async def _():
             except Exception as e:
                 logger.error(f"Bot: {bot.self_id} 自动更新群组信息", e=e)
         logger.debug(f"自动 Bot: {bot.self_id} 更新群组成员信息成功...")
+
+    await tag_manager._invalidate_cache()
