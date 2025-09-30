@@ -1,4 +1,5 @@
 import copy
+import re
 from typing import Any
 
 from nonebot.adapters import Message, MessageSegment
@@ -14,6 +15,24 @@ def _truncate_base64_string(value: str, threshold: int = 256) -> str:
         prefix = next((p for p in prefixes if value.startswith(p)), "base64")
         return f"[{prefix}_data_omitted_len={len(value)}]"
     return value
+
+
+def _sanitize_ui_html(html_string: str) -> str:
+    """
+    专门用于净化UI渲染调试HTML的函数。
+    它会查找所有内联的base64数据（如字体、图片）并将其截断。
+    """
+    if not isinstance(html_string, str):
+        return html_string
+
+    pattern = re.compile(r"(data:[^;]+;base64,)[A-Za-z0-9+/=\s]{100,}")
+
+    def replacer(match):
+        prefix = match.group(1)
+        original_len = len(match.group(0)) - len(prefix)
+        return f"{prefix}[...base64_omitted_len={original_len}...]"
+
+    return pattern.sub(replacer, html_string)
 
 
 def _sanitize_nonebot_message(message: Message) -> Message:
@@ -173,6 +192,9 @@ def sanitize_for_logging(data: Any, context: str | None = None) -> Any:
     elif context == "openai_request":
         if isinstance(data, dict):
             return _sanitize_openai_request(data)
+    elif context == "ui_html":
+        if isinstance(data, str):
+            return _sanitize_ui_html(data)
     else:
         if isinstance(data, str):
             return _truncate_base64_string(data)
