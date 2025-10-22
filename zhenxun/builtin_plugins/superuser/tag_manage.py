@@ -213,17 +213,31 @@ async def handle_info(name: Match[str], bot: Bot):
     msg += f"模式: {mode}\n"
     msg += f"描述: {details['description'] or '无'}\n"
 
-    if details["tag_type"] == "DYNAMIC":
+    if details["tag_type"] == "STATIC" and details["is_blacklist"]:
+        msg += f"排除群组 ({len(details['groups'])}个):\n"
+        if details["groups"]:
+            msg += "\n".join(f"- {gid}" for gid in details["groups"])
+        else:
+            msg += "无"
+        msg += "\n\n"
+
+    if details["tag_type"] == "DYNAMIC" and details.get("dynamic_rule"):
         msg += f"动态规则: {details['dynamic_rule']}\n"
-        if details["resolved_groups"] is not None:
-            msg += f"当前匹配群组 ({len(details['resolved_groups'])}个):\n"
-            if details["resolved_groups"]:
-                msg += "\n".join(
-                    f"- {g_name} ({g_id})"
-                    for g_id, g_name in details["resolved_groups"]
-                )
-            else:
-                msg += "无"
+
+    title = (
+        "当前生效群组"
+        if details["tag_type"] == "DYNAMIC" or details["is_blacklist"]
+        else "关联群组"
+    )
+
+    if details["resolved_groups"] is not None:
+        msg += f"{title} ({len(details['resolved_groups'])}个):\n"
+        if details["resolved_groups"]:
+            msg += "\n".join(
+                f"- {g_name} ({g_id})" for g_id, g_name in details["resolved_groups"]
+            )
+        else:
+            msg += "无"
     else:
         msg += f"关联群组 ({len(details['groups'])}个):\n"
         if details["groups"]:

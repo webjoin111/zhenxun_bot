@@ -234,16 +234,13 @@ class TagManager:
         if not tag:
             return None
 
-        resolved_groups = None
-        if tag.tag_type == "DYNAMIC" and bot:
-            resolved_group_ids = await self.resolve_tag_to_group_ids(name, bot=bot)
-            if resolved_group_ids:
-                groups_from_db = await GroupConsole.filter(
-                    group_id__in=resolved_group_ids
-                ).all()
-                resolved_groups = [(g.group_id, g.group_name) for g in groups_from_db]
-            else:
-                resolved_groups = []
+        final_group_ids = await self.resolve_tag_to_group_ids(name, bot=bot)
+        resolved_groups: list[tuple[str, str]] = []
+        if final_group_ids:
+            groups_from_db = await GroupConsole.filter(
+                group_id__in=final_group_ids
+            ).all()
+            resolved_groups = [(g.group_id, g.group_name) for g in groups_from_db]
 
         return {
             "name": tag.name,
@@ -418,18 +415,37 @@ class TagManager:
         if not tag:
             return []
 
-        if tag.tag_type == "DYNAMIC":
+        associated_groups: set[str] = set()
+        if tag.tag_type == "STATIC":
+            associated_groups = {str(link.group_id) for link in tag.groups}
+        elif tag.tag_type == "DYNAMIC":
             if not tag.dynamic_rule or not isinstance(tag.dynamic_rule, dict | str):
                 return []
-            associated_groups = await self._resolve_dynamic_tag(tag.dynamic_rule, bot)
+            dynamic_ids = await self._resolve_dynamic_tag(tag.dynamic_rule, bot)
+            associated_groups = {str(gid) for gid in dynamic_ids}
         else:
-            associated_groups = {link.group_id for link in tag.groups}
+            associated_groups = {str(link.group_id) for link in tag.groups}
 
         if tag.is_blacklist:
-            all_group_ids_from_db = await GroupConsole.all().values_list(
+            all_groups_query = GroupConsole.all()
+            if bot:
+                bot_groups, _ = await PlatformUtils.get_group_list(bot)
+                bot_group_ids = {str(g.group_id) for g in bot_groups if g.group_id}
+                if bot_group_ids:
+                    all_groups_query = all_groups_query.filter(
+                        group_id__in=bot_group_ids
+                    )
+                else:
+                    return []
+
+            all_relevant_group_ids_from_db = await all_groups_query.values_list(
                 "group_id", flat=True
             )
-            return list({str(gid) for gid in all_group_ids_from_db} - associated_groups)
+            all_relevant_group_ids = {
+                str(gid) for gid in all_relevant_group_ids_from_db
+            }
+
+            return list(all_relevant_group_ids - associated_groups)
         else:
             return list(associated_groups)
 
