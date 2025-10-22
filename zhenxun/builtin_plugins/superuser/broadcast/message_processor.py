@@ -23,11 +23,12 @@ from nonebot_plugin_session import EventSession
 
 from zhenxun.models.group_console import GroupConsole
 from zhenxun.services.log import logger
+from zhenxun.services.tags import tag_manager as TagManager
 from zhenxun.utils.common_utils import CommonUtils
+from zhenxun.utils.http_utils import AsyncHttpx
 from zhenxun.utils.message import MessageUtils
 
 from .broadcast_manager import BroadcastManager
-from .tag_manager import TagManager
 
 MAX_FORWARD_DEPTH = 3
 
@@ -401,22 +402,29 @@ async def _process_v11_segment(
         elif target_qq:
             result.append(At(flag="user", target=target_qq))
     elif seg_type == "video":
-        video_seg = None
-        if data_dict.get("url"):
-            video_seg = Video(url=data_dict["url"])
-        elif data_dict.get("file"):
-            file_val = data_dict["file"]
+        if url := data_dict.get("url"):
+            try:
+                logger.debug(f"[D{depth}] 正在下载视频用于广播: {url}", "广播")
+                video_bytes = await AsyncHttpx.get_content(url)
+                video_seg = Video(raw=video_bytes)
+                logger.debug(
+                    f"[D{depth}] 视频下载成功, 大小: {len(video_bytes)} bytes",
+                    "广播",
+                )
+                result.append(video_seg)
+            except Exception as e:
+                logger.error(f"[D{depth}] 广播时下载视频失败: {url}", "广播", e=e)
+                result.append(Text(f"[视频下载失败: {url}]"))
+        elif file_val := data_dict.get("file"):
             if isinstance(file_val, str) and file_val.startswith("base64://"):
                 b64_data = file_val[9:]
                 raw_bytes = base64.b64decode(b64_data)
                 video_seg = Video(raw=raw_bytes)
+                result.append(video_seg)
             else:
                 video_seg = Video(path=file_val)
-        if video_seg:
-            result.append(video_seg)
-            logger.debug(f"[Depth {depth}] 处理视频消息成功", "广播")
-        else:
-            logger.warning(f"[Depth {depth}] V11 视频 {index} 缺少URL/文件", "广播")
+                result.append(video_seg)
+        return result
     elif seg_type == "forward":
         nested_forward_id = data_dict.get("id") or data_dict.get("resid")
         nested_forward_content = data_dict.get("content")
@@ -525,16 +533,15 @@ async def get_broadcast_target_groups(
     """获取广播目标群组和启用了广播功能的群组"""
     target_groups_console: list[GroupConsole] = []
 
-    current_group_id = None
-    if hasattr(session, "id2") and session.id2:
-        current_group_id = str(session.id2)
-    elif hasattr(session, "group_id") and session.group_id:
-        current_group_id = str(session.group_id)
+    current_group_raw = getattr(session, "id2", None) or getattr(
+        session, "group_id", None
+    )
+    current_group_id = str(current_group_raw) if current_group_raw else None
 
     logger.debug(f"当前群组ID: {current_group_id}", "广播")
 
     if tag_name:
-        tagged_group_ids = await TagManager.get_groups_by_tag(tag_name)
+        tagged_group_ids = await TagManager.resolve_tag_to_group_ids(tag_name, bot=bot)
         if not tagged_group_ids:
             return [], []
 
@@ -553,18 +560,18 @@ async def get_broadcast_target_groups(
                 )
                 else ""
             )
-            logger.info(
-                f"向标签 '{tag_name}' 中的 {len(target_groups_console)} 个群组广播 (ForceSend: {force_send}){excluded_msg}",
-                "广播",
-                session=session,
+            broadcast_msg = (
+                f"向标签 '{tag_name}' 中的 {len(target_groups_console)} 个群组广播 "
+                f"(ForceSend: {force_send}){excluded_msg}"
             )
+            logger.info(broadcast_msg, "广播", session=session)
         else:
             target_groups_console = valid_groups
-            logger.info(
-                f"向标签 '{tag_name}' 中的 {len(target_groups_console)} 个群组广播 (ForceSend: {force_send})",
-                "广播",
-                session=session,
+            broadcast_msg = (
+                f"向标签 '{tag_name}' 中的 {len(target_groups_console)} 个群组广播 "
+                f"(ForceSend: {force_send})"
             )
+            logger.info(broadcast_msg, "广播", session=session)
     else:
         all_groups, _ = await BroadcastManager.get_all_groups(bot)
 
@@ -573,7 +580,10 @@ async def get_broadcast_target_groups(
                 group for group in all_groups if str(group.group_id) != current_group_id
             ]
             logger.info(
-                f"向除当前群组({current_group_id})外的所有群组广播 (ForceSend: {force_send})",
+                (
+                    f"向除当前群组({current_group_id})外的所有群组广播 "
+                    f"(ForceSend: {force_send})"
+                ),
                 "广播",
                 session=session,
             )
@@ -602,7 +612,8 @@ async def get_broadcast_target_groups(
             if not await CommonUtils.task_is_block(bot, "broadcast", group.group_id):
                 groups_to_actually_send.append(group)
         logger.debug(
-            f"普通发送模式，筛选后将向 {len(groups_to_actually_send)} 个目标群组尝试发送。",
+            f"普通发送模式，筛选后将向 {len(groups_to_actually_send)} "
+            f"个目标群组尝试发送",
             "广播",
         )
 
