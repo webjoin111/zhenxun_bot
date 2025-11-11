@@ -156,8 +156,9 @@ class TagManager:
                 dynamic_rule=dynamic_rule,
             )
             if group_ids:
+                unique_group_ids = list(dict.fromkeys(group_ids))
                 await GroupTagLink.bulk_create(
-                    [GroupTagLink(tag=tag, group_id=gid) for gid in group_ids]
+                    [GroupTagLink(tag=tag, group_id=gid) for gid in unique_group_ids]
                 )
             return tag
 
@@ -186,11 +187,12 @@ class TagManager:
         if tag.tag_type == "DYNAMIC":
             raise ValueError("不能向动态标签手动添加群组。")
 
+        unique_group_ids = list(dict.fromkeys(group_ids))
         await GroupTagLink.bulk_create(
-            [GroupTagLink(tag=tag, group_id=gid) for gid in group_ids],
+            [GroupTagLink(tag=tag, group_id=gid) for gid in unique_group_ids],
             ignore_conflicts=True,
         )
-        return len(group_ids)
+        return len(unique_group_ids)
 
     @invalidate_on_change
     async def remove_groups_from_tag(self, name: str, group_ids: list[str]) -> int:
@@ -204,6 +206,72 @@ class TagManager:
             tag=tag, group_id__in=group_ids
         ).delete()
         return deleted_count
+
+    @invalidate_on_change
+    async def clone_tag(
+        self,
+        source_name: str,
+        new_name: str,
+        bot: Bot,
+        add_groups: list[str] | None = None,
+        remove_groups: list[str] | None = None,
+        as_dynamic: bool = False,
+        description: str | None = None,
+        mode: str | None = None,
+    ) -> GroupTag:
+        """
+        克隆一个标签，支持动态转静态、修改群组等。
+        """
+        source_tag = await GroupTag.get_or_none(name=source_name)
+        if not source_tag:
+            raise ValueError(f"源标签 '{source_name}' 不存在。")
+
+        if await GroupTag.exists(name=new_name):
+            raise IntegrityError(f"目标标签 '{new_name}' 已存在。")
+
+        tag_type = "STATIC"
+        group_ids_to_set: list[str] | None = None
+        dynamic_rule: str | dict | None = None
+
+        if source_tag.tag_type == "STATIC":
+            if as_dynamic:
+                raise ValueError("不能将静态标签克隆为动态标签。")
+            group_ids_to_set = await GroupTagLink.filter(tag=source_tag).values_list(  # type: ignore
+                "group_id", flat=True
+            )
+        else:
+            if as_dynamic:
+                tag_type = "DYNAMIC"
+                dynamic_rule = source_tag.dynamic_rule
+                if add_groups or remove_groups:
+                    raise ValueError(
+                        "克隆为动态标签时，不支持 --add 或 --remove 操作。"
+                    )
+            else:
+                group_ids_to_set = await self.resolve_tag_to_group_ids(
+                    source_name, bot=bot
+                )
+
+        if group_ids_to_set is not None:
+            final_group_set = set(group_ids_to_set)
+            if add_groups:
+                final_group_set.update(add_groups)
+            if remove_groups:
+                final_group_set.difference_update(remove_groups)
+            group_ids_to_set = list(final_group_set)
+
+        is_blacklist = (
+            (mode == "black") if mode is not None else source_tag.is_blacklist
+        )
+
+        return await self.create_tag(
+            name=new_name,
+            is_blacklist=is_blacklist,
+            description=description,
+            group_ids=group_ids_to_set,
+            tag_type=tag_type,
+            dynamic_rule=dynamic_rule,
+        )
 
     async def list_tags_with_counts(self) -> list[dict]:
         """列出所有标签及其关联的群组数量。"""
@@ -514,11 +582,13 @@ class TagManager:
             raise ValueError("不能为动态标签设置静态群组列表。")
         async with in_transaction():
             await GroupTagLink.filter(tag=tag).delete()
-            await GroupTagLink.bulk_create(
-                [GroupTagLink(tag=tag, group_id=gid) for gid in group_ids],
-                ignore_conflicts=True,
-            )
-        return len(group_ids)
+            unique_group_ids = list(dict.fromkeys(group_ids))
+            if unique_group_ids:
+                await GroupTagLink.bulk_create(
+                    [GroupTagLink(tag=tag, group_id=gid) for gid in unique_group_ids],
+                    ignore_conflicts=True,
+                )
+        return len(unique_group_ids)
 
     @invalidate_on_change
     async def clear_all_tags(self) -> int:
