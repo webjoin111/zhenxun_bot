@@ -75,6 +75,7 @@ class RendererService:
         self._custom_globals: dict[str, Callable] = {}
 
         self.filter("dump_json")(self._pydantic_tojson_filter)
+        self.global_function("inline_asset")(self._inline_asset_global)
 
     def _create_jinja_env(self) -> Environment:
         """
@@ -176,9 +177,24 @@ class RendererService:
 
         return decorator
 
+    async def _inline_asset_global(self, namespaced_path: str) -> str:
+        """
+        一个Jinja2全局函数，用于读取并内联一个已注册命名空间下的资源文件内容。
+        主要用于内联SVG，以解决浏览器的跨域安全问题。
+        """
+        if not self._jinja_env or not self._jinja_env.loader:
+            return f"<!-- Error: Jinja env not ready for {namespaced_path} -->"
+        try:
+            source, _, _ = self._jinja_env.loader.get_source(
+                self._jinja_env, namespaced_path
+            )
+            return source
+        except TemplateNotFound:
+            return f"<!-- Asset not found: {namespaced_path} -->"
+
     async def initialize(self):
         """
-        [新增] 延迟初始化方法，在 on_startup 钩子中调用。
+        延迟初始化方法，在 on_startup 钩子中调用。
 
         负责初始化截图引擎和主题管理器，确保在首次渲染前所有依赖都已准备就绪。
         使用锁来防止并发初始化。
