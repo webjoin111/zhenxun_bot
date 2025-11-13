@@ -239,27 +239,36 @@ class RendererService:
         )
 
         style_paths_to_load = []
-        if manifest and "styles" in manifest:
-            styles = (
-                [manifest["styles"]]
-                if isinstance(manifest["styles"], str)
-                else manifest["styles"]
-            )
-            for style_path in styles:
-                full_style_path = str(Path(component_path_base) / style_path).replace(
-                    "\\", "/"
+        if manifest and manifest.get("styles"):
+            styles = manifest["styles"]
+            styles = [styles] if isinstance(styles, str) else styles
+
+            resolution_base_path = Path(component_path_base)
+            if variant:
+                skin_manifest_path = str(Path(component_path_base) / "skins" / variant)
+                skin_manifest = await context.theme_manager._load_single_manifest(
+                    skin_manifest_path
                 )
-                style_paths_to_load.append(full_style_path)
+                if skin_manifest and "styles" in skin_manifest:
+                    resolution_base_path = Path(skin_manifest_path)
+
+            style_paths_to_load.extend(
+                str(resolution_base_path / style).replace("\\", "/") for style in styles
+            )
         else:
-            resolved_template_name = (
+            base_template_path = (
                 await context.theme_manager._resolve_component_template(
                     component, context
                 )
             )
-            conventional_style_path = str(
-                Path(resolved_template_name).with_name("style.css")
+            base_style_path = str(
+                Path(base_template_path).with_name("style.css")
             ).replace("\\", "/")
-            style_paths_to_load.append(conventional_style_path)
+            style_paths_to_load.append(base_style_path)
+
+            if variant:
+                skin_style_path = f"{component_path_base}/skins/{variant}/style.css"
+                style_paths_to_load.append(skin_style_path)
 
         for css_template_path in style_paths_to_load:
             try:
