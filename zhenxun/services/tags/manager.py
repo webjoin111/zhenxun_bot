@@ -9,6 +9,7 @@ from typing import Any, ClassVar
 
 from aiocache import Cache, cached
 from arclet.alconna import Alconna, Args
+import nonebot
 from nonebot.adapters import Bot
 from tortoise.exceptions import IntegrityError
 from tortoise.expressions import Q
@@ -175,6 +176,49 @@ class TagManager:
         """
         deleted_count = await GroupTag.filter(name=name).delete()
         return deleted_count > 0
+
+    @invalidate_on_change
+    async def remove_group_from_all_tags(self, group_id: str) -> int:
+        """
+        从所有静态标签中移除一个指定的群组ID。
+        主要用于机器人退群时的实时清理。
+
+        参数：
+            group_id: 要移除的群组ID。
+
+        返回：
+            被删除的关联数量。
+        """
+        deleted_count = await GroupTagLink.filter(group_id=group_id).delete()
+        if deleted_count > 0:
+            logger.info(f"已从 {deleted_count} 个标签中移除群组 {group_id} 的关联。")
+        return deleted_count
+
+    @invalidate_on_change
+    async def prune_stale_group_links(self) -> int:
+        """
+        清理所有静态标签中无效的群组关联。
+        无效指的是机器人已不再任何一个已连接的Bot的群组列表中。
+
+        返回：
+            被清理的无效关联的总数。
+        """
+        all_bot_group_ids = set()
+        for bot in nonebot.get_bots().values():
+            groups, _ = await PlatformUtils.get_group_list(bot)
+            all_bot_group_ids.update(g.group_id for g in groups if g.group_id)
+
+        all_static_links = await GroupTagLink.filter(tag__tag_type="STATIC").all()
+
+        stale_link_ids = [
+            link.id
+            for link in all_static_links
+            if link.group_id not in all_bot_group_ids
+        ]
+
+        if stale_link_ids:
+            return await GroupTagLink.filter(id__in=stale_link_ids).delete()
+        return 0
 
     @invalidate_on_change
     async def add_groups_to_tag(self, name: str, group_ids: list[str]) -> int:  # type: ignore
