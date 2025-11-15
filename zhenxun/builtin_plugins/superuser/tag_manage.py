@@ -176,6 +176,7 @@ tag_cmd = on_alconna(
             help_text="删除标签",
         ),
         Subcommand("clear", help_text="清空所有标签"),
+        Subcommand("prune", alias=["check", "清理"], help_text="清理无效的群组关联"),
         Subcommand(
             "clone",
             Args["source_name", str]["new_name", str],
@@ -190,6 +191,13 @@ tag_cmd = on_alconna(
     permission=SUPERUSER,
     priority=5,
     block=True,
+)
+
+tag_cmd.shortcut(
+    "清理标签",
+    command="tag",
+    arguments=["prune"],
+    prefix=True,
 )
 
 
@@ -466,3 +474,10 @@ async def handle_clone(
         await MessageUtils.build_message(msg).finish()
     except (ValueError, IntegrityError) as e:
         await MessageUtils.build_message(f"克隆失败: {e}").finish()
+
+
+@tag_cmd.assign("prune")
+async def handle_prune():
+    deleted_count = await tag_manager.prune_stale_group_links()
+    msg = f"清理完成！共移除了 {deleted_count} 个无效的群组关联。"
+    await MessageUtils.build_message(msg).finish()
