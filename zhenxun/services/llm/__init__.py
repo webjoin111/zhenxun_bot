@@ -9,13 +9,15 @@ from .api import (
     code,
     create_image,
     embed,
+    embed_documents,
+    embed_query,
     generate,
     generate_structured,
-    run_with_tools,
     search,
 )
 from .config import (
     CommonOverrides,
+    GenConfigBuilder,
     LLMGenerationConfig,
     register_llm_configs,
 )
@@ -32,8 +34,8 @@ from .manager import (
     list_model_identifiers,
     set_global_default_model_name,
 )
-from .session import AI, AIConfig
-from .tools import function_tool, tool_provider_manager
+from .session import AI, AIConfig, MemoryProcessor, set_default_memory_backend
+from .tools import RunContext, ToolInvoker, function_tool, tool_provider_manager
 from .types import (
     EmbeddingTaskType,
     LLMContentPart,
@@ -50,6 +52,11 @@ from .types import (
     ToolMetadata,
     UsageInfo,
 )
+from .types.models import (
+    GeminiCodeExecution,
+    GeminiGoogleSearch,
+    GeminiUrlContext,
+)
 from .utils import create_multimodal_message, message_to_unimessage, unimsg_to_llm_parts
 
 __all__ = [
@@ -57,19 +64,26 @@ __all__ = [
     "AIConfig",
     "CommonOverrides",
     "EmbeddingTaskType",
+    "GeminiCodeExecution",
+    "GeminiGoogleSearch",
+    "GeminiUrlContext",
+    "GenConfigBuilder",
     "LLMContentPart",
     "LLMErrorCode",
     "LLMException",
     "LLMGenerationConfig",
     "LLMMessage",
     "LLMResponse",
+    "MemoryProcessor",
     "ModelDetail",
     "ModelInfo",
     "ModelName",
     "ModelProvider",
     "ResponseFormat",
+    "RunContext",
     "TaskType",
     "ToolCategory",
+    "ToolInvoker",
     "ToolMetadata",
     "UsageInfo",
     "chat",
@@ -78,6 +92,8 @@ __all__ = [
     "create_image",
     "create_multimodal_message",
     "embed",
+    "embed_documents",
+    "embed_query",
     "function_tool",
     "generate",
     "generate_structured",
@@ -89,8 +105,8 @@ __all__ = [
     "list_model_identifiers",
     "message_to_unimessage",
     "register_llm_configs",
-    "run_with_tools",
     "search",
+    "set_default_memory_backend",
     "set_global_default_model_name",
     "tool_provider_manager",
     "unimsg_to_llm_parts",
