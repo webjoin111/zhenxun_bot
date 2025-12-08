@@ -348,11 +348,6 @@ class AliyunCodeupManager(BaseRepoManager):
         if not self.config.aliyun_codeup.organization_id:
             raise AuthenticationError("阿里云CodeUp")
 
-    async def get_latest_commit(self, repo_url: str, branch: str = "main") -> str:
-        """获取阿里云CodeUp仓库指定分支的最新提交哈希值。"""
-        repo_name = repo_url.split("/tree/")[0].split("/")[-1].replace(".git", "")
-        return await self._get_newest_commit(repo_name, branch)
-
     async def _get_newest_commit(self, repo_name: str, branch: str) -> str:
         """
         获取仓库最新提交ID

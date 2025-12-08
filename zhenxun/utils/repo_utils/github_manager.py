@@ -320,12 +320,6 @@ class GithubManager(BaseRepoManager):
             logger.error("获取提交信息失败", LOG_COMMAND, e=e)
             return None
 
-    async def get_latest_commit(self, repo_url: str, branch: str = "main") -> str:
-        """获取GitHub仓库指定分支的最新提交哈希值。"""
-        repo_info = GithubUtils.parse_github_url(repo_url)
-        repo_name = repo_info.repo.replace(".git", "")
-        return await self._get_newest_commit(repo_info.owner, repo_name, branch)
-
     async def _get_newest_commit(self, owner: str, repo: str, branch: str) -> str:
         """
         获取仓库最新提交ID

@@ -117,20 +117,6 @@ class BaseRepoManager(ABC):
         """
         pass
 
-    @abstractmethod
-    async def get_latest_commit(self, repo_url: str, branch: str = "main") -> str:
-        """
-        获取仓库指定分支的最新提交哈希值。
-
-        参数:
-            repo_url: 仓库URL或名称。
-            branch: 分支名称。
-
-        返回:
-            str: 最新的提交哈希值。
-        """
-        pass
-
     async def save_file_content(self, content: bytes, local_path: Path) -> int:
         """
         保存文件内容
