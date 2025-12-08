@@ -302,12 +302,6 @@ async def _generate_image_from_message(
         messages = await normalize_to_llm_messages(message)
 
         async with await get_model_instance(model) as model_instance:
-            if not model_instance.can_generate_images:
-                raise LLMException(
-                    f"模型 '{model_instance.provider_name}/{model_instance.model_name}'"
-                    f"不支持图片生成",
-                    code=LLMErrorCode.CONFIGURATION_ERROR,
-                )
 
             response = await model_instance.generate_response(messages, config=config)
 
