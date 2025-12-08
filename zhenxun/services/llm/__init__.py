@@ -34,7 +34,13 @@ from .manager import (
     list_model_identifiers,
     set_global_default_model_name,
 )
-from .session import AI, AIConfig, MemoryProcessor, set_default_memory_backend
+from .memory import (
+    AIConfig,
+    BaseMemory,
+    MemoryProcessor,
+    set_default_memory_backend,
+)
+from .session import AI
 from .tools import RunContext, ToolInvoker, function_tool, tool_provider_manager
 from .types import (
     EmbeddingTaskType,
@@ -62,6 +68,7 @@ from .utils import create_multimodal_message, message_to_unimessage, unimsg_to_l
 __all__ = [
     "AI",
     "AIConfig",
+    "BaseMemory",
     "CommonOverrides",
     "EmbeddingTaskType",
     "GeminiCodeExecution",

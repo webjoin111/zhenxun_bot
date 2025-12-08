@@ -4,11 +4,8 @@ LLM 服务 - 会话客户端
 提供一个有状态的、面向会话的 LLM 客户端，用于进行多轮对话和复杂交互。
 """
 
-from abc import ABC, abstractmethod
-from collections import defaultdict
 from collections.abc import Awaitable, Callable
 import copy
-from dataclasses import dataclass, field
 import json
 from typing import Any, TypeVar, cast
 import uuid
@@ -28,8 +25,14 @@ from .config import (
     LLMGenerationConfig,
 )
 from .config.generation import OutputConfig
-from .config.providers import get_ai_config, get_llm_config
+from .config.providers import get_llm_config
 from .manager import get_global_default_model_name, get_model_instance
+from .memory import (
+    AIConfig,
+    BaseMemory,
+    MemoryProcessor,
+    _get_default_memory,
+)
 from .tools import tool_provider_manager
 from .types import (
     LLMContentPart,
@@ -42,7 +45,6 @@ from .types import (
     StructuredOutputStrategy,
     ToolChoice,
     ToolExecutable,
-    ToolProvider,
 )
 from .types.models import (
     GeminiCodeExecution,
@@ -56,105 +58,6 @@ from .utils import (
 )
 
 T = TypeVar("T", bound=BaseModel)
-
-
-@dataclass
-class AIConfig:
-    """AI配置类"""
-
-    model: ModelName = None
-    default_embedding_model: ModelName = None
-    default_preserve_media_in_history: bool = False
-    tool_providers: list[ToolProvider] = field(default_factory=list)
-
-    def __post_init__(self):
-        """初始化后从配置中读取默认值"""
-        ai_config = get_ai_config()
-        if self.model is None:
-            self.model = ai_config.get("default_model_name")
-
-
-class BaseMemory(ABC):
-    """记忆系统的抽象基类。"""
-
-    @abstractmethod
-    async def get_history(self, session_id: str) -> list[LLMMessage]:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def add_message(self, session_id: str, message: LLMMessage) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def add_messages(self, session_id: str, messages: list[LLMMessage]) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def clear_history(self, session_id: str) -> None:
-        raise NotImplementedError
-
-
-class InMemoryMemory(BaseMemory):
-    """一个简单的、默认的内存记忆后端。"""
-
-    def __init__(self, max_messages: int = 50, **kwargs: Any):
-        self._history: dict[str, list[LLMMessage]] = defaultdict(list)
-        self._max_messages = max_messages
-
-    def _trim_history(self, session_id: str) -> None:
-        """修剪历史记录，确保不超过最大长度，同时保留 System Prompt"""
-        history = self._history[session_id]
-        if len(history) <= self._max_messages:
-            return
-
-        has_system = history and history[0].role == "system"
-
-        if has_system:
-            keep_count = max(0, self._max_messages - 1)
-            self._history[session_id] = [history[0], *history[-keep_count:]]
-        else:
-            self._history[session_id] = history[-self._max_messages :]
-
-    async def get_history(self, session_id: str) -> list[LLMMessage]:
-        return self._history.get(session_id, []).copy()
-
-    async def add_message(self, session_id: str, message: LLMMessage) -> None:
-        self._history[session_id].append(message)
-        self._trim_history(session_id)
-
-    async def add_messages(self, session_id: str, messages: list[LLMMessage]) -> None:
-        self._history[session_id].extend(messages)
-        self._trim_history(session_id)
-
-    async def clear_history(self, session_id: str) -> None:
-        if session_id in self._history:
-            del self._history[session_id]
-
-
-class MemoryProcessor(ABC):
-    """记忆处理器接口"""
-
-    @abstractmethod
-    async def process(self, session_id: str, new_messages: list[LLMMessage]) -> None:
-        pass
-
-
-_default_memory_factory: Callable[[], BaseMemory] | None = None
-
-
-def set_default_memory_backend(factory: Callable[[], BaseMemory]):
-    """
-    设置全局默认记忆后端工厂，允许统一替换会话的记忆实现。
-    """
-    global _default_memory_factory
-    _default_memory_factory = factory
-
-
-def _get_default_memory() -> BaseMemory:
-    if _default_memory_factory:
-        return _default_memory_factory()
-    return InMemoryMemory()
-
 
 DEFAULT_IVR_TEMPLATE = (
     "你的响应未能通过结构校验。\n"
@@ -186,7 +89,8 @@ class AI:
         参数:
             session_id: 唯一的会话ID，用于隔离记忆。
             config: AI 配置.
-            memory: 可选的自定义记忆后端。如果为None，则使用默认的InMemoryMemory。
+            memory: 可选的自定义记忆后端。如果为None，则使用默认的 ChatMemory
+            (InMemoryMessageStore)。
             default_generation_config: 此AI实例的默认生成配置。
             processors: 记忆处理器列表，在添加记忆后触发。
         """
@@ -587,9 +491,7 @@ class AI:
             final_config = LLMGenerationConfig()
 
         if max_validation_retries is None:
-            max_validation_retries = (
-                get_llm_config().client_settings.structured_retries
-            )
+            max_validation_retries = get_llm_config().client_settings.structured_retries
 
         resolved_model_name = self._resolve_model_name(model or self.config.model)
 
