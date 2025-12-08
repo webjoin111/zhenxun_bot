@@ -11,29 +11,31 @@ from nonebot_plugin_uninfo import Uninfo
 
 from zhenxun.configs.config import Config
 from zhenxun.services import group_settings_service
-from zhenxun.utils.limiters import ConcurrencyLimiter, FreqLimiter, RateLimiter
+from zhenxun.services.limiter import limiter_service
+from zhenxun.utils.limiters import (
+    ConcurrencyLimiter,
+    FreqLimiter,
+    LimitResult,
+    RateLimiter,
+)
 from zhenxun.utils.message import MessageUtils
 from zhenxun.utils.time_utils import TimeUtils
 
-_coolers: dict[str, FreqLimiter] = {}
-_rate_limiters: dict[str, RateLimiter] = {}
 _concurrency_limiters: dict[str, ConcurrencyLimiter] = {}
 
 
 def _create_limiter_dependency(
     limiter_class: type,
-    limiter_storage: dict,
     limiter_init_args: dict[str, Any],
     scope: Literal["user", "group", "global"],
     prompt: str,
     **kwargs,
-):
+) -> Any:
     """
     一个高阶函数，用于创建不同类型的限制器依赖。
 
     参数:
         limiter_class: 限制器类 (FreqLimiter, RateLimiter, etc.).
-        limiter_storage: 用于存储限制器实例的字典.
         limiter_init_args: 限制器类的初始化参数.
         scope: 限制作用域.
         prompt: 触发限制时的提示信息.
@@ -42,51 +44,58 @@ def _create_limiter_dependency(
 
     async def dependency(
         matcher: Matcher, session: EventSession, bot: Bot, event: Event
-    ) -> bool:
+    ) -> Any:
         if await SUPERUSER(bot, event):
-            return True
+            return LimitResult(passed=True, new_state={})
 
         handler_id = (
             f"{matcher.plugin_name}:{matcher.handlers[0].call.__code__.co_firstlineno}"
         )
 
-        key: str | None = None
+        subject_id: str | None = None
         if scope == "user":
-            key = session.id1
+            subject_id = session.id1
         elif scope == "group":
-            key = session.id3 or session.id2 or session.id1
+            subject_id = session.id3 or session.id2 or session.id1
         elif scope == "global":
-            key = f"global_{handler_id}"
+            subject_id = "global_instance"
 
-        if not key:
+        if not subject_id:
             return True
 
-        if handler_id not in limiter_storage:
-            limiter_storage[handler_id] = limiter_class(**limiter_init_args)
-        limiter = limiter_storage[handler_id]
+        limiter_algo = limiter_class(**limiter_init_args)
 
-        if isinstance(limiter, ConcurrencyLimiter):
-            await limiter.acquire(key)
+        if isinstance(limiter_algo, ConcurrencyLimiter):
+            limiter = _concurrency_limiters.setdefault(handler_id, limiter_algo)
+            concurrency_key = f"{scope}:{subject_id}"
+            await limiter.acquire(concurrency_key)
             matcher.state["_concurrency_limiter_info"] = {
                 "limiter": limiter,
-                "key": key,
+                "key": concurrency_key,
             }
             return True
-        else:
-            if limiter.check(key):
-                if isinstance(limiter, FreqLimiter):
-                    limiter.start_cd(
-                        key, kwargs.get("duration_sec", limiter.default_cd)
-                    )
-                return True
-            else:
-                left_time = limiter.left_time(key)
-                format_kwargs = {
-                    "cd_str": TimeUtils.format_duration(left_time),
-                    **(kwargs.get("prompt_format_kwargs", {})),
-                }
-                message = prompt.format(**format_kwargs)
-                await matcher.finish(message)
+
+        prompt_kwargs = dict(kwargs)
+        prompt_format_kwargs = prompt_kwargs.pop("prompt_format_kwargs", {})
+
+        result: LimitResult = await limiter_service.check(
+            limiter=limiter_algo,
+            scope=scope.upper(),
+            subject_id=subject_id,
+            plugin=matcher.plugin_name or "unknown",
+            node=f"line_{matcher.handlers[0].call.__code__.co_firstlineno}",
+            **prompt_kwargs,
+        )
+
+        if result.passed:
+            return result
+
+        format_kwargs = {
+            "cd_str": TimeUtils.format_duration(result.retry_after),
+            **prompt_format_kwargs,
+        }
+        message = prompt.format(**format_kwargs)
+        await matcher.finish(message)
 
     return Depends(dependency)
 
@@ -96,16 +105,13 @@ def Cooldown(
     *,
     scope: Literal["user", "group", "global"] = "user",
     prompt: str = "操作过于频繁，请等待 {cd_str}",
-) -> bool:
+) -> Any:
     """声明式冷却检查依赖，限制用户操作频率
 
     参数:
         duration: 冷却时间字符串 (e.g., "30s", "10m", "1h")
         scope: 冷却作用域
         prompt: 自定义的冷却提示消息，可使用 {cd_str} 占位符
-
-    返回:
-        bool: 是否允许执行
     """
     try:
         parsed_seconds = TimeUtils.parse_time_string(duration)
@@ -114,11 +120,10 @@ def Cooldown(
 
     return _create_limiter_dependency(
         limiter_class=FreqLimiter,
-        limiter_storage=_coolers,
         limiter_init_args={"default_cd_seconds": parsed_seconds},
         scope=scope,
         prompt=prompt,
-        duration_sec=parsed_seconds,
+        duration=parsed_seconds,
     )
 
 
@@ -128,7 +133,7 @@ def RateLimit(
     *,
     scope: Literal["user", "group", "global"] = "user",
     prompt: str = "太快了，在 {duration_str} 内只能触发{limit}次，请等待 {cd_str}",
-) -> bool:
+) -> Any:
     """声明式速率限制依赖，在指定时间窗口内限制操作次数
 
     参数:
@@ -136,9 +141,6 @@ def RateLimit(
         duration: 时间窗口字符串 (e.g., "1m", "1h")
         scope: 限制作用域
         prompt: 自定义的提示消息，可使用 {cd_str}, {duration_str}, {limit} 占位符
-
-    返回:
-        bool: 是否允许执行
     """
     try:
         parsed_seconds = TimeUtils.parse_time_string(duration)
@@ -147,7 +149,6 @@ def RateLimit(
 
     return _create_limiter_dependency(
         limiter_class=RateLimiter,
-        limiter_storage=_rate_limiters,
         limiter_init_args={"max_calls": count, "time_window": parsed_seconds},
         scope=scope,
         prompt=prompt,
@@ -160,20 +161,16 @@ def ConcurrencyLimit(
     *,
     scope: Literal["user", "group", "global"] = "global",
     prompt: str | None = "当前功能繁忙，请稍后再试...",
-) -> bool:
+) -> Any:
     """声明式并发数限制依赖，控制某个功能同时执行的实例数量
 
     参数:
         count: 最大并发数
         scope: 限制作用域
         prompt: 提示消息（暂未使用，主要用于未来扩展超时功能）
-
-    返回:
-        bool: 是否允许执行
     """
     return _create_limiter_dependency(
         limiter_class=ConcurrencyLimiter,
-        limiter_storage=_concurrency_limiters,
         limiter_init_args={"max_concurrent": count},
         scope=scope,
         prompt=prompt or "",
