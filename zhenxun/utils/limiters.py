@@ -262,18 +262,25 @@ class UserBlockLimiter(BaseLimiter):
             default_timeout: 默认阻塞超时时间 (秒)。
         """
         self.default_timeout = default_timeout
+        self._legacy_cache: dict[Any, float] = {}
 
-    def check(self, state: dict[str, Any] | None, **kwargs: Any) -> LimitResult:
+    def check(self, state: dict[str, Any] | Any | None, **kwargs: Any) -> Any:
         """
         检查用户是否被阻塞。
 
+        支持新版状态字典检查和旧版基于key的检查。
+
         参数:
-            state: 状态字典 {'blocked_until': float}。
+            state: 状态字典 {'blocked_until': float} 或旧版 key。
             kwargs: 额外参数。
 
         返回:
-            LimitResult: 检查结果。
+            Any: LimitResult (新版) 或 bool (旧版)。
         """
+        if not isinstance(state, dict) and state is not None:
+            key = state
+            return self._legacy_check(key)
+
         if not isinstance(state, dict):
             state = {}
         now = time.time()
@@ -308,6 +315,27 @@ class UserBlockLimiter(BaseLimiter):
             retry_after=0.0,
             expire_at=expire_at,
         )
+
+    def set_true(self, key: Any):
+        """
+        [兼容旧版] 设置阻塞。
+        """
+        self._legacy_cache[key] = time.time() + self.default_timeout
+
+    def set_false(self, key: Any):
+        """
+        [兼容旧版] 解除阻塞。
+        """
+        if key in self._legacy_cache:
+            del self._legacy_cache[key]
+
+    def _legacy_check(self, key: Any) -> bool:
+        if key not in self._legacy_cache:
+            return True
+        if time.time() > self._legacy_cache[key]:
+            del self._legacy_cache[key]
+            return True
+        return False
 
 
 class RateLimiter(BaseLimiter):
