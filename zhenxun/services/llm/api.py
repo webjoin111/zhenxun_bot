@@ -182,7 +182,7 @@ async def embed_documents(
 
 
 async def generate_structured(
-    message: str | LLMMessage | list[LLMContentPart],
+    message: str | UniMessage | LLMMessage | list[LLMContentPart],
     response_model: type[T],
     *,
     model: ModelName = None,

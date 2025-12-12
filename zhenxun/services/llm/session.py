@@ -449,7 +449,7 @@ class AI:
 
     async def generate_structured(
         self,
-        message: str | LLMMessage | list[LLMContentPart] | None,
+        message: str | UniMessage | LLMMessage | list[LLMContentPart] | None,
         response_model: type[T],
         *,
         model: ModelName = None,
