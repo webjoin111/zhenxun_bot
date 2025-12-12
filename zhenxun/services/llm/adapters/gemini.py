@@ -119,8 +119,7 @@ class GeminiAdapter(BaseAdapter):
                     system_instruction_parts = [{"text": msg.content}]
                 elif isinstance(msg.content, list):
                     system_instruction_parts = [
-                        await converter.convert_part(part)
-                        for part in msg.content
+                        await converter.convert_part(part) for part in msg.content
                     ]
                 continue
 
