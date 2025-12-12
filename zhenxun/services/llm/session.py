@@ -445,6 +445,7 @@ class AI:
             instruction=instruction,
             template_vars=template_vars,
             config=search_config,
+            tools=[GeminiGoogleSearch()],
         )
 
     async def generate_structured(

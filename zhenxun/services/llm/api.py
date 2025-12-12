@@ -30,6 +30,7 @@ from .types import (
     ToolChoice,
 )
 from .types.exceptions import get_user_friendly_error_message
+from .types.models import GeminiGoogleSearch
 from .utils import create_multimodal_message
 
 T = TypeVar("T", bound=BaseModel)
@@ -302,7 +303,6 @@ async def _generate_image_from_message(
         messages = await normalize_to_llm_messages(message)
 
         async with await get_model_instance(model) as model_instance:
-
             response = await model_instance.generate_response(messages, config=config)
 
             if not response.images:
@@ -403,4 +403,5 @@ async def search(
         model=model,
         instruction=instruction,
         config=final_config,
+        tools=[GeminiGoogleSearch()],
     )
