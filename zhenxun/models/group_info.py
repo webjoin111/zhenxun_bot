@@ -1,5 +1,6 @@
 from tortoise import fields
 
+from zhenxun.configs.config import BotConfig
 from zhenxun.services.db_context import Model
 
 
@@ -109,18 +110,31 @@ class GroupInfo(Model):
 
     @classmethod
     def _run_script(cls):
-        return [
+        db_type = (BotConfig.get_sql_type() or "").lower()
+
+        scripts = [
             "ALTER TABLE group_info ADD group_flag Integer NOT NULL DEFAULT 0;",
             # group_info表添加一个group_flag
             "ALTER TABLE group_info ALTER COLUMN group_id TYPE character varying(255);",
             "ALTER TABLE group_info ADD block_plugin Text NOT NULL DEFAULT '';",
             "ALTER TABLE group_info ADD block_task Text NOT NULL DEFAULT '';",
-            # 修复 PostgreSQL 下字段长度不足的问题
-            "ALTER TABLE group_info ALTER COLUMN block_plugin TYPE TEXT;",
-            "ALTER TABLE group_info ALTER COLUMN block_task TYPE TEXT;",
-            # 修复 MySQL 下字段长度不足的问题
-            "ALTER TABLE group_info MODIFY COLUMN block_plugin TEXT;",
-            "ALTER TABLE group_info MODIFY COLUMN block_task TEXT;",
             "ALTER TABLE group_info ADD platform character varying(255) NOT NULL"
             " DEFAULT 'qq';",
         ]
+
+        if "postgres" in db_type:
+            scripts.extend(
+                [
+                    "ALTER TABLE group_info ALTER COLUMN block_plugin TYPE TEXT;",
+                    "ALTER TABLE group_info ALTER COLUMN block_task TYPE TEXT;",
+                ]
+            )
+        elif "mysql" in db_type:
+            scripts.extend(
+                [
+                    "ALTER TABLE group_info MODIFY COLUMN block_plugin TEXT;",
+                    "ALTER TABLE group_info MODIFY COLUMN block_task TEXT;",
+                ]
+            )
+
+        return scripts
