@@ -539,9 +539,19 @@ class GroupConsole(Model):
     def _run_script(cls):
         return [
             "ALTER TABLE group_console ADD superuser_block_plugin"
-            " character varying(255) NOT NULL DEFAULT '';",
+            " Text NOT NULL DEFAULT '';",
             "ALTER TABLE group_console ADD superuser_block_task"
-            " character varying(255) NOT NULL DEFAULT '';",
+            " Text NOT NULL DEFAULT '';",
+            # 修复 PostgreSQL 下字段长度不足的问题
+            "ALTER TABLE group_console ALTER COLUMN block_plugin TYPE TEXT;",
+            "ALTER TABLE group_console ALTER COLUMN superuser_block_plugin TYPE TEXT;",
+            "ALTER TABLE group_console ALTER COLUMN block_task TYPE TEXT;",
+            "ALTER TABLE group_console ALTER COLUMN superuser_block_task TYPE TEXT;",
+            # 修复 MySQL 下字段长度不足的问题
+            "ALTER TABLE group_console MODIFY COLUMN block_plugin TEXT;",
+            "ALTER TABLE group_console MODIFY COLUMN superuser_block_plugin TEXT;",
+            "ALTER TABLE group_console MODIFY COLUMN block_task TEXT;",
+            "ALTER TABLE group_console MODIFY COLUMN superuser_block_task TEXT;",
             "CREATE INDEX idx_group_console_group_id ON group_console(group_id);",
             "CREATE INDEX idx_group_console_group_null_channel ON group_console(group_id) WHERE channel_id IS NULL;",  # 单独创建channel为空的索引 # noqa: E501
         ]

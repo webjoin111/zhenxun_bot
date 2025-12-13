@@ -115,6 +115,12 @@ class GroupInfo(Model):
             "ALTER TABLE group_info ALTER COLUMN group_id TYPE character varying(255);",
             "ALTER TABLE group_info ADD block_plugin Text NOT NULL DEFAULT '';",
             "ALTER TABLE group_info ADD block_task Text NOT NULL DEFAULT '';",
+            # 修复 PostgreSQL 下字段长度不足的问题
+            "ALTER TABLE group_info ALTER COLUMN block_plugin TYPE TEXT;",
+            "ALTER TABLE group_info ALTER COLUMN block_task TYPE TEXT;",
+            # 修复 MySQL 下字段长度不足的问题
+            "ALTER TABLE group_info MODIFY COLUMN block_plugin TEXT;",
+            "ALTER TABLE group_info MODIFY COLUMN block_task TEXT;",
             "ALTER TABLE group_info ADD platform character varying(255) NOT NULL"
             " DEFAULT 'qq';",
         ]

@@ -441,4 +441,14 @@ class BotConsole(Model):
             "ALTER TABLE bot_console RENAME COLUMN block_task TO block_tasks;",
             "ALTER TABLE bot_console ADD available_plugins text default '';",
             "ALTER TABLE bot_console ADD available_tasks text default '';",
+            # 修复 PostgreSQL 下字段长度不足的问题
+            "ALTER TABLE bot_console ALTER COLUMN block_plugins TYPE TEXT;",
+            "ALTER TABLE bot_console ALTER COLUMN block_tasks TYPE TEXT;",
+            "ALTER TABLE bot_console ALTER COLUMN available_plugins TYPE TEXT;",
+            "ALTER TABLE bot_console ALTER COLUMN available_tasks TYPE TEXT;",
+            # 修复 MySQL 下字段长度不足的问题
+            "ALTER TABLE bot_console MODIFY COLUMN block_plugins TEXT;",
+            "ALTER TABLE bot_console MODIFY COLUMN block_tasks TEXT;",
+            "ALTER TABLE bot_console MODIFY COLUMN available_plugins TEXT;",
+            "ALTER TABLE bot_console MODIFY COLUMN available_tasks TEXT;",
         ]
