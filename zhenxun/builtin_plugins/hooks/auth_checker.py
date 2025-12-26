@@ -256,17 +256,7 @@ async def auth(
 
         is_superuser = session.user.id in bot.config.superusers
 
-        bot_rule = auth_cache.get_bot_rule(bot.self_id)
-        if bot_rule and not is_superuser:
-            if not bot_rule.status:
-                raise SkipPluginException("Bot 处于休眠状态")
-            if module in bot_rule.disabled_plugins:
-                raise SkipPluginException(f"插件 {module} 已被当前 Bot 禁用")
-
         cache_start = time.time()
-
-        if auth_cache.is_plugin_globally_disabled(module) and not is_superuser:
-            raise SkipPluginException(f"插件 {module} 已全局关闭")
 
         if auth_service.is_user_banned(entity.user_id) and not is_superuser:
             raise SkipPluginException(f"用户 {entity.user_id} 处于黑名单中")
@@ -275,15 +265,10 @@ async def auth(
             if auth_service.is_group_banned(entity.group_id) and not is_superuser:
                 raise SkipPluginException(f"群组 {entity.group_id} 处于黑名单中")
 
-            group_rule = auth_cache.get_group_rule(entity.group_id)
-            if group_rule and not is_superuser:
-                if not group_rule.status and module not in [
-                    "plugin_switch",
-                    "admin_help",
-                ]:
-                    raise SkipPluginException("本群处于休眠状态")
-                if module in group_rule.disabled_plugins:
-                    raise SkipPluginException(f"插件 {module} 在本群已被禁用")
+        if not is_superuser and not auth_service.check_plugin_permission(
+            module, bot.self_id, entity.group_id
+        ):
+            raise SkipPluginException(f"插件 {module} 已被禁用或休眠")
 
         hook_times["cache_check"] = f"{time.time() - cache_start:.3f}s"
 
