@@ -11,9 +11,8 @@ from nonebot_plugin_uninfo import Uninfo
 
 from zhenxun.configs.path_config import IMAGE_PATH
 from zhenxun.configs.utils import PluginExtraData
-from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.plugin_info import PluginInfo
-from zhenxun.services.auth_service import auth_service
+from zhenxun.services.auth_service import auth_cache, auth_service
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import PluginType
 from zhenxun.utils.message import MessageUtils
@@ -39,9 +38,8 @@ async def rule(event: Event, message: UniMsg, session: Uninfo) -> bool:
     if group_id:
         if auth_service.is_group_banned(group_id):
             return False
-        if g := await GroupConsole.get_group(group_id):
-            if g.level < 0:
-                return False
+        if (rule := auth_cache.get_group_rule(group_id)) and rule.level < 0:
+            return False
     return event.is_tome() and bool(text and len(text) < 20)
 
 
