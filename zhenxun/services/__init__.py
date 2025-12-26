@@ -52,6 +52,7 @@ from .scheduler import (
     Trigger,
     scheduler_manager,
 )
+from .traffic_control import traffic_controller
 
 __all__ = [
     "AI",
@@ -86,5 +87,6 @@ __all__ = [
     "scheduler_manager",
     "search",
     "set_global_default_model_name",
+    "traffic_controller",
     "with_db_timeout",
 ]

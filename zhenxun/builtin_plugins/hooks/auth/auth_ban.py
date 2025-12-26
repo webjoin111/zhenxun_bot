@@ -7,9 +7,8 @@ from nonebot_plugin_alconna import At
 from nonebot_plugin_uninfo import Uninfo
 
 from zhenxun.configs.config import Config
-from zhenxun.models.ban_console import BanConsole
 from zhenxun.models.plugin_info import PluginInfo
-from zhenxun.services.data_access import DataAccess
+from zhenxun.services.auth_service import auth_cache
 from zhenxun.services.db_context import DB_TIMEOUT_SECONDS
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import PluginType
@@ -27,109 +26,34 @@ Config.add_plugin_config(
 )
 
 
-async def calculate_ban_time(ban_record: BanConsole | None) -> int:
-    """根据ban记录计算剩余ban时间
-
-    参数:
-        ban_record: BanConsole记录
-
-    返回:
-        int: ban剩余时长，-1时为永久ban，0表示未被ban
-    """
-    if not ban_record:
-        return 0
-
-    if ban_record.duration == -1:
-        return -1
-
-    _time = time.time() - (ban_record.ban_time + ban_record.duration)
-    if _time < 0:
-        return int(abs(_time))
-    await ban_record.delete()
-    return 0
-
-
 async def is_ban(user_id: str | None, group_id: str | None) -> int:
-    """检查用户或群组是否被ban
+    """检查用户或群组是否被ban (纯内存操作，极快)
 
     参数:
         user_id: 用户ID
         group_id: 群组ID
 
     返回:
-        int: ban的剩余时间，0表示未被ban
+        int: ban的剩余时间，-1表示永久ban，>0表示剩余秒数，0表示未被ban
     """
     if not user_id and not group_id:
         return 0
 
-    start_time = time.time()
-    ban_dao = DataAccess(BanConsole)
+    now = time.time()
 
-    # 分别获取用户在群组中的ban记录和全局ban记录
-    group_user = None
-    user = None
+    # 优先检查群组黑名单
+    if group_id:
+        expire = auth_cache.get_group_ban_expire(group_id)
+        if expire is not None and (expire == -1 or expire > now):
+            return -1 if expire == -1 else int(expire - now)
 
-    try:
-        # 并行查询用户和群组的 ban 记录
-        tasks = []
-        if user_id and group_id:
-            tasks.append(ban_dao.safe_get_or_none(user_id=user_id, group_id=group_id))
-        if user_id:
-            tasks.append(
-                ban_dao.safe_get_or_none(user_id=user_id, group_id__isnull=True)
-            )
+    # 检查用户黑名单
+    if user_id:
+        expire = auth_cache.get_user_ban_expire(user_id)
+        if expire is not None and (expire == -1 or expire > now):
+            return -1 if expire == -1 else int(expire - now)
 
-        # 等待所有查询完成，添加超时控制
-        if tasks:
-            try:
-                ban_records = await asyncio.wait_for(
-                    asyncio.gather(*tasks), timeout=DB_TIMEOUT_SECONDS
-                )
-                if len(tasks) == 2:
-                    group_user, user = ban_records
-                elif user_id and group_id:
-                    group_user = ban_records[0]
-                else:
-                    user = ban_records[0]
-            except asyncio.TimeoutError:
-                logger.error(
-                    f"查询ban记录超时: user_id={user_id}, group_id={group_id}",
-                    LOGGER_COMMAND,
-                )
-                return 0
-
-        # 检查记录并计算ban时间
-        results = []
-        if group_user:
-            results.append(group_user)
-        if user:
-            results.append(user)
-
-        # 如果没有找到记录，返回0
-        if not results:
-            return 0
-
-        logger.debug(f"查询到的ban记录: {results}", LOGGER_COMMAND)
-        # 检查所有记录，找出最严格的ban（时间最长的）
-        max_ban_time: int = 0
-        for result in results:
-            if result.duration > 0 or result.duration == -1:
-                # 直接计算ban时间，避免再次查询数据库
-                ban_time = await calculate_ban_time(result)
-                if ban_time == -1 or ban_time > max_ban_time:
-                    max_ban_time = ban_time
-
-        return max_ban_time
-    finally:
-        # 记录执行时间
-        elapsed = time.time() - start_time
-        if elapsed > WARNING_THRESHOLD:  # 记录耗时超过500ms的检查
-            logger.warning(
-                f"is_ban 耗时: {elapsed:.3f}s",
-                LOGGER_COMMAND,
-                session=user_id,
-                group_id=group_id,
-            )
+    return 0
 
 
 def check_plugin_type(matcher: Matcher) -> bool:

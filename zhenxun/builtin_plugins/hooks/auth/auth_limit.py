@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.plugin_limit import PluginLimit
+from zhenxun.services.auth_service import auth_cache
 from zhenxun.services.db_context import DB_TIMEOUT_SECONDS
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import LimitWatchType, PluginLimitType
@@ -145,7 +146,7 @@ class LimitManager:
 
     @classmethod
     async def get_module_limits(cls, module: str) -> list[PluginLimit]:
-        """获取模块的限制信息，使用缓存减少数据库查询
+        """从 AuthCache 获取内存中的限制规则 (0 IO)
 
         参数:
             module: 模块名
@@ -153,35 +154,7 @@ class LimitManager:
         返回:
             list[PluginLimit]: 限制列表
         """
-        current_time = time.time()
-
-        # 检查缓存
-        if module in cls.module_limit_cache:
-            cache_time, limits = cls.module_limit_cache[module]
-            if current_time - cache_time < cls.module_cache_ttl:
-                return limits
-
-        # 缓存不存在或已过期，从数据库查询
-        try:
-            start_time = time.time()
-            limits = await asyncio.wait_for(
-                PluginLimit.filter(module=module, status=True).all(),
-                timeout=DB_TIMEOUT_SECONDS,
-            )
-            elapsed = time.time() - start_time
-            if elapsed > WARNING_THRESHOLD:  # 记录耗时超过500ms的查询
-                logger.warning(
-                    f"查询模块限制信息耗时: {elapsed:.3f}s, 模块: {module}",
-                    LOGGER_COMMAND,
-                )
-
-            # 更新缓存
-            cls.module_limit_cache[module] = (current_time, limits)
-            return limits
-        except asyncio.TimeoutError:
-            logger.error(f"查询模块限制信息超时: {module}", LOGGER_COMMAND)
-            # 超时时返回空列表，避免阻塞
-            return []
+        return auth_cache.get_plugin_limits(module)
 
     @classmethod
     async def check(
@@ -204,13 +177,7 @@ class LimitManager:
         """
         start_time = time.time()
 
-        # 定期更新全局限制信息
-        if (
-            time.time() - cls.last_update_time > cls.update_interval
-            and not cls.is_updating
-        ):
-            # 使用异步任务更新，避免阻塞当前请求
-            asyncio.create_task(cls.update_limits())  # noqa: RUF006
+        # 移除定期更新逻辑，统一由 AuthCache 管理
 
         # 如果模块不在已加载列表中，只加载该模块的限制
         if module not in cls.add_module:

@@ -5,10 +5,8 @@ from nonebot.adapters import Bot
 from nonebot_plugin_uninfo import Session, SupportScope, Uninfo, get_interface
 
 from zhenxun.configs.config import BotConfig
-from zhenxun.models.ban_console import BanConsole
-from zhenxun.models.bot_console import BotConsole
-from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.task_info import TaskInfo
+from zhenxun.services.auth_service import auth_cache, auth_service
 from zhenxun.services.log import logger
 
 
@@ -43,22 +41,30 @@ class CommonUtils:
             """被动全局状态"""
             if not task.status:
                 return True
-        if not await BotConsole.get_bot_status(session.self_id):
+
+        bot_rule = auth_cache.get_bot_rule(session.self_id)
+        if bot_rule and not bot_rule.status:
             """bot是否休眠"""
             return True
-        block_tasks = await BotConsole.get_tasks(session.self_id, False)
-        if module in block_tasks:
+
+        if bot_rule and module in bot_rule.disabled_plugins:
             """bot是否禁用被动"""
             return True
+
         if group_id:
-            if await GroupConsole.is_block_task(group_id, module):
-                """群组是否禁用被动"""
-                return True
-            if g := await GroupConsole.get_group(group_id=group_id):
-                """群组权限是否小于0"""
-                if g.level < 0:
+            group_rule = auth_cache.get_group_rule(group_id)
+            if group_rule:
+                if (
+                    module in group_rule.disabled_plugins
+                    or module in group_rule.superuser_disabled_plugins
+                ):
+                    """群组是否禁用被动"""
                     return True
-            if await BanConsole.is_ban(None, group_id):
+                if group_rule.level < 0:
+                    """群组权限是否小于0"""
+                    return True
+
+            if auth_service.is_group_banned(group_id):
                 """群组是否被ban"""
                 return True
         return False

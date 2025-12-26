@@ -11,9 +11,9 @@ from nonebot_plugin_uninfo import Uninfo
 
 from zhenxun.configs.path_config import IMAGE_PATH
 from zhenxun.configs.utils import PluginExtraData
-from zhenxun.models.ban_console import BanConsole
 from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.plugin_info import PluginInfo
+from zhenxun.services.auth_service import auth_service
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import PluginType
 from zhenxun.utils.message import MessageUtils
@@ -34,10 +34,10 @@ __plugin_meta__ = PluginMetadata(
 async def rule(event: Event, message: UniMsg, session: Uninfo) -> bool:
     group_id = session.group.id if session.group else None
     text = message.extract_plain_text().strip()
-    if await BanConsole.is_ban(session.user.id, group_id):
+    if auth_service.is_user_banned(session.user.id):
         return False
     if group_id:
-        if await BanConsole.is_ban(None, group_id):
+        if auth_service.is_group_banned(group_id):
             return False
         if g := await GroupConsole.get_group(group_id):
             if g.level < 0:

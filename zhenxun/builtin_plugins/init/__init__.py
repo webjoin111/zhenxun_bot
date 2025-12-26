@@ -6,6 +6,7 @@ from nonebot.adapters import Bot
 from zhenxun.models.group_console import GroupConsole
 from zhenxun.services.cache import CacheException
 from zhenxun.services.log import logger
+from zhenxun.services.auth_service import register_signals, auth_service
 from zhenxun.utils.manager.priority_manager import PriorityLifecycle
 from zhenxun.utils.platform import PlatformUtils
 
@@ -22,6 +23,8 @@ driver = nonebot.get_driver()
 @PriorityLifecycle.on_startup(priority=5)
 async def _():
     register_cache_types()
+    await auth_service.init()  # 使用新的服务层初始化
+    register_signals()         # 触发信号模块的加载
     logger.info("缓存类型注册完成")
 
 

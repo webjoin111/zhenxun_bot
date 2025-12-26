@@ -295,6 +295,11 @@ class CacheManager:
         """单例模式"""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
+            # 强制修正：如果没有配置 Redis，至少启用 MEMORY 模式
+            if cache_config.cache_mode == CacheMode.NONE:
+                cache_config.cache_mode = CacheMode.MEMORY
+                logger.warning("检测到缓存模式为 NONE，已强制启用 MEMORY 模式以保障性能"
+                               , LOG_COMMAND)
         return cls._instance
 
     @property

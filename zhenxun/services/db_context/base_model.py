@@ -114,12 +114,11 @@ class Model(TortoiseModel):
         cls, using_db: BaseDBAsyncClient | None = None, **kwargs: Any
     ) -> Self:
         """创建数据（使用CREATE锁）"""
-        async with cls._lock_context(DbLockType.CREATE):
-            # 直接调用父类的_create方法避免触发save的锁
-            result = await super().create(using_db=using_db, **kwargs)
-            if cache_type := cls.get_cache_type():
-                await CacheRoot.invalidate_cache(cache_type, cls.get_cache_key(result))
-            return result
+        # 直接调用父类的_create方法避免触发save的锁
+        result = await super().create(using_db=using_db, **kwargs)
+        if cache_type := cls.get_cache_type():
+            await CacheRoot.invalidate_cache(cache_type, cls.get_cache_key(result))
+        return result
 
     @classmethod
     async def get_or_create(
@@ -144,27 +143,26 @@ class Model(TortoiseModel):
         **kwargs: Any,
     ) -> tuple[Self, bool]:
         """更新或创建数据（使用UPSERT锁）"""
-        async with cls._lock_context(DbLockType.UPSERT):
-            try:
-                # 先尝试更新（带行锁）
-                async with in_transaction():
-                    if obj := await cls.filter(**kwargs).select_for_update().first():
-                        await obj.update_from_dict(defaults or {})
-                        await obj.save()
-                        result = (obj, False)
-                    else:
-                        # 创建时不重复加锁
-                        result = await cls.create(**kwargs, **(defaults or {})), True
+        try:
+            # 先尝试更新（带行锁）
+            async with in_transaction():
+                if obj := await cls.filter(**kwargs).select_for_update().first():
+                    await obj.update_from_dict(defaults or {})
+                    await obj.save()
+                    result = (obj, False)
+                else:
+                    # 创建时不重复加锁
+                    result = await cls.create(**kwargs, **(defaults or {})), True
 
-                if cache_type := cls.get_cache_type():
-                    await CacheRoot.invalidate_cache(
-                        cache_type, cls.get_cache_key(result[0])
-                    )
-                return result
-            except IntegrityError:
-                # 处理极端情况下的唯一约束冲突
-                obj = await cls.get(**kwargs)
-                return obj, False
+            if cache_type := cls.get_cache_type():
+                await CacheRoot.invalidate_cache(
+                    cache_type, cls.get_cache_key(result[0])
+                )
+            return result
+        except IntegrityError:
+            # 处理极端情况下的唯一约束冲突
+            obj = await cls.get(**kwargs)
+            return obj, False
 
     async def save(
         self,
@@ -174,22 +172,16 @@ class Model(TortoiseModel):
         force_update: bool = False,
     ):
         """保存数据（根据操作类型自动选择锁）"""
-        lock_type = (
-            DbLockType.CREATE
-            if getattr(self, "id", None) is None
-            else DbLockType.UPDATE
+        await super().save(
+            using_db=using_db,
+            update_fields=update_fields,
+            force_create=force_create,
+            force_update=force_update,
         )
-        async with self._lock_context(lock_type):
-            await super().save(
-                using_db=using_db,
-                update_fields=update_fields,
-                force_create=force_create,
-                force_update=force_update,
+        if cache_type := getattr(self, "cache_type", None):
+            await CacheRoot.invalidate_cache(
+                cache_type, self.__class__.get_cache_key(self)
             )
-            if cache_type := getattr(self, "cache_type", None):
-                await CacheRoot.invalidate_cache(
-                    cache_type, self.__class__.get_cache_key(self)
-                )
 
     async def delete(self, using_db: BaseDBAsyncClient | None = None):
         cache_type = getattr(self, "cache_type", None)

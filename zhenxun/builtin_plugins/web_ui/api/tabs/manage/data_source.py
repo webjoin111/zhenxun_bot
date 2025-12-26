@@ -1,13 +1,13 @@
 import nonebot
 from tortoise.functions import Count
 
-from zhenxun.models.ban_console import BanConsole
 from zhenxun.models.chat_history import ChatHistory
 from zhenxun.models.fg_request import FgRequest
 from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.statistics import Statistics
 from zhenxun.models.task_info import TaskInfo
+from zhenxun.services.auth_service import auth_service
 from zhenxun.utils.common_utils import CommonUtils
 from zhenxun.utils.enum import RequestType
 from zhenxun.utils.platform import PlatformUtils
@@ -131,7 +131,7 @@ class ApiDataSource:
             ava_url=AVA_URL.format(user_id),
             nickname=user.user_name,
             remark="",
-            is_ban=await BanConsole.is_ban(user_id),
+            is_ban=auth_service.is_user_banned(user_id),
             chat_count=await ChatHistory.filter(user_id=user_id).count(),
             call_count=await Statistics.filter(user_id=user_id).count(),
             like_plugin=like_plugin,

@@ -5,6 +5,7 @@ from nonebot_plugin_session import EventSession
 
 from zhenxun.models.ban_console import BanConsole
 from zhenxun.models.level_user import LevelUser
+from zhenxun.services.auth_service import auth_service
 from zhenxun.services.log import logger
 from zhenxun.utils.image_utils import BuildImage, ImageTemplate
 
@@ -89,11 +90,16 @@ class BanManage:
 
         参数:
             user_id: 用户id
+            group_id: 群组id
 
         返回:
             bool: 是否被ban
         """
-        return await BanConsole.is_ban(user_id, group_id)
+        if group_id and auth_service.is_group_banned(group_id):
+            return True
+        if user_id and auth_service.is_user_banned(user_id):
+            return True
+        return False
 
     @classmethod
     async def unban(
