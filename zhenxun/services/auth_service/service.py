@@ -63,8 +63,18 @@ class AuthService:
                 if g.superuser_block_plugin
                 else set()
             )
+            disabled_tasks = (
+                set(convert_module_format(g.block_task)) if g.block_task else set()
+            )
+            su_disabled_tasks = (
+                set(convert_module_format(g.superuser_block_task))
+                if g.superuser_block_task
+                else set()
+            )
             AuthStateCache.update_group_rule(
-                str(g.group_id), g.level, g.status, disabled, su_disabled
+                str(g.group_id), g.level, g.status,
+                disabled, su_disabled,
+                disabled_tasks, su_disabled_tasks
             )
 
         bots = await BotConsole.all()
@@ -74,7 +84,13 @@ class AuthService:
                 if b.block_plugins
                 else set()
             )
-            AuthStateCache.update_bot_rule(str(b.bot_id), b.status, disabled)
+            disabled_tasks = (
+                set(BotConsole.convert_module_format(b.block_tasks))
+                if b.block_tasks
+                else set()
+            )
+            AuthStateCache.update_bot_rule(str(b.bot_id), b.status,
+                                           disabled, disabled_tasks)
 
         users = await UserConsole.all().values_list("user_id", flat=True)
         for uid in users:

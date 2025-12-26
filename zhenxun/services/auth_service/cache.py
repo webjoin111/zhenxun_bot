@@ -10,6 +10,8 @@ class GroupCacheItem:
     status: bool = True
     disabled_plugins: set[str] = field(default_factory=set)
     superuser_disabled_plugins: set[str] = field(default_factory=set)
+    disabled_tasks: set[str] = field(default_factory=set)
+    superuser_disabled_tasks: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -18,6 +20,7 @@ class BotCacheItem:
 
     status: bool = True
     disabled_plugins: set[str] = field(default_factory=set)
+    disabled_tasks: set[str] = field(default_factory=set)
 
 
 class AuthStateCache:
@@ -146,6 +149,8 @@ class AuthStateCache:
         status: bool | None = None,
         disabled_plugins: set[str] | None = None,
         superuser_disabled_plugins: set[str] | None = None,
+        disabled_tasks: set[str] | None = None,
+        superuser_disabled_tasks: set[str] | None = None,
     ):
         gid = str(group_id)
         if gid not in cls._group_rules:
@@ -160,6 +165,10 @@ class AuthStateCache:
             item.disabled_plugins = disabled_plugins
         if superuser_disabled_plugins is not None:
             item.superuser_disabled_plugins = superuser_disabled_plugins
+        if disabled_tasks is not None:
+            item.disabled_tasks = disabled_tasks
+        if superuser_disabled_tasks is not None:
+            item.superuser_disabled_tasks = superuser_disabled_tasks
 
     @classmethod
     def get_group_rule(cls, group_id: str) -> GroupCacheItem | None:
@@ -177,6 +186,7 @@ class AuthStateCache:
         bot_id: str,
         status: bool | None = None,
         disabled_plugins: set[str] | None = None,
+        disabled_tasks: set[str] | None = None,
     ):
         bid = str(bot_id)
         if bid not in cls._bot_rules:
@@ -187,6 +197,8 @@ class AuthStateCache:
             item.status = status
         if disabled_plugins is not None:
             item.disabled_plugins = disabled_plugins
+        if disabled_tasks is not None:
+            item.disabled_tasks = disabled_tasks
 
     @classmethod
     def get_bot_rule(cls, bot_id: str) -> BotCacheItem | None:

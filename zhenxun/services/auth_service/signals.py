@@ -64,6 +64,16 @@ async def on_group_save(
         if instance.superuser_block_plugin
         else set()
     )
+    disabled_tasks = (
+        set(convert_module_format(instance.block_task))
+        if instance.block_task
+        else set()
+    )
+    su_disabled_tasks = (
+        set(convert_module_format(instance.superuser_block_task))
+        if instance.superuser_block_task
+        else set()
+    )
 
     Cache.update_group_rule(
         group_id=str(instance.group_id),
@@ -71,6 +81,8 @@ async def on_group_save(
         status=instance.status,
         disabled_plugins=disabled,
         superuser_disabled_plugins=su_disabled,
+        disabled_tasks=disabled_tasks,
+        superuser_disabled_tasks=su_disabled_tasks,
     )
     logger.debug(f"同步群组规则缓存: {instance.group_id}", LOG_CMD)
 
@@ -93,9 +105,17 @@ async def on_bot_save(
         if instance.block_plugins
         else set()
     )
+    disabled_tasks = (
+        set(BotConsole.convert_module_format(instance.block_tasks))
+        if instance.block_tasks
+        else set()
+    )
 
     Cache.update_bot_rule(
-        bot_id=str(instance.bot_id), status=instance.status, disabled_plugins=disabled
+        bot_id=str(instance.bot_id),
+        status=instance.status,
+        disabled_plugins=disabled,
+        disabled_tasks=disabled_tasks
     )
 
 

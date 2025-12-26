@@ -47,7 +47,7 @@ class CommonUtils:
             """bot是否休眠"""
             return True
 
-        if bot_rule and module in bot_rule.disabled_plugins:
+        if bot_rule and module in bot_rule.disabled_tasks:
             """bot是否禁用被动"""
             return True
 
@@ -55,8 +55,8 @@ class CommonUtils:
             group_rule = auth_cache.get_group_rule(group_id)
             if group_rule:
                 if (
-                    module in group_rule.disabled_plugins
-                    or module in group_rule.superuser_disabled_plugins
+                    module in group_rule.disabled_tasks
+                    or module in group_rule.superuser_disabled_tasks
                 ):
                     """群组是否禁用被动"""
                     return True
