@@ -241,9 +241,6 @@ class TrafficController:
         if user_id and str(user_id) in bot.config.superusers:
             return 10
 
-        if isinstance(event, PrivateMessageEvent):
-            return 20
-
         if isinstance(event, MessageEvent):
             is_tome = event.is_tome()
 
@@ -275,14 +272,17 @@ class TrafficController:
                     f"'{text[:20]}...'",
                     "TrafficControl",
                 )
-                return 20
+                return 15 if isinstance(event, PrivateMessageEvent) else 20
 
             if self._combined_regex and self._combined_regex.match(text):
                 logger.debug(
                     f"[流量控制] 命中超大正则 -> 消息: '{text[:20]}...'",
                     "TrafficControl",
                 )
-                return 20
+                return 15 if isinstance(event, PrivateMessageEvent) else 20
+
+            if isinstance(event, PrivateMessageEvent):
+                return 30
 
             if is_tome:
                 return 22
