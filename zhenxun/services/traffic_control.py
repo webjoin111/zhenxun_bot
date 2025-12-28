@@ -37,6 +37,15 @@ Config.add_plugin_config(
 
 Config.add_plugin_config(
     "traffic_control",
+    "ENABLE",
+    True,
+    help="是否开启流量控制",
+    default_value=True,
+    type=bool,
+)
+
+Config.add_plugin_config(
+    "traffic_control",
     "MAX_QUEUE_SIZE",
     1000,
     help="消息队列最大积压数,超过此数量且非命令消息将被直接丢弃.设置为 0 表示不限制。",
@@ -319,6 +328,10 @@ class TrafficController:
 
     async def start(self):
         """启动流量控制器，初始化索引并启动工作线程。"""
+        if not Config.get_config("traffic_control", "ENABLE", True):
+            logger.info("流量控制已关闭", "TrafficControl")
+            return
+
         self._build_command_index()
 
         for i in range(self.max_workers):
