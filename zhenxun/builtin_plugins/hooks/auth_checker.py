@@ -1,25 +1,39 @@
 import asyncio
+import contextlib
 import time
+from typing import cast
 
+from nonebot import get_loaded_plugins
 from nonebot.adapters import Bot, Event
 from nonebot.exception import IgnoredException
 from nonebot.matcher import Matcher
 from nonebot_plugin_alconna import UniMsg
 from nonebot_plugin_uninfo import Uninfo
-from tortoise.exceptions import IntegrityError
 
-from zhenxun.models.group_console import GroupConsole
+from zhenxun.configs.config import Config
+from zhenxun.configs.utils import PluginExtraData
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.user_console import UserConsole
+from zhenxun.services.cache.cache_containers import CacheDict
+from zhenxun.services.cache.runtime_cache import (
+    BotMemoryCache,
+    BotSnapshot,
+    GroupMemoryCache,
+    GroupSnapshot,
+    LevelUserMemoryCache,
+    LevelUserSnapshot,
+    PluginInfoMemoryCache,
+)
 from zhenxun.services.data_access import DataAccess
 from zhenxun.services.log import logger
-from zhenxun.utils.enum import GoldHandle, PluginType
+from zhenxun.services.message_load import is_overloaded
+from zhenxun.utils.enum import BlockType, GoldHandle, PluginType
 from zhenxun.utils.exception import InsufficientGold
 from zhenxun.utils.platform import PlatformUtils
 from zhenxun.utils.utils import get_entity_ids
 
 from .auth.auth_admin import auth_admin
-from .auth.auth_ban import auth_ban
+from .auth.auth_ban import auth_ban, is_ban
 from .auth.auth_bot import auth_bot
 from .auth.auth_cost import auth_cost
 from .auth.auth_group import auth_group
@@ -33,6 +47,54 @@ from .auth.exception import (
     SkipPluginException,
 )
 from .auth.utils import base_config
+
+Config.add_plugin_config(
+    "hook",
+    "AUTH_HOOKS_CONCURRENCY_LIMIT",
+    6,
+    help="auth hooks concurrency limit",
+)
+Config.add_plugin_config(
+    "hook",
+    "AUTH_DB_CONCURRENCY_LIMIT",
+    6,
+    help="auth db concurrency limit",
+)
+Config.add_plugin_config(
+    "hook",
+    "AUTH_PLUGIN_CACHE_TTL",
+    30,
+    help="plugin info cache ttl seconds",
+)
+Config.add_plugin_config(
+    "hook",
+    "AUTH_USER_CACHE_TTL",
+    5,
+    help="user cache ttl seconds",
+)
+Config.add_plugin_config(
+    "hook",
+    "AUTH_EVENT_CACHE_TTL",
+    2,
+    help="event auth cache ttl seconds",
+)
+
+
+def _coerce_positive_int(value, default):
+    try:
+        value_int = int(value)
+    except (TypeError, ValueError):
+        return default
+    return value_int if value_int > 0 else default
+
+
+def _coerce_cache_ttl(value, default):
+    try:
+        value_int = int(value)
+    except (TypeError, ValueError):
+        return default
+    return value_int if value_int >= 0 else default
+
 
 # 超时设置（秒）
 TIMEOUT_SECONDS = 5.0
@@ -51,12 +113,301 @@ CIRCUIT_RESET_TIME = 300  # 5分钟
 # 并发控制：限制同时进入 hooks 并行检查的协程数
 
 # 默认为 6，可通过环境变量 AUTH_HOOKS_CONCURRENCY_LIMIT 调整
-HOOKS_CONCURRENCY_LIMIT = base_config.get("AUTH_HOOKS_CONCURRENCY_LIMIT")
+HOOKS_CONCURRENCY_LIMIT = _coerce_positive_int(
+    base_config.get("AUTH_HOOKS_CONCURRENCY_LIMIT", 6), 6
+)
+DB_CONCURRENCY_LIMIT = _coerce_positive_int(
+    base_config.get("AUTH_DB_CONCURRENCY_LIMIT", HOOKS_CONCURRENCY_LIMIT),
+    HOOKS_CONCURRENCY_LIMIT,
+)
+
+PLUGIN_CACHE_TTL = _coerce_cache_ttl(base_config.get("AUTH_PLUGIN_CACHE_TTL", 30), 30)
+USER_CACHE_TTL = _coerce_cache_ttl(base_config.get("AUTH_USER_CACHE_TTL", 5), 5)
+
+PLUGIN_CACHE = (
+    CacheDict("AUTH_PLUGIN_CACHE", expire=PLUGIN_CACHE_TTL)
+    if PLUGIN_CACHE_TTL > 0
+    else None
+)
+USER_CACHE = (
+    CacheDict("AUTH_USER_CACHE", expire=USER_CACHE_TTL) if USER_CACHE_TTL > 0 else None
+)
+EVENT_CACHE_TTL = _coerce_cache_ttl(base_config.get("AUTH_EVENT_CACHE_TTL", 2), 2)
+EVENT_CACHE = (
+    CacheDict("AUTH_EVENT_CACHE", expire=EVENT_CACHE_TTL)
+    if EVENT_CACHE_TTL > 0
+    else None
+)
+
+# 路由索引缓存
+_ROUTE_INDEX_LOCK = asyncio.Lock()
+_ROUTE_INDEX_READY = False
+_ROUTE_COMMAND_MAP: dict[str, set[str]] = {}
+_ROUTE_PREFIX_MAP: dict[str, set[str]] = {}
+_ROUTE_MODULES_WITH_COMMANDS: set[str] = set()
 
 # 全局信号量与计数器
 HOOKS_SEMAPHORE = asyncio.Semaphore(HOOKS_CONCURRENCY_LIMIT)
 HOOKS_ACTIVE_COUNT = 0
 HOOKS_ACTIVE_LOCK = asyncio.Lock()
+
+DB_SEMAPHORE = asyncio.Semaphore(DB_CONCURRENCY_LIMIT)
+DB_ACTIVE_COUNT = 0
+DB_ACTIVE_LOCK = asyncio.Lock()
+
+
+def _cache_get(cache: CacheDict | None, key: str):
+    if not cache:
+        return None
+    try:
+        return cache[key]
+    except KeyError:
+        return None
+
+
+def _cache_set(cache: CacheDict | None, key: str, value):
+    if cache:
+        cache[key] = value
+
+
+def _debug_log(message: str, *args, **kwargs) -> None:
+    if is_overloaded():
+        return
+    logger.debug(message, *args, **kwargs)
+
+
+def _event_cache_key(event: Event, session: Uninfo, entity) -> str:
+    msg_id = getattr(event, "message_id", None)
+    if msg_id is None:
+        msg_id = getattr(event, "id", None)
+    if msg_id is None:
+        msg_id = id(event)
+    platform = PlatformUtils.get_platform(session)
+    group_id = entity.group_id or ""
+    channel_id = entity.channel_id or ""
+    return (
+        f"{platform}:{session.self_id}:{entity.user_id}:"
+        f"{group_id}:{channel_id}:{msg_id}"
+    )
+
+
+def _get_event_cache(event: Event, session: Uninfo, entity):
+    if not EVENT_CACHE:
+        return None
+    key = _event_cache_key(event, session, entity)
+    try:
+        return EVENT_CACHE[key]
+    except KeyError:
+        cache = {}
+        EVENT_CACHE[key] = cache
+        return cache
+
+
+def _normalize_command(command: str) -> str:
+    return command.strip()
+
+
+def _extract_commands(extra: PluginExtraData | None) -> set[str]:
+    if not extra:
+        return set()
+    commands = {c.command for c in extra.commands if c.command}
+    commands.update(extra.aliases or set())
+    return {cmd.strip() for cmd in commands if cmd and cmd.strip()}
+
+
+async def _ensure_route_index():
+    global _ROUTE_INDEX_READY
+    if _ROUTE_INDEX_READY:
+        return
+    async with _ROUTE_INDEX_LOCK:
+        if _ROUTE_INDEX_READY:
+            return
+        _ROUTE_COMMAND_MAP.clear()
+        _ROUTE_PREFIX_MAP.clear()
+        _ROUTE_MODULES_WITH_COMMANDS.clear()
+        for plugin in get_loaded_plugins():
+            if not plugin.metadata:
+                continue
+            extra = plugin.metadata.extra or {}
+            try:
+                extra_data = PluginExtraData(**extra)
+            except Exception:
+                continue
+            command_set = _extract_commands(extra_data)
+            if not command_set:
+                continue
+            module = plugin.name
+            _ROUTE_MODULES_WITH_COMMANDS.add(module)
+            for command in command_set:
+                normalized = _normalize_command(command)
+                if not normalized:
+                    continue
+                _ROUTE_COMMAND_MAP.setdefault(normalized, set()).add(module)
+                _ROUTE_PREFIX_MAP.setdefault(normalized[0], set()).add(normalized)
+        _ROUTE_INDEX_READY = True
+
+
+def _command_matches(text: str, command: str) -> bool:
+    if not text or not command:
+        return False
+    if text == command:
+        return True
+    if text.startswith(command):
+        if len(text) == len(command):
+            return True
+        next_char = text[len(command)]
+        return next_char.isspace()
+    return False
+
+
+def _match_route_modules(text: str) -> set[str]:
+    text = text.strip()
+    if not text:
+        return set()
+    commands = _ROUTE_PREFIX_MAP.get(text[0])
+    if not commands:
+        return set()
+    matched_modules: set[str] = set()
+    for command in commands:
+        if _command_matches(text, command):
+            modules = _ROUTE_COMMAND_MAP.get(command)
+            if modules:
+                matched_modules.update(modules)
+    return matched_modules
+
+
+def _get_message_text(message: UniMsg, event_cache: dict | None) -> str:
+    if event_cache is None:
+        return message.extract_plain_text()
+    cached = event_cache.get("plain_text")
+    if cached is None:
+        cached = message.extract_plain_text()
+        event_cache["plain_text"] = cached
+    return cached
+
+
+async def _get_route_context(text: str, event_cache: dict | None) -> set[str]:
+    if not text:
+        return set()
+    if event_cache is not None and "route_modules" in event_cache:
+        return event_cache["route_modules"]
+    await _ensure_route_index()
+    matched = _match_route_modules(text)
+    if event_cache is not None:
+        event_cache["route_modules"] = matched
+    return matched
+
+
+async def _has_limits_cached(module: str, event_cache: dict | None) -> bool:
+    module_limit_cache: dict[str, bool] = {}
+    if event_cache is not None:
+        module_limit_cache = event_cache.setdefault("module_limits", {})
+    if module in module_limit_cache:
+        return module_limit_cache[module]
+    limits = await LimitManager.get_module_limits(module)
+    has_limits = bool(limits)
+    module_limit_cache[module] = has_limits
+    return has_limits
+
+
+@contextlib.asynccontextmanager
+async def _db_section():
+    global DB_ACTIVE_COUNT
+    await DB_SEMAPHORE.acquire()
+    async with DB_ACTIVE_LOCK:
+        DB_ACTIVE_COUNT += 1
+        _debug_log(f"current db auth concurrency: {DB_ACTIVE_COUNT}", LOGGER_COMMAND)
+    try:
+        yield
+    finally:
+        with contextlib.suppress(Exception):
+            DB_SEMAPHORE.release()
+        async with DB_ACTIVE_LOCK:
+            DB_ACTIVE_COUNT = max(DB_ACTIVE_COUNT - 1, 0)
+            _debug_log(
+                f"current db auth concurrency: {DB_ACTIVE_COUNT}", LOGGER_COMMAND
+            )
+
+
+async def _get_group_cached(entity, event_cache) -> GroupSnapshot | None:
+    if not entity.group_id:
+        return None
+    if event_cache is not None and "group" in event_cache:
+        return event_cache["group"]
+    group = GroupMemoryCache.get_if_ready(entity.group_id, entity.channel_id)
+    if event_cache is not None:
+        event_cache["group"] = group
+    return group
+
+
+def _module_in_block_string(module: str, value: str | None) -> bool:
+    if not value:
+        return False
+    return f"<{module}," in value
+
+
+def _group_has_plugin_block(group, module: str) -> bool:
+    if not group:
+        return False
+    block_set = getattr(group, "block_plugin_set", None)
+    super_block_set = getattr(group, "superuser_block_plugin_set", None)
+    if block_set is not None or super_block_set is not None:
+        if block_set and module in block_set:
+            return True
+        if super_block_set and module in super_block_set:
+            return True
+        return False
+    block_plugin = getattr(group, "block_plugin", "") or ""
+    super_block_plugin = getattr(group, "superuser_block_plugin", "") or ""
+    return _module_in_block_string(module, block_plugin) or _module_in_block_string(
+        module, super_block_plugin
+    )
+
+
+def _needs_auth_plugin(plugin: PluginInfo, group, entity) -> bool:
+    if plugin.block_type == BlockType.ALL and not plugin.status:
+        if group and getattr(group, "is_super", False):
+            return False
+        return True
+    if entity.group_id:
+        if plugin.block_type == BlockType.GROUP:
+            return True
+        return _group_has_plugin_block(group, plugin.module)
+    return plugin.block_type == BlockType.PRIVATE
+
+
+def _needs_admin_check(plugin: PluginInfo) -> bool:
+    if plugin.admin_level and plugin.admin_level > 0:
+        return True
+    return plugin.plugin_type in {
+        PluginType.ADMIN,
+        PluginType.SUPERUSER,
+        PluginType.SUPER_AND_ADMIN,
+    }
+
+
+async def _get_bot_data_cached(
+    bot_id: str, event_cache
+) -> tuple[BotSnapshot | None, bool]:
+    if event_cache is not None and "bot_data" in event_cache:
+        return event_cache.get("bot_data"), event_cache.get("bot_timeout", False)
+    bot = await BotMemoryCache.get(bot_id)
+    if event_cache is not None:
+        event_cache["bot_data"] = bot
+        event_cache["bot_timeout"] = False
+    return bot, False
+
+
+async def _get_admin_levels_cached(
+    session: Uninfo, entity, event_cache
+) -> tuple[tuple[LevelUserSnapshot | None, LevelUserSnapshot | None] | None, bool]:
+    if event_cache is not None and "admin_levels" in event_cache:
+        return event_cache.get("admin_levels"), event_cache.get("admin_timeout", False)
+    levels = await LevelUserMemoryCache.get_levels(session.user.id, entity.group_id)
+    if event_cache is not None:
+        event_cache["admin_levels"] = levels
+        event_cache["admin_timeout"] = False
+    return levels, False
 
 
 # 超时装饰器
@@ -120,76 +471,73 @@ def check_circuit_breaker(name):
     return CIRCUIT_BREAKERS[name]["active"]
 
 
-async def get_plugin_and_user(
-    module: str, user_id: str
-) -> tuple[PluginInfo, UserConsole]:
-    """获取用户数据和插件信息
+def _is_hidden_plugin(matcher: Matcher) -> bool:
+    plugin = matcher.plugin
+    if not plugin or not plugin.metadata:
+        return False
+    extra = plugin.metadata.extra or {}
+    return extra.get("plugin_type") == PluginType.HIDDEN
 
-    参数:
-        module: 模块名
-        user_id: 用户id
 
-    异常:
-        PermissionExemption: 插件数据不存在
-        PermissionExemption: 插件类型为HIDDEN
-        PermissionExemption: 重复创建用户
-        PermissionExemption: 用户数据不存在
-
-    返回:
-        tuple[PluginInfo, UserConsole]: 插件信息，用户信息
-    """
-    user_dao = DataAccess(UserConsole)
-    plugin_dao = DataAccess(PluginInfo)
-
-    # 并行查询插件和用户数据
-    plugin_task = plugin_dao.safe_get_or_none(module=module)
-    user_task = user_dao.get_by_func_or_none(
-        UserConsole.get_user, False, user_id=user_id
+async def _fetch_user_readonly(
+    user_dao: DataAccess, user_id: str
+) -> UserConsole | None:
+    return await with_timeout(
+        user_dao.safe_get_or_none(user_id=user_id), name="get_user"
     )
 
-    try:
-        plugin, user = await with_timeout(
-            asyncio.gather(plugin_task, user_task), name="get_plugin_and_user"
-        )
-    except asyncio.TimeoutError:
-        # 如果并行查询超时，尝试串行查询
-        logger.warning("并行查询超时，尝试串行查询", LOGGER_COMMAND)
-        plugin = await with_timeout(
-            plugin_dao.safe_get_or_none(module=module), name="get_plugin"
-        )
-        user = await with_timeout(
-            user_dao.safe_get_or_none(user_id=user_id), name="get_user"
-        )
-    except IntegrityError:
-        await asyncio.sleep(0.5)
-        plugin_task = plugin_dao.safe_get_or_none(module=module)
-        user_task = user_dao.get_by_func_or_none(
-            UserConsole.get_user, False, user_id=user_id
-        )
-        plugin, user = await with_timeout(
-            asyncio.gather(plugin_task, user_task), name="get_plugin_and_user"
-        )
+
+async def _fetch_plugin(plugin_dao: DataAccess, module: str) -> PluginInfo | None:
+    return await with_timeout(
+        plugin_dao.safe_get_or_none(module=module), name="get_plugin"
+    )
+
+
+async def get_plugin_and_user(
+    module: str,
+    user_id: str,
+    platform: str | None = None,
+    event_cache: dict | None = None,
+    need_user: bool = True,
+) -> tuple[PluginInfo, UserConsole | None]:
+    """Fetch plugin info and read user only when cost is required."""
+    user_dao = DataAccess(UserConsole)
+
+    plugin = None
+    if event_cache is not None:
+        plugin_cache = event_cache.setdefault("plugin_cache", {})
+        if module in plugin_cache:
+            plugin = plugin_cache[module]
+    if plugin is None:
+        plugin = await PluginInfoMemoryCache.get_by_module(module)
+        if event_cache is not None:
+            event_cache.setdefault("plugin_cache", {})[module] = plugin
+    plugin = cast(PluginInfo | None, plugin)
 
     if not plugin:
-        raise PermissionExemption(f"插件:{module} 数据不存在，已跳过权限检查...")
+        raise PermissionExemption(f"plugin:{module} not found, skip permission check")
     if plugin.plugin_type == PluginType.HIDDEN:
-        raise PermissionExemption(
-            f"插件: {plugin.name}:{plugin.module} 为HIDDEN，已跳过权限检查..."
-        )
+        raise PermissionExemption(f"plugin {plugin.name}:{plugin.module} hidden, skip")
+
     user = None
-    try:
-        user = await user_dao.get_by_func_or_none(
-            UserConsole.get_user, False, user_id=user_id
-        )
-    except IntegrityError as e:
-        raise PermissionExemption("重复创建用户，已跳过该次权限检查...") from e
-    if not user:
-        raise PermissionExemption("用户数据不存在，已跳过权限检查...")
+    if need_user and plugin.cost_gold > 0:
+        if event_cache is not None:
+            user_cache = event_cache.setdefault("user_cache", {})
+            if user_id in user_cache:
+                user = user_cache[user_id]
+            else:
+                async with _db_section():
+                    user = await _fetch_user_readonly(user_dao, user_id)
+                user_cache[user_id] = user
+        else:
+            async with _db_section():
+                user = await _fetch_user_readonly(user_dao, user_id)
+
     return plugin, user
 
 
 async def get_plugin_cost(
-    bot: Bot, user: UserConsole, plugin: PluginInfo, session: Uninfo
+    bot: Bot, user: UserConsole | None, plugin: PluginInfo, session: Uninfo
 ) -> int:
     """获取插件费用
 
@@ -278,7 +626,7 @@ async def _enter_hooks_section():
     await HOOKS_SEMAPHORE.acquire()
     async with HOOKS_ACTIVE_LOCK:
         HOOKS_ACTIVE_COUNT += 1
-        logger.debug(f"当前并发权限检查数量: {HOOKS_ACTIVE_COUNT}", LOGGER_COMMAND)
+        _debug_log(f"当前并发权限检查数量: {HOOKS_ACTIVE_COUNT}", LOGGER_COMMAND)
 
 
 async def _leave_hooks_section():
@@ -292,7 +640,85 @@ async def _leave_hooks_section():
         HOOKS_ACTIVE_COUNT -= 1
         # 保证计数不为负
         HOOKS_ACTIVE_COUNT = max(HOOKS_ACTIVE_COUNT, 0)
-        logger.debug(f"当前并发权限检查数量: {HOOKS_ACTIVE_COUNT}", LOGGER_COMMAND)
+        _debug_log(f"当前并发权限检查数量: {HOOKS_ACTIVE_COUNT}", LOGGER_COMMAND)
+
+
+async def auth_ban_fast(
+    matcher: Matcher, event: Event, bot: Bot, session: Uninfo
+) -> None:
+    """快速 ban 检测（仅使用内存缓存），用于前置快速裁决。"""
+    entity = get_entity_ids(session)
+    event_cache = _get_event_cache(event, session, entity)
+    if event_cache is not None and event_cache.get("ban_state") is True:
+        raise SkipPluginException("user or group banned (cached)")
+    if entity.user_id in bot.config.superusers:
+        if event_cache is not None:
+            event_cache["ban_state"] = False
+        return
+    if entity.group_id and await is_ban(None, entity.group_id):
+        if event_cache is not None:
+            event_cache["ban_state"] = True
+        raise SkipPluginException("group banned (fast)")
+    if entity.user_id and await is_ban(entity.user_id, entity.group_id):
+        if event_cache is not None:
+            event_cache["ban_state"] = True
+        raise SkipPluginException("user banned (fast)")
+    if event_cache is not None:
+        event_cache["ban_state"] = False
+
+
+async def route_precheck(
+    matcher: Matcher,
+    event: Event,
+    session: Uninfo,
+    message: UniMsg,
+) -> bool:
+    module = matcher.plugin_name or ""
+    if not module:
+        return False
+    if _is_hidden_plugin(matcher):
+        return False
+    entity = get_entity_ids(session)
+    event_cache = _get_event_cache(event, session, entity)
+    text = _get_message_text(message, event_cache)
+    route_modules = await _get_route_context(text, event_cache)
+    await _ensure_route_index()
+    if module in _ROUTE_MODULES_WITH_COMMANDS and module not in route_modules:
+        if event_cache is not None:
+            event_cache["route_skip"] = True
+        return True
+    return False
+
+
+async def auth_precheck(
+    matcher: Matcher,
+    event: Event,
+    bot: Bot,
+    session: Uninfo,
+    message: UniMsg,
+) -> None:
+    """轻量前置检查：命令路由 + 必要管理员权限。"""
+    module = matcher.plugin_name or ""
+    if not module:
+        return
+    if _is_hidden_plugin(matcher):
+        return
+    entity = get_entity_ids(session)
+
+    if session.user.id in bot.config.superusers:
+        return
+
+    plugin = cast(PluginInfo | None, await PluginInfoMemoryCache.get_by_module(module))
+    if not plugin:
+        return
+
+    if plugin.plugin_type == PluginType.SUPERUSER:
+        raise SkipPluginException("超级管理员权限不足...")
+
+    if _needs_admin_check(plugin):
+        await LevelUserMemoryCache.ensure_fresh()
+        levels = await LevelUserMemoryCache.get_levels(session.user.id, entity.group_id)
+        await auth_admin(plugin, session, cached_levels=levels)
 
 
 async def auth(
@@ -301,6 +727,8 @@ async def auth(
     bot: Bot,
     session: Uninfo,
     message: UniMsg,
+    *,
+    skip_ban: bool = False,
 ):
     """权限检查
 
@@ -316,6 +744,10 @@ async def auth(
     ignore_flag = False
     entity = get_entity_ids(session)
     module = matcher.plugin_name or ""
+    event_cache = _get_event_cache(event, session, entity)
+    auth_allowed = None
+    auth_result_cache = None
+    admin_checked_pre = False
 
     # 用于记录各个 hook 的执行时间
     hook_times = {}
@@ -328,11 +760,46 @@ async def auth(
         if not module:
             raise PermissionExemption("Matcher插件名称不存在...")
 
+        if event_cache is not None:
+            auth_result_cache = event_cache.setdefault("auth_result", {})
+            cached_result = auth_result_cache.get(module)
+            if cached_result is not None:
+                allowed, reason = cached_result
+                if not allowed:
+                    raise SkipPluginException(reason or "auth cached skip")
+                return
+
+        if _is_hidden_plugin(matcher):
+            raise PermissionExemption(f"plugin {module} hidden, skip")
+        if event_cache is not None and event_cache.get("ban_state") is True:
+            raise SkipPluginException("user or group banned (cached)")
+
+        text = _get_message_text(message, event_cache)
+        route_modules = await _get_route_context(text, event_cache)
+        await _ensure_route_index()
+        route_skip_checks = (
+            module in _ROUTE_MODULES_WITH_COMMANDS and module not in route_modules
+        )
+        if route_skip_checks:
+            if event_cache is not None:
+                event_cache["route_skip"] = True
+            hook_times["route"] = "miss"
+            auth_allowed = True
+            return
+
+        platform = PlatformUtils.get_platform(session)
         # 获取插件和用户数据
         plugin_user_start = time.time()
         try:
             plugin, user = await with_timeout(
-                get_plugin_and_user(module, entity.user_id), name="get_plugin_and_user"
+                get_plugin_and_user(
+                    module,
+                    entity.user_id,
+                    platform,
+                    event_cache=event_cache,
+                    need_user=not route_skip_checks,
+                ),
+                name="get_plugin_and_user",
             )
             hook_times["get_plugin_user"] = f"{time.time() - plugin_user_start:.3f}s"
         except asyncio.TimeoutError:
@@ -343,54 +810,200 @@ async def auth(
             )
             raise PermissionExemption("获取插件和用户数据超时，请稍后再试...")
 
-        # 进入 hooks 并行检查区域（会在高并发时排队）
-        await _enter_hooks_section()
-        entered_hooks = True
+        if not route_skip_checks and _needs_admin_check(plugin):
+            if plugin.plugin_type in {
+                PluginType.SUPERUSER,
+                PluginType.SUPER_AND_ADMIN,
+            }:
+                if session.user.id in bot.config.superusers:
+                    hook_times["auth_admin"] = "superuser"
+                    admin_checked_pre = True
+                elif plugin.plugin_type == PluginType.SUPERUSER:
+                    raise SkipPluginException("超级管理员权限不足...")
+            if not admin_checked_pre:
+                await LevelUserMemoryCache.ensure_fresh()
+                admin_levels = None
+                admin_timeout = False
+                if event_cache is not None:
+                    admin_levels, admin_timeout = await _get_admin_levels_cached(
+                        session, entity, event_cache
+                    )
+                if admin_timeout:
+                    hook_times["auth_admin"] = "timeout"
+                else:
+                    admin_start = time.time()
+                    await auth_admin(plugin, session, cached_levels=admin_levels)
+                    hook_times["auth_admin"] = f"{time.time() - admin_start:.3f}s(pre)"
+                admin_checked_pre = True
+
+        ban_cache_state = None
+        if event_cache is not None:
+            ban_cache_state = event_cache.get("ban_state")
+        if skip_ban:
+            if ban_cache_state is True:
+                hook_times["auth_ban"] = "cached"
+                raise SkipPluginException("user or group banned (cached)")
+            if ban_cache_state is None:
+                ban_start = time.time()
+                try:
+                    await auth_ban(matcher, bot, session, plugin)
+                    hook_times["auth_ban"] = f"{time.time() - ban_start:.3f}s"
+                    if event_cache is not None:
+                        event_cache["ban_state"] = False
+                except SkipPluginException:
+                    hook_times["auth_ban"] = f"{time.time() - ban_start:.3f}s"
+                    if event_cache is not None:
+                        event_cache["ban_state"] = True
+                    raise
+            else:
+                hook_times["auth_ban"] = "skipped"
+        else:
+            if ban_cache_state is True:
+                hook_times["auth_ban"] = "cached"
+                raise SkipPluginException("user or group banned (cached)")
+            if ban_cache_state is None:
+                ban_start = time.time()
+                try:
+                    await auth_ban(matcher, bot, session, plugin)
+                    hook_times["auth_ban"] = f"{time.time() - ban_start:.3f}s"
+                    if event_cache is not None:
+                        event_cache["ban_state"] = False
+                except SkipPluginException:
+                    hook_times["auth_ban"] = f"{time.time() - ban_start:.3f}s"
+                    if event_cache is not None:
+                        event_cache["ban_state"] = True
+                    raise
+            else:
+                hook_times["auth_ban"] = "cached"
 
         # 获取插件费用
-        cost_start = time.time()
-        try:
-            cost_gold = await with_timeout(
-                get_plugin_cost(bot, user, plugin, session), name="get_plugin_cost"
-            )
-            hook_times["cost_gold"] = f"{time.time() - cost_start:.3f}s"
-        except asyncio.TimeoutError:
-            logger.error(
-                f"获取插件费用超时，模块: {module}", LOGGER_COMMAND, session=session
-            )
-            # 继续执行，不阻止权限检查
+        if not route_skip_checks and plugin.cost_gold > 0:
+            cost_start = time.time()
+            try:
+                cost_gold = await with_timeout(
+                    get_plugin_cost(bot, user, plugin, session), name="get_plugin_cost"
+                )
+                hook_times["cost_gold"] = f"{time.time() - cost_start:.3f}s"
+            except asyncio.TimeoutError:
+                logger.error(
+                    f"获取插件费用超时，模块: {module}", LOGGER_COMMAND, session=session
+                )
+                # 继续执行，不阻止权限检查
+        else:
+            hook_times["cost_gold"] = "skipped"
 
         # 执行 bot_filter
         bot_filter(session)
 
-        group = None
-        if entity.group_id:
-            group_dao = DataAccess(GroupConsole)
-            group = await with_timeout(
-                group_dao.safe_get_or_none(
-                    group_id=entity.group_id, channel_id__isnull=True
-                ),
-                name="get_group",
+        group = await _get_group_cached(entity, event_cache)
+
+        bot_data = None
+        bot_timeout = False
+        if event_cache is not None:
+            bot_data, bot_timeout = await _get_bot_data_cached(bot.self_id, event_cache)
+
+        admin_levels = None
+        admin_timeout = False
+        if (
+            not admin_checked_pre
+            and plugin.admin_level
+            and event_cache is not None
+            and not route_skip_checks
+        ):
+            admin_levels, admin_timeout = await _get_admin_levels_cached(
+                session, entity, event_cache
             )
 
         # 并行执行所有 hook 检查，并记录执行时间
         hooks_start = time.time()
 
         # 创建所有 hook 任务
-        hook_tasks = [
-            time_hook(auth_ban(matcher, bot, session, plugin), "auth_ban", hook_times),
-            time_hook(auth_bot(plugin, bot.self_id), "auth_bot", hook_times),
-            time_hook(
-                auth_group(plugin, group, message, entity.group_id),
-                "auth_group",
-                hook_times,
-            ),
-            time_hook(auth_admin(plugin, session), "auth_admin", hook_times),
-            time_hook(
-                auth_plugin(plugin, group, session, event), "auth_plugin", hook_times
-            ),
-            time_hook(auth_limit(plugin, session), "auth_limit", hook_times),
-        ]
+        hook_tasks = []
+        if event_cache is None:
+            hook_tasks.append(
+                time_hook(auth_bot(plugin, bot.self_id), "auth_bot", hook_times)
+            )
+        else:
+            if bot_timeout:
+                hook_times["auth_bot"] = "timeout"
+            else:
+                hook_tasks.append(
+                    time_hook(
+                        auth_bot(
+                            plugin,
+                            bot.self_id,
+                            bot_data=bot_data,
+                            skip_fetch=True,
+                        ),
+                        "auth_bot",
+                        hook_times,
+                    )
+                )
+
+        if session.user.id in bot.config.superusers:
+            hook_times["auth_group"] = "superuser"
+        else:
+            hook_tasks.append(
+                time_hook(
+                    auth_group(plugin, group, text, entity.group_id),
+                    "auth_group",
+                    hook_times,
+                )
+            )
+
+        if not route_skip_checks and plugin.admin_level and not admin_checked_pre:
+            if event_cache is None:
+                hook_tasks.append(
+                    time_hook(auth_admin(plugin, session), "auth_admin", hook_times)
+                )
+            else:
+                if admin_timeout:
+                    hook_times["auth_admin"] = "timeout"
+                else:
+                    hook_tasks.append(
+                        time_hook(
+                            auth_admin(plugin, session, cached_levels=admin_levels),
+                            "auth_admin",
+                            hook_times,
+                        )
+                    )
+        else:
+            hook_times.setdefault("auth_admin", "skipped")
+
+        if session.user.id in bot.config.superusers:
+            hook_times["auth_plugin"] = "superuser"
+        elif not route_skip_checks and _needs_auth_plugin(plugin, group, entity):
+            hook_tasks.append(
+                time_hook(
+                    auth_plugin(
+                        plugin,
+                        group,
+                        session,
+                        event,
+                        skip_group_block=session.user.id in bot.config.superusers,
+                    ),
+                    "auth_plugin",
+                    hook_times,
+                )
+            )
+        else:
+            hook_times["auth_plugin"] = "skipped"
+
+        if not route_skip_checks:
+            has_limits = await _has_limits_cached(module, event_cache)
+            if has_limits:
+                hook_tasks.append(
+                    time_hook(auth_limit(plugin, session), "auth_limit", hook_times)
+                )
+            else:
+                hook_times["auth_limit"] = "skipped"
+        else:
+            hook_times["auth_limit"] = "skipped"
+
+        if hook_tasks:
+            # 进入 hooks 并行检查区域（会在高并发时排队）
+            await _enter_hooks_section()
+            entered_hooks = True
 
         # 使用 gather 并行执行所有 hook，但添加总体超时控制
         try:
@@ -408,15 +1021,19 @@ async def auth(
             # 不抛出异常，允许继续执行
 
         hooks_time = time.time() - hooks_start
+        auth_allowed = True
 
     except SkipPluginException as e:
         LimitManager.unblock(module, entity.user_id, entity.group_id, entity.channel_id)
         logger.info(str(e), LOGGER_COMMAND, session=session)
         ignore_flag = True
+        auth_allowed = False
     except IsSuperuserException:
         logger.debug("超级用户跳过权限检测...", LOGGER_COMMAND, session=session)
+        auth_allowed = True
     except PermissionExemption as e:
         logger.info(str(e), LOGGER_COMMAND, session=session)
+        auth_allowed = True
     finally:
         # 如果进入过 hooks 区域，确保释放信号量（即使上层处理抛出了异常）
         if entered_hooks:
@@ -428,6 +1045,8 @@ async def auth(
                     LOGGER_COMMAND,
                     session=session,
                 )
+        if auth_result_cache is not None and auth_allowed is not None:
+            auth_result_cache[module] = (auth_allowed, None)
     # 扣除金币
     if not ignore_flag and cost_gold > 0:
         gold_start = time.time()

@@ -1,5 +1,6 @@
 import asyncio
 import random
+import time
 
 import nonebot
 from nonebot import on_notice
@@ -10,10 +11,12 @@ from nonebot.plugin import PluginMetadata
 from nonebot_plugin_alconna import Alconna, Arparma, on_alconna
 from nonebot_plugin_apscheduler import scheduler
 from nonebot_plugin_session import EventSession
+from nonebot_plugin_uninfo import Scene, SceneType, get_interface
 
 from zhenxun.configs.config import BotConfig
 from zhenxun.configs.utils import PluginExtraData
 from zhenxun.services.log import logger
+from zhenxun.services.message_load import should_pause_tasks
 from zhenxun.services.tags import tag_manager
 from zhenxun.utils.enum import PluginType
 from zhenxun.utils.message import MessageUtils
@@ -38,6 +41,11 @@ __plugin_meta__ = PluginMetadata(
     ).to_dict(),
 )
 
+_FULL_REFRESH_INTERVAL_SECONDS = 24 * 60 * 60
+
+_GROUP_LAST_UPDATE: dict[tuple[str, str], float] = {}
+_UPDATE_SEMAPHORE = asyncio.Semaphore(1)
+
 
 _matcher = on_alconna(
     Alconna("更新群组成员信息"),
@@ -58,6 +66,34 @@ _update_all_matcher = on_alconna(
 )
 
 
+def _group_key(bot_id: str, group_id: str) -> tuple[str, str]:
+    return bot_id, group_id
+
+
+async def _build_scene_map(bot: Bot) -> dict[str, Scene]:
+    if not (interface := get_interface(bot)):
+        return {}
+    scenes = await interface.get_scenes(SceneType.GROUP)
+    return {scene.id: scene for scene in scenes if scene.is_group}
+
+
+async def _run_update(
+    bot: Bot,
+    group_id: str,
+    *,
+    scene_map: dict[str, Scene] | None = None,
+    platform: str | None = None,
+    force: bool = False,
+) -> str | None:
+    key = _group_key(bot.self_id, group_id)
+    async with _UPDATE_SEMAPHORE:
+        result = await MemberUpdateManage.update_group_member(
+            bot, group_id, scene_map=scene_map, platform=platform
+        )
+    _GROUP_LAST_UPDATE[key] = time.time()
+    return result
+
+
 async def _update_all_groups_task(bot: Bot, session: EventSession):
     """
     在后台执行所有群组的更新任务，并向超级用户发送最终报告。
@@ -69,21 +105,29 @@ async def _update_all_groups_task(bot: Bot, session: EventSession):
 
     logger.info(f"Bot {bot_id}: 开始执行所有群组信息更新任务...", "更新所有群组")
     try:
-        group_list, _ = await PlatformUtils.get_group_list(bot)
-        total_count = len(group_list)
-        for i, group in enumerate(group_list):
+        scene_map = await _build_scene_map(bot)
+        platform = PlatformUtils.get_platform(bot)
+        group_ids = list(scene_map.keys())
+        total_count = len(group_ids)
+        for i, group_id in enumerate(group_ids):
             try:
                 logger.debug(
                     f"Bot {bot_id}: 正在更新第 {i + 1}/{total_count} 个群组: "
-                    f"{group.group_id}",
+                    f"{group_id}",
                     "更新所有群组",
                 )
-                await MemberUpdateManage.update_group_member(bot, group.group_id)
+                await _run_update(
+                    bot,
+                    group_id,
+                    scene_map=scene_map,
+                    platform=platform,
+                    force=True,
+                )
                 success_count += 1
             except Exception as e:
                 fail_count += 1
                 logger.error(
-                    f"Bot {bot_id}: 更新群组 {group.group_id} 信息失败",
+                    f"Bot {bot_id}: 更新群组 {group_id} 信息失败",
                     "更新所有群组",
                     e=e,
                 )
@@ -118,18 +162,19 @@ async def _(bot: Bot, session: EventSession):
 
 @_matcher.handle()
 async def _(bot: Bot, session: EventSession, arparma: Arparma):
-    if gid := session.id3 or session.id2:
-        logger.info("更新群组成员信息", arparma.header_result, session=session)
-        result = await MemberUpdateManage.update_group_member(bot, gid)
-        await MessageUtils.build_message(result).finish(reply_to=True)
-        await tag_manager._invalidate_cache()
-    await MessageUtils.build_message("群组id为空...").send()
+    if not (gid := session.id3 or session.id2):
+        await MessageUtils.build_message("群组id为空...").send()
+        return
+    logger.info("更新群组成员信息", arparma.header_result, session=session)
+    result = await _run_update(bot, gid, force=True)
+    await MessageUtils.build_message(result or "更新已完成").finish(reply_to=True)
+    await tag_manager._invalidate_cache()
 
 
 @_notice.handle()
 async def _(bot: Bot, event: GroupIncreaseNoticeEvent):
     if str(event.user_id) == bot.self_id:
-        await MemberUpdateManage.update_group_member(bot, str(event.group_id))
+        await _run_update(bot, str(event.group_id), force=True)
         logger.info(
             f"{BotConfig.self_nickname}加入群聊更新群组信息",
             "更新群组成员列表",
@@ -140,29 +185,50 @@ async def _(bot: Bot, event: GroupIncreaseNoticeEvent):
 
 
 @scheduler.scheduled_job(
-    "interval",
-    minutes=5,
+    "cron",
+    hour=3,
+    minute=0,
+    max_instances=1,
+    coalesce=True,
 )
-async def _():
-    for bot in nonebot.get_bots().values():
-        if PlatformUtils.get_platform(bot) == "qq":
-            try:
-                group_list, _ = await PlatformUtils.get_group_list(bot)
-                if group_list:
-                    for group in group_list:
-                        try:
-                            await MemberUpdateManage.update_group_member(
-                                bot, group.group_id
-                            )
-                            logger.debug("自动更新群组成员信息成功...")
-                        except Exception as e:
-                            logger.error(
-                                f"Bot: {bot.self_id} 自动更新群组成员信息失败",
-                                target=group.group_id,
-                                e=e,
-                            )
-            except Exception as e:
-                logger.error(f"Bot: {bot.self_id} 自动更新群组信息", e=e)
-        logger.debug(f"自动 Bot: {bot.self_id} 更新群组成员信息成功...")
-
-    await tag_manager._invalidate_cache()
+async def _nightly_full_refresh():
+    if should_pause_tasks():
+        return
+    now = time.time()
+    bots = nonebot.get_bots()
+    if not bots:
+        return
+    updated = 0
+    for bot in bots.values():
+        platform = PlatformUtils.get_platform(bot)
+        if platform != "qq":
+            continue
+        try:
+            scene_map = await _build_scene_map(bot)
+            if not scene_map:
+                continue
+            for group_id in scene_map:
+                key = _group_key(bot.self_id, group_id)
+                last_update = _GROUP_LAST_UPDATE.get(key, 0)
+                if now - last_update < _FULL_REFRESH_INTERVAL_SECONDS:
+                    continue
+                try:
+                    result = await _run_update(
+                        bot,
+                        group_id,
+                        scene_map=scene_map,
+                        platform=platform,
+                        force=True,
+                    )
+                    if result is not None:
+                        updated += 1
+                except Exception as e:
+                    logger.error(
+                        f"Bot: {bot.self_id} 夜间更新群组成员信息失败",
+                        target=group_id,
+                        e=e,
+                    )
+        except Exception as e:
+            logger.error(f"Bot: {bot.self_id} 夜间更新群组信息", e=e)
+    if updated:
+        await tag_manager._invalidate_cache()

@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 
 from nonebot.adapters import Event
@@ -13,6 +14,7 @@ from zhenxun.utils.utils import FreqLimiter
 from .config import LOGGER_COMMAND
 
 base_config = Config.get("hook")
+_SEND_TASKS: set[asyncio.Task] = set()
 
 
 def is_poke(event: Event) -> bool:
@@ -32,7 +34,10 @@ def is_poke(event: Event) -> bool:
 
 
 async def send_message(
-    session: Uninfo, message: list | str, check_tag: str | None = None
+    session: Uninfo,
+    message: list | str,
+    check_tag: str | None = None,
+    background: bool = False,
 ):
     """发送消息
 
@@ -41,19 +46,28 @@ async def send_message(
         message: 消息
         check_tag: cd flag
     """
-    try:
-        if not check_tag:
-            await MessageUtils.build_message(message).send(reply_to=True)
-        elif freq._flmt.check(check_tag):
-            freq._flmt.start_cd(check_tag)
-            await MessageUtils.build_message(message).send(reply_to=True)
-    except Exception as e:
-        logger.error(
-            "发送消息失败",
-            LOGGER_COMMAND,
-            session=session,
-            e=e,
-        )
+
+    async def _send():
+        try:
+            if not check_tag:
+                await MessageUtils.build_message(message).send(reply_to=True)
+            elif freq._flmt.check(check_tag):
+                freq._flmt.start_cd(check_tag)
+                await MessageUtils.build_message(message).send(reply_to=True)
+        except Exception as e:
+            logger.error(
+                "发送消息失败",
+                LOGGER_COMMAND,
+                session=session,
+                e=e,
+            )
+
+    if background:
+        task = asyncio.create_task(_send())
+        _SEND_TASKS.add(task)
+        task.add_done_callback(_SEND_TASKS.discard)
+        return
+    await _send()
 
 
 class FreqUtils:

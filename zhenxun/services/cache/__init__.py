@@ -81,7 +81,8 @@ import asyncio
 from collections.abc import Callable
 from datetime import datetime
 from functools import wraps
-from typing import Any, ClassVar, Generic, TypeVar, get_type_hints
+from typing import Any, ClassVar, Generic, TypeVar, cast, get_type_hints
+from typing_extensions import Self
 
 from aiocache import Cache as AioCache
 from aiocache import SimpleMemoryCache
@@ -114,6 +115,8 @@ __all__ = [
     "CacheRegistry",
     "CacheRoot",
 ]
+
+from . import runtime_cache as _runtime_cache  # noqa: F401
 
 T = TypeVar("T")
 U = TypeVar("U")
@@ -291,11 +294,11 @@ class CacheManager:
     _dict_caches: ClassVar[dict[str, "CacheDict"]] = {}
     _enabled = False  # 缓存启用标记
 
-    def __new__(cls) -> "CacheManager":
+    def __new__(cls) -> Self:
         """单例模式"""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-        return cls._instance
+        return cast(Self, cls._instance)
 
     @property
     def enabled(self) -> bool:
