@@ -2,6 +2,7 @@ from nonebot.rule import to_me
 from nonebot_plugin_alconna import (
     Alconna,
     Args,
+    MultiVar,
     Option,
     Subcommand,
     on_alconna,
@@ -13,10 +14,19 @@ from zhenxun.utils.rules import admin_check, ensure_group
 _status_matcher = on_alconna(
     Alconna(
         "switch",
-        Option("-t|--task", action=store_true, help_text="被动技能"),
+        Option("--task", action=store_true, help_text="被动技能"),
         Option("-df|--default", action=store_true, help_text="进群默认开关"),
         Option("--all", action=store_true, help_text="全部插件/被动"),
-        Option("-g|--group", Args["group?", str], help_text="指定群组"),
+        Option("-g|--group", Args["groups", MultiVar(str)], help_text="指定群组"),
+        Option("-t|--tag", Args["tag", str], help_text="指定标签"),
+        Option("-o|--only", action=store_true, help_text="白名单模式(仅在目标群开启)"),
+        Option(
+            "-f|--force", action=store_true, help_text="强制操作群组开关(仅超级用户)"
+        ),
+        Subcommand(
+            "check",
+            Args["plugin_name", [str, int]],
+        ),
         Subcommand(
             "open",
             Args["plugin_name?", [str, int]],
@@ -25,8 +35,9 @@ _status_matcher = on_alconna(
             "close",
             Args["plugin_name?", [str, int]],
             Option(
-                "-t|--type",
+                "--scope",
                 Args["block_type?", ["all", "a", "private", "p", "group", "g"]],
+                help_text="全局禁用范围",
             ),
         ),
     ),
@@ -48,6 +59,20 @@ _status_matcher.shortcut(
     r"插件列表",
     command="switch",
     arguments=[],
+    prefix=True,
+)
+
+_status_matcher.shortcut(
+    r"查看(功能|插件)?状态\s*(?P<plugin_name>.+)",
+    command="switch",
+    arguments=["check", "{plugin_name}"],
+    prefix=True,
+)
+
+_status_matcher.shortcut(
+    r"查看被动状态\s*(?P<plugin_name>.+)",
+    command="switch",
+    arguments=["check", "{plugin_name}", "--task"],
     prefix=True,
 )
 
