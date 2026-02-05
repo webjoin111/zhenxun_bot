@@ -540,10 +540,7 @@ class GroupConsole(Model):
                         "ALTER TABLE group_console ALTER COLUMN "
                         "superuser_block_plugin TYPE TEXT;"
                     ),
-                    (
-                        "ALTER TABLE group_console ALTER COLUMN "
-                        "block_task TYPE TEXT;"
-                    ),
+                    ("ALTER TABLE group_console ALTER COLUMN " "block_task TYPE TEXT;"),
                     (
                         "ALTER TABLE group_console ALTER COLUMN "
                         "superuser_block_task TYPE TEXT;"
@@ -553,18 +550,12 @@ class GroupConsole(Model):
         elif "mysql" in db_type:
             scripts.extend(
                 [
-                    (
-                        "ALTER TABLE group_console MODIFY COLUMN "
-                        "block_plugin TEXT;"
-                    ),
+                    ("ALTER TABLE group_console MODIFY COLUMN " "block_plugin TEXT;"),
                     (
                         "ALTER TABLE group_console MODIFY COLUMN "
                         "superuser_block_plugin TEXT;"
                     ),
-                    (
-                        "ALTER TABLE group_console MODIFY COLUMN "
-                        "block_task TEXT;"
-                    ),
+                    ("ALTER TABLE group_console MODIFY COLUMN " "block_task TEXT;"),
                     (
                         "ALTER TABLE group_console MODIFY COLUMN "
                         "superuser_block_task TEXT;"
