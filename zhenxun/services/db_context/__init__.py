@@ -7,6 +7,7 @@ import nonebot
 from nonebot.utils import is_coroutine_callable
 from tortoise import Tortoise
 from tortoise.connection import connections
+from tortoise.exceptions import OperationalError
 
 from zhenxun.configs.config import BotConfig
 from zhenxun.services.log import logger
@@ -50,11 +51,8 @@ def get_config() -> dict:
         raise DbUrlIsNode("数据库Url连接字符串为空，请检查配置文件（.env.dev）")
     parsed = urlparse(BotConfig.db_url)
 
-    # 基础配置
     config = {
-        "connections": {
-            "default": BotConfig.db_url  # 默认直接使用连接字符串
-        },
+        "connections": {"default": BotConfig.db_url},
         "apps": {
             "models": {
                 "models": db_model.models,
@@ -64,7 +62,6 @@ def get_config() -> dict:
         "timezone": "Asia/Shanghai",
     }
 
-    # 根据数据库类型应用高级配置
     if parsed.scheme.startswith("postgres"):
         config["connections"]["default"] = {
             "engine": "tortoise.backends.asyncpg",
@@ -143,7 +140,24 @@ async def init():
                     await asyncio.wait_for(
                         db.execute_query_dict(sql), timeout=DB_TIMEOUT_SECONDS
                     )
-                    # await TestSQL.raw(sql)
+                except OperationalError as e:
+                    err_str = str(e).lower()
+                    if any(
+                        x in err_str
+                        for x in [
+                            "already exists",
+                            "duplicate column",
+                            "已经存在",
+                            "已存在",
+                        ]
+                    ):
+                        pass
+                    elif any(
+                        x in err_str for x in ["does not exist", "check that", "不存在"]
+                    ) and ("drop" in sql.lower() or "rename" in sql.lower()):
+                        pass
+                    else:
+                        logger.warning(f"执行SQL警告: {sql} || {e}")
                 except Exception as e:
                     logger.debug(f"执行SQL: {sql} 错误...", e=e)
             if sql_list:
