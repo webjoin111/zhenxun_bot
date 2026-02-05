@@ -396,7 +396,7 @@ class BaseRepoManager(ABC):
             result.new_version = new_version.strip()
 
             # 如果版本相同，则无需更新
-            if old_version.strip() == new_version.strip():
+            if old_version.strip() == new_version.strip() and not force:
                 logger.info(
                     f"仓库 {repo_url} 已是最新版本: {new_version.strip()}", LOG_COMMAND
                 )
