@@ -4,6 +4,7 @@ from typing_extensions import Self
 from tortoise import fields
 from tortoise.backends.base.client import BaseDBAsyncClient
 
+from zhenxun.configs.config import BotConfig
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.task_info import TaskInfo
 from zhenxun.services.cache import CacheRoot
@@ -514,11 +515,52 @@ class GroupConsole(Model):
 
     @classmethod
     def _run_script(cls):
-        return [
+        db_type = (BotConfig.get_sql_type() or "").lower()
+
+        scripts = [
             "ALTER TABLE group_console ADD superuser_block_plugin"
-            " character varying(255) NOT NULL DEFAULT '';",
+            " Text NOT NULL DEFAULT '';",
             "ALTER TABLE group_console ADD superuser_block_task"
-            " character varying(255) NOT NULL DEFAULT '';",
+            " Text NOT NULL DEFAULT '';",
             "CREATE INDEX idx_group_console_group_id ON group_console(group_id);",
-            "CREATE INDEX idx_group_console_group_null_channel ON group_console(group_id) WHERE channel_id IS NULL;",  # 单独创建channel为空的索引 # noqa: E501
+            (
+                "CREATE INDEX idx_group_console_group_null_channel ON "
+                "group_console(group_id) WHERE channel_id IS NULL;"
+            ),
         ]
+
+        if "postgres" in db_type:
+            scripts.extend(
+                [
+                    (
+                        "ALTER TABLE group_console ALTER COLUMN "
+                        "block_plugin TYPE TEXT;"
+                    ),
+                    (
+                        "ALTER TABLE group_console ALTER COLUMN "
+                        "superuser_block_plugin TYPE TEXT;"
+                    ),
+                    ("ALTER TABLE group_console ALTER COLUMN " "block_task TYPE TEXT;"),
+                    (
+                        "ALTER TABLE group_console ALTER COLUMN "
+                        "superuser_block_task TYPE TEXT;"
+                    ),
+                ]
+            )
+        elif "mysql" in db_type:
+            scripts.extend(
+                [
+                    ("ALTER TABLE group_console MODIFY COLUMN " "block_plugin TEXT;"),
+                    (
+                        "ALTER TABLE group_console MODIFY COLUMN "
+                        "superuser_block_plugin TEXT;"
+                    ),
+                    ("ALTER TABLE group_console MODIFY COLUMN " "block_task TEXT;"),
+                    (
+                        "ALTER TABLE group_console MODIFY COLUMN "
+                        "superuser_block_task TEXT;"
+                    ),
+                ]
+            )
+
+        return scripts

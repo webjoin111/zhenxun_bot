@@ -2,6 +2,7 @@ from typing import Literal, overload
 
 from tortoise import fields
 
+from zhenxun.configs.config import BotConfig
 from zhenxun.services.cache.runtime_cache import BotMemoryCache
 from zhenxun.services.db_context import Model
 from zhenxun.utils.enum import CacheType
@@ -469,9 +470,32 @@ class BotConsole(Model):
 
     @classmethod
     async def _run_script(cls):
-        return [
+        db_type = (BotConfig.get_sql_type() or "").lower()
+
+        scripts = [
             "ALTER TABLE bot_console RENAME COLUMN block_plugin TO block_plugins;",
             "ALTER TABLE bot_console RENAME COLUMN block_task TO block_tasks;",
             "ALTER TABLE bot_console ADD available_plugins text default '';",
             "ALTER TABLE bot_console ADD available_tasks text default '';",
         ]
+
+        if "postgres" in db_type:
+            scripts.extend(
+                [
+                    "ALTER TABLE bot_console ALTER COLUMN block_plugins TYPE TEXT;",
+                    "ALTER TABLE bot_console ALTER COLUMN block_tasks TYPE TEXT;",
+                    "ALTER TABLE bot_console ALTER COLUMN available_plugins TYPE TEXT;",
+                    "ALTER TABLE bot_console ALTER COLUMN available_tasks TYPE TEXT;",
+                ]
+            )
+        elif "mysql" in db_type:
+            scripts.extend(
+                [
+                    "ALTER TABLE bot_console MODIFY COLUMN block_plugins TEXT;",
+                    "ALTER TABLE bot_console MODIFY COLUMN block_tasks TEXT;",
+                    "ALTER TABLE bot_console MODIFY COLUMN available_plugins TEXT;",
+                    "ALTER TABLE bot_console MODIFY COLUMN available_tasks TEXT;",
+                ]
+            )
+
+        return scripts
