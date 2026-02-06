@@ -1,9 +1,9 @@
 from typing import Any
 
+from zhenxun import ui
 from zhenxun.services import renderer_service
 from zhenxun.services.llm.core import KeyStatus
 from zhenxun.services.llm.types import ModelModality
-from zhenxun.ui.builders import MarkdownBuilder, TableBuilder
 from zhenxun.ui.models import StatusBadgeCell, TextCell
 
 
@@ -33,10 +33,10 @@ class Presenters:
         title = "LLM模型列表" + (" (所有已配置模型)" if show_all else " (仅可用)")
 
         if not models:
-            builder = TableBuilder(
-                title=title, tip="当前没有配置任何LLM模型。"
-            ).set_headers(["提供商", "模型名称", "API类型", "状态"])
-            return await renderer_service.render(builder.build())
+            table = ui.table(title=title, tip="当前没有配置任何LLM模型。").set_headers(
+                ["提供商", "模型名称", "API类型", "状态"]
+            )
+            return await renderer_service.render(table)
 
         column_name = ["提供商", "模型名称", "API类型", "状态"]
         rows_data = []
@@ -55,13 +55,13 @@ class Presenters:
                 ]
             )
 
-        builder = TableBuilder(
+        table = ui.table(
             title=title, tip="使用 `llm info <Provider/ModelName>` 查看详情"
         )
-        builder.set_headers(column_name)
-        builder.set_column_alignments(["left", "left", "left", "center"])
-        builder.add_rows(rows_data)
-        return await renderer_service.render(builder.build(), use_cache=True)
+        table.set_headers(column_name)
+        table.set_column_alignments(["left", "left", "left", "center"])
+        table.add_rows(rows_data)
+        return await renderer_service.render(table, use_cache=True)
 
     @staticmethod
     async def format_model_details_as_markdown_image(details: dict[str, Any]) -> bytes:
@@ -82,25 +82,25 @@ class Presenters:
         if caps.is_embedding_model:
             cap_list.append("文本嵌入")
 
-        builder = MarkdownBuilder()
-        builder.head(f"🔎 模型详情: {provider.name}/{model.model_name}", 1)
-        builder.text("---")
-        builder.head("提供商信息", 2)
-        builder.text(f"- **名称**: {provider.name}")
-        builder.text(f"- **API 类型**: {provider.api_type}")
-        builder.text(f"- **API Base**: {provider.api_base or '默认'}")
+        md = ui.markdown("")
+        md.head(f"🔎 模型详情: {provider.name}/{model.model_name}", 1)
+        md.text("---")
+        md.head("提供商信息", 2)
+        md.text(f"- **名称**: {provider.name}")
+        md.text(f"- **API 类型**: {provider.api_type}")
+        md.text(f"- **API Base**: {provider.api_base or '默认'}")
 
-        builder.head("模型详情", 2)
+        md.head("模型详情", 2)
 
         temp_value = model.temperature or provider.temperature or "未设置"
         token_value = model.max_tokens or provider.max_tokens or "未设置"
 
-        builder.text(f"- **名称**: {model.model_name}")
-        builder.text(f"- **默认温度**: {temp_value}")
-        builder.text(f"- **最大Token**: {token_value}")
-        builder.text(f"- **核心能力**: {', '.join(cap_list) or '纯文本'}")
+        md.text(f"- **名称**: {model.model_name}")
+        md.text(f"- **默认温度**: {temp_value}")
+        md.text(f"- **最大Token**: {token_value}")
+        md.text(f"- **核心能力**: {', '.join(cap_list) or '纯文本'}")
 
-        return await renderer_service.render(builder.with_style("light").build())
+        return await renderer_service.render(md.with_style("light"))
 
     @staticmethod
     async def format_key_status_as_image(
@@ -167,10 +167,8 @@ class Presenters:
                 ]
             )
 
-        builder = TableBuilder(
-            title=title, tip="使用 `llm reset-key <Provider>` 重置Key状态"
-        )
-        builder.set_headers(
+        table = ui.table(title=title, tip="使用 `llm reset-key <Provider>` 重置Key状态")
+        table.set_headers(
             [
                 "Key (部分)",
                 "状态",
@@ -181,5 +179,5 @@ class Presenters:
                 "建议操作",
             ]
         )
-        builder.add_rows(data_list)
-        return await renderer_service.render(builder.build(), use_cache=False)
+        table.add_rows(data_list)
+        return await renderer_service.render(table, use_cache=False)
