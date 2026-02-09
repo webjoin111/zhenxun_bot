@@ -142,6 +142,22 @@ async def build_task(group_id: str | None) -> BuildImage:
 
 
 class PluginManager:
+    @staticmethod
+    async def _get_plugin_by_name_or_module(plugin_name: str) -> PluginInfo | None:
+        plugin_name = plugin_name.strip()
+        if not plugin_name:
+            return None
+        if plugin_name.isdigit():
+            return await PluginInfo.get_or_none(id=int(plugin_name))
+        plugin = await PluginInfo.get_or_none(
+            name=plugin_name, load_status=True, plugin_type__not=PluginType.PARENT
+        )
+        if plugin:
+            return plugin
+        return await PluginInfo.get_or_none(
+            module=plugin_name, load_status=True, plugin_type__not=PluginType.PARENT
+        )
+
     @classmethod
     async def set_default_status(cls, plugin_name: str, status: bool) -> str:
         """设置插件进群默认状态
@@ -153,12 +169,7 @@ class PluginManager:
         返回:
             str: 返回信息
         """
-        if plugin_name.isdigit():
-            plugin = await PluginInfo.get_or_none(id=int(plugin_name))
-        else:
-            plugin = await PluginInfo.get_or_none(
-                name=plugin_name, load_status=True, plugin_type__not=PluginType.PARENT
-            )
+        plugin = await cls._get_plugin_by_name_or_module(plugin_name)
         if plugin:
             plugin.default_status = status
             await plugin.save(update_fields=["default_status"])
@@ -478,12 +489,7 @@ class PluginManager:
             str: 返回信息
         """
 
-        if plugin_name.isdigit():
-            plugin = await PluginInfo.get_or_none(id=int(plugin_name))
-        else:
-            plugin = await PluginInfo.get_or_none(
-                name=plugin_name, load_status=True, plugin_type__not=PluginType.PARENT
-            )
+        plugin = await cls._get_plugin_by_name_or_module(plugin_name)
         if plugin:
             status_str = "开启" if status else "关闭"
             if status:
@@ -535,12 +541,7 @@ class PluginManager:
         返回:
             str: 返回信息
         """
-        if plugin_name.isdigit():
-            plugin = await PluginInfo.get_or_none(id=int(plugin_name))
-        else:
-            plugin = await PluginInfo.get_or_none(
-                name=plugin_name, load_status=True, plugin_type__not=PluginType.PARENT
-            )
+        plugin = await cls._get_plugin_by_name_or_module(plugin_name)
         if plugin:
             if group_id:
                 if not await GroupConsole.is_superuser_block_plugin(
@@ -576,12 +577,7 @@ class PluginManager:
         返回:
             str: 返回信息
         """
-        if plugin_name.isdigit():
-            plugin = await PluginInfo.get_or_none(id=int(plugin_name))
-        else:
-            plugin = await PluginInfo.get_or_none(
-                name=plugin_name, load_status=True, plugin_type__not=PluginType.PARENT
-            )
+        plugin = await cls._get_plugin_by_name_or_module(plugin_name)
         if plugin:
             if group_id:
                 if await GroupConsole.is_superuser_block_plugin(
