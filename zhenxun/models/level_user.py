@@ -1,5 +1,6 @@
 from tortoise import fields
 
+from zhenxun.services.cache.runtime_cache import LevelUserMemoryCache
 from zhenxun.services.db_context import Model
 from zhenxun.utils.enum import CacheType
 
@@ -39,7 +40,7 @@ class LevelUser(Model):
         """
         if not group_id:
             return 0
-        if user := await cls.get_or_none(user_id=user_id, group_id=group_id):
+        if user := await LevelUserMemoryCache.get(user_id, group_id):
             return user.user_level
         return 0
 
@@ -102,11 +103,11 @@ class LevelUser(Model):
         if level == 0:
             return True
         if group_id:
-            if user := await cls.get_or_none(user_id=user_id, group_id=group_id):
+            if user := await LevelUserMemoryCache.get(user_id, group_id):
                 return user.user_level >= level
-        elif user_list := await cls.filter(user_id=user_id).all():
-            user = max(user_list, key=lambda x: x.user_level)
-            return user.user_level >= level
+            return False
+        max_level = await LevelUserMemoryCache.get_max_level(user_id)
+        return max_level >= level
         return False
 
     @classmethod
@@ -120,9 +121,31 @@ class LevelUser(Model):
         返回:
             bool: 是否会被自动更新权限刷新
         """
-        if user := await cls.get_or_none(user_id=user_id, group_id=group_id):
+        if user := await LevelUserMemoryCache.get(user_id, group_id):
             return user.group_flag == 1
         return False
+
+    @classmethod
+    async def create(cls, *args, **kwargs):
+        result = await super().create(*args, **kwargs)
+        await LevelUserMemoryCache.upsert_from_model(result)
+        return result
+
+    @classmethod
+    async def update_or_create(cls, *args, **kwargs):
+        result = await super().update_or_create(*args, **kwargs)
+        await LevelUserMemoryCache.upsert_from_model(result[0])
+        return result
+
+    async def save(self, *args, **kwargs):
+        await super().save(*args, **kwargs)
+        await LevelUserMemoryCache.upsert_from_model(self)
+
+    async def delete(self, *args, **kwargs):
+        user_id = self.user_id
+        group_id = self.group_id
+        await super().delete(*args, **kwargs)
+        await LevelUserMemoryCache.remove(user_id, group_id)
 
     @classmethod
     async def _run_script(cls):

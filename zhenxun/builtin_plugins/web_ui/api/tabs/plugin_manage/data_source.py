@@ -7,6 +7,7 @@ from tortoise.exceptions import DoesNotExist
 from zhenxun.configs.config import Config
 from zhenxun.configs.utils import ConfigGroup
 from zhenxun.models.plugin_info import PluginInfo as DbPluginInfo
+from zhenxun.services.cache.runtime_cache import PluginInfoMemoryCache
 from zhenxun.utils.enum import BlockType, PluginType
 
 from .model import (
@@ -41,6 +42,7 @@ class ApiDataSource:
         plugins = await query.all()
         for plugin in plugins:
             plugin_info = PluginInfo(
+                id=plugin.id,
                 module=plugin.module,
                 plugin_name=plugin.name,
                 default_status=plugin.default_status,
@@ -158,6 +160,8 @@ class ApiDataSource:
                     plugins_to_update_other_fields, list(other_update_fields)
                 )
                 bulk_updated_count = len(plugins_to_update_other_fields)
+                for plugin in plugins_to_update_other_fields:
+                    await PluginInfoMemoryCache.upsert_from_model(plugin)
             except Exception as e_bulk:
                 errors.append(
                     {
@@ -242,6 +246,8 @@ class ApiDataSource:
             updated_count = await DbPluginInfo.filter(menu_type=old_name).update(
                 menu_type=new_name
             )
+            if updated_count:
+                await PluginInfoMemoryCache.refresh()
             return {"success": True, "updated_count": updated_count}
         except Exception as e:
             # 可以添加更详细的日志记录
@@ -269,6 +275,7 @@ class ApiDataSource:
                 cls.__build_plugin_config(module, cfg, config) for cfg in config.configs
             )
         return PluginDetail(
+            id=db_plugin.id,
             module=module,
             plugin_name=db_plugin.name,
             default_status=db_plugin.default_status,

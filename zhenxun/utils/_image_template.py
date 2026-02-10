@@ -283,6 +283,3 @@ class ImageTemplate:
             width = max(width, w)
             height += h
         return width, height
-
-
-

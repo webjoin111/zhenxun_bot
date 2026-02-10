@@ -436,7 +436,6 @@ class ZhenxunRepoManagerClass:
             branch: 分支名称
             force: 是否强制更新
         """
-        # --- 方案一：关键目录物理校验 ---
         critical_dir = self.config.RESOURCE_PATH / "themes" / "default"
         if not critical_dir.exists() or not any(critical_dir.iterdir()):
             logger.warning(

@@ -1,10 +1,8 @@
-import asyncio
 import time
 
 from zhenxun.models.bot_console import BotConsole
 from zhenxun.models.plugin_info import PluginInfo
-from zhenxun.services.data_access import DataAccess
-from zhenxun.services.db_context import DB_TIMEOUT_SECONDS
+from zhenxun.services.cache.runtime_cache import BotMemoryCache, BotSnapshot
 from zhenxun.services.log import logger
 from zhenxun.utils.common_utils import CommonUtils
 
@@ -12,7 +10,12 @@ from .config import LOGGER_COMMAND, WARNING_THRESHOLD
 from .exception import SkipPluginException
 
 
-async def auth_bot(plugin: PluginInfo, bot_id: str):
+async def auth_bot(
+    plugin: PluginInfo,
+    bot_id: str,
+    bot_data: BotConsole | BotSnapshot | None = None,
+    skip_fetch: bool = False,
+):
     """bot层面的权限检查
 
     参数:
@@ -26,17 +29,9 @@ async def auth_bot(plugin: PluginInfo, bot_id: str):
     start_time = time.time()
 
     try:
-        # 从数据库或缓存中获取 bot 信息
-        bot_dao = DataAccess(BotConsole)
-
-        try:
-            bot: BotConsole | None = await asyncio.wait_for(
-                bot_dao.safe_get_or_none(bot_id=bot_id), timeout=DB_TIMEOUT_SECONDS
-            )
-        except asyncio.TimeoutError:
-            logger.error(f"查询Bot信息超时: bot_id={bot_id}", LOGGER_COMMAND)
-            # 超时时不阻塞，继续执行
-            return
+        bot: BotConsole | BotSnapshot | None = bot_data
+        if bot is None and not skip_fetch:
+            bot = await BotMemoryCache.get(bot_id)
 
         if not bot or not bot.status:
             raise SkipPluginException("Bot不存在或休眠中阻断权限检测...")

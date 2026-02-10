@@ -93,7 +93,7 @@ async def build_task(group_id: str | None) -> bytes:
     column_name = ["ID", "模块", "名称", "群组状态", "全局状态", "运行时间"]
     group = None
     if group_id:
-        group = await GroupConsole.get_group(group_id=group_id)
+        group = await GroupConsole.get_group_db(group_id=group_id)
         if not group:
             raise GroupInfoNotFound()
     else:
@@ -616,7 +616,7 @@ class PluginManager:
             )
             return f"成功将所有功能进群默认状态修改为: {'开启' if status else '关闭'}"
         if group_id:
-            if group := await GroupConsole.get_group(group_id=group_id):
+            if group := await GroupConsole.get_group_db(group_id=group_id):
                 module_list = cast(
                     list[str],
                     await PluginInfo.filter(plugin_type=PluginType.NORMAL).values_list(
@@ -646,7 +646,7 @@ class PluginManager:
         返回:
             bool: 是否醒来
         """
-        if c := await GroupConsole.get_group(group_id=group_id):
+        if c := await GroupConsole.get_group_db(group_id=group_id):
             return c.status
         return False
 
