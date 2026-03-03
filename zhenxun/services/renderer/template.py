@@ -1,6 +1,7 @@
 from collections.abc import Callable
 import os
 from pathlib import Path
+import re
 from typing import TYPE_CHECKING, Any
 
 from jinja2 import (
@@ -11,6 +12,7 @@ from jinja2 import (
     select_autoescape,
 )
 
+from zhenxun.configs.config import Config
 from zhenxun.configs.path_config import THEMES_PATH
 from zhenxun.services.log import logger
 from zhenxun.services.renderer.theme import DependencyCollector
@@ -25,6 +27,11 @@ from zhenxun.utils.exception import RenderingError
 if TYPE_CHECKING:
     from .types import RenderContext
 
+_LEGACY_INCLUDE_TAG_PATTERN = re.compile(
+    r"\{\s*%\s*include\s+([\"'][^\"']+[\"'])\s*%\s*\}",
+    flags=re.IGNORECASE,
+)
+
 
 class RelativePathEnvironment(Environment):
     """
@@ -36,6 +43,22 @@ class RelativePathEnvironment(Environment):
             path = os.path.normpath(os.path.join(os.path.dirname(parent), template))
             return path.replace(os.path.sep, "/")
         return super().join_path(template, parent)
+
+    def preprocess(
+        self,
+        source: str,
+        name: str | None = None,
+        filename: str | None = None,
+    ) -> str:
+        """
+        兼容历史模板里的错误 include 语法:
+        {
+            % include './style.css' %
+        }
+        自动归一化为标准 Jinja 语法，避免页面样式丢失。
+        """
+        normalized_source = _LEGACY_INCLUDE_TAG_PATTERN.sub(r"{% include \1 %}", source)
+        return super().preprocess(normalized_source, name, filename)
 
 
 class JinjaTemplateEngine:
@@ -143,6 +166,11 @@ class JinjaTemplateEngine:
             }
             return await base_template.render_async(**page_context)
         else:
+            # 对于本身已是完整 HTML 文档的模板，直接返回，避免重复拼接大段 CSS。
+            html_head = html_fragment.lstrip()[:32].lower()
+            if html_head.startswith("<!doctype html") or html_head.startswith("<html"):
+                return html_fragment
+
             style_blocks: list[str] = []
             if theme_css_content:
                 style_blocks.append(theme_css_content)
@@ -210,13 +238,21 @@ class ComponentRenderStrategy(RenderStrategy):
         screenshot_options = final_render_options.copy()
         screenshot_options.pop("extra_css", None)
         screenshot_options.pop("frameless", None)
+        screenshot_options.pop("_keep_html_content", None)
 
         image_bytes = await context.screenshot_engine.render(
             html=html_content,
             base_url_path=THEMES_PATH.parent,
             **screenshot_options,
         )
-        return RenderResult(image_bytes=image_bytes, html_content=html_content)
+        keep_html_content = bool(
+            context.render_options.get("_keep_html_content", False)
+        )
+        debug_mode = Config.get_config("UI", "DEBUG_MODE", False)
+        return RenderResult(
+            image_bytes=image_bytes,
+            html_content=html_content if debug_mode or keep_html_content else None,
+        )
 
 
 class TemplateFileRenderStrategy(RenderStrategy):
@@ -230,8 +266,12 @@ class TemplateFileRenderStrategy(RenderStrategy):
 
         template_dir = template_path.parent
         temp_loader = FileSystemLoader(str(template_dir))
-        temp_env = Environment(
-            loader=temp_loader,
+        base_loader = context.template_engine.env.loader
+        temp_env_loader = (
+            ChoiceLoader([temp_loader, base_loader]) if base_loader else temp_loader
+        )
+        temp_env = RelativePathEnvironment(
+            loader=temp_env_loader,
             enable_async=True,
             autoescape=select_autoescape(["html", "xml"]),
         )
@@ -264,7 +304,17 @@ class TemplateFileRenderStrategy(RenderStrategy):
         if getattr(component, "is_page", False):
             final_render_options["frameless"] = True
 
+        screenshot_options = final_render_options.copy()
+        screenshot_options.pop("_keep_html_content", None)
+
         image_bytes = await context.screenshot_engine.render(
-            html=html_content, base_url_path=template_dir, **final_render_options
+            html=html_content, base_url_path=template_dir, **screenshot_options
         )
-        return RenderResult(image_bytes=image_bytes, html_content=html_content)
+        keep_html_content = bool(
+            context.render_options.get("_keep_html_content", False)
+        )
+        debug_mode = Config.get_config("UI", "DEBUG_MODE", False)
+        return RenderResult(
+            image_bytes=image_bytes,
+            html_content=html_content if debug_mode or keep_html_content else None,
+        )
