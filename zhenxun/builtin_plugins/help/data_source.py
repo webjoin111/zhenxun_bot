@@ -168,9 +168,6 @@ async def get_user_allow_help(user_id: str) -> list[PluginType]:
     return type_list
 
 
-
-
-
 async def get_plugin_help(
     user_id: str, name: str, is_superuser: bool, variant: str | None = None
 ) -> bytes | None:
@@ -205,33 +202,39 @@ async def get_plugin_help(
             ]
 
             sections = []
-            sections.append({
-                "title": "功能简介",
-                "content": [
-                    format_usage_for_markdown(_plugin.metadata.description.strip())
-                ],
-                "is_admin": False,
-            })
+            sections.append(
+                {
+                    "title": "功能简介",
+                    "content": [
+                        format_usage_for_markdown(_plugin.metadata.description.strip())
+                    ],
+                    "is_admin": False,
+                }
+            )
 
             if usage and usage.strip():
-                sections.append({
-                    "title": "管理员指令",
-                    "content": [format_usage_for_markdown(usage.strip())],
-                    "is_admin": False,
-                })
+                sections.append(
+                    {
+                        "title": "管理员指令",
+                        "content": [format_usage_for_markdown(usage.strip())],
+                        "is_admin": False,
+                    }
+                )
 
             if (
                 is_superuser
                 and extra_data.superuser_help
                 and extra_data.superuser_help.strip()
             ):
-                sections.append({
-                    "title": "超级用户指令",
-                    "content": [
-                        format_usage_for_markdown(extra_data.superuser_help.strip())
-                    ],
-                    "is_admin": True,
-                })
+                sections.append(
+                    {
+                        "title": "超级用户指令",
+                        "content": [
+                            format_usage_for_markdown(extra_data.superuser_help.strip())
+                        ],
+                        "is_admin": True,
+                    }
+                )
 
             page_data = {
                 "title": _plugin.metadata.name,
