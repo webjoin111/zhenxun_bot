@@ -66,8 +66,10 @@
     "titleBar.activeBackground": "#671886",
     "titleBar.activeForeground": "#FCF9FE"
   },
+  "ruff.interpreter": [
+    "${workspaceFolder}/.venv_win/Scripts/python.exe"
+],
   "files.exclude": {},
-  "python-envs.defaultEnvManager": "ms-python.python:poetry",
-  "python-envs.defaultPackageManager": "ms-python.python:poetry",
-  "python-envs.pythonProjects": []
+  "python-envs.defaultEnvManager": "ms-python.python:venv",
+  "python-envs.defaultPackageManager": "ms-python.python:pip"
 }
