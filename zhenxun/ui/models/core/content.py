@@ -5,6 +5,7 @@ from typing import Any, Literal
 from typing_extensions import Self
 
 import aiofiles
+from anyio import Path as AsyncPath
 from pydantic import BaseModel, Field, PrivateAttr
 
 from zhenxun.services.log import logger
@@ -279,7 +280,7 @@ class MarkdownData(ContainerComponent):
 
         if self.css_path:
             css_file = Path(self.css_path)
-            if css_file.is_file():
+            if await AsyncPath(css_file).is_file():
                 async with aiofiles.open(css_file, encoding="utf-8") as f:
                     css_parts.append(await f.read())
             else:
@@ -490,7 +491,7 @@ class TableData(RenderableComponent):
         """将任意数据标准化为 TableCell 类型"""
         if isinstance(cell_data, BaseCell):
             return cell_data
-        if isinstance(cell_data, (str, int, float)):
+        if isinstance(cell_data, str | int | float):
             return TextCell(content=str(cell_data))
         if cell_data is None:
             return TextCell(content="")

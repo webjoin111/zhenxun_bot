@@ -16,6 +16,7 @@ from zhenxun.services import (
     generate,
 )
 from zhenxun.services.log import logger
+from zhenxun.services.renderer.result_cache import RenderResultMemoryCache
 from zhenxun.ui.models import PluginMenuCategory, PluginMenuData
 from zhenxun.utils.common_utils import format_usage_for_markdown
 from zhenxun.utils.enum import BlockType, PluginType
@@ -24,6 +25,11 @@ from zhenxun.utils.platform import PlatformUtils
 from .utils import classify_plugin
 
 driver = nonebot.get_driver()
+_HELP_MENU_IMAGE_CACHE = RenderResultMemoryCache(
+    ttl_seconds=300,
+    max_items=64,
+    max_total_bytes=64 * 1024 * 1024,
+)
 
 
 def _create_plugin_menu_item(
@@ -120,7 +126,25 @@ async def create_help_img(
         categories=categories_objects,
     )
 
-    return await ui.render(menu_data)
+    cache_payload = {
+        "self_id": session.self_id,
+        "group_id": group_id,
+        "is_detail": is_detail,
+        "theme": Config.get_config("UI", "THEME", "default"),
+        "menu_data": menu_data,
+    }
+    cache_key = RenderResultMemoryCache.build_key(cache_payload)
+    if cached_image := await _HELP_MENU_IMAGE_CACHE.get(cache_key):
+        return cached_image
+
+    image_bytes = await ui.render(
+        menu_data,
+        clip_selector=".wrapper",
+        clip_padding=20,
+        disable_animations=True,
+    )
+    await _HELP_MENU_IMAGE_CACHE.set(cache_key, image_bytes)
+    return image_bytes
 
 
 async def get_user_allow_help(user_id: str) -> list[PluginType]:
@@ -142,9 +166,6 @@ async def get_user_allow_help(user_id: str) -> list[PluginType]:
     if user_id in driver.config.superusers:
         type_list.append(PluginType.SUPERUSER)
     return type_list
-
-
-
 
 
 async def get_plugin_help(
@@ -181,33 +202,39 @@ async def get_plugin_help(
             ]
 
             sections = []
-            sections.append({
-                "title": "功能简介",
-                "content": [
-                    format_usage_for_markdown(_plugin.metadata.description.strip())
-                ],
-                "is_admin": False,
-            })
+            sections.append(
+                {
+                    "title": "功能简介",
+                    "content": [
+                        format_usage_for_markdown(_plugin.metadata.description.strip())
+                    ],
+                    "is_admin": False,
+                }
+            )
 
             if usage and usage.strip():
-                sections.append({
-                    "title": "管理员指令",
-                    "content": [format_usage_for_markdown(usage.strip())],
-                    "is_admin": False,
-                })
+                sections.append(
+                    {
+                        "title": "管理员指令",
+                        "content": [format_usage_for_markdown(usage.strip())],
+                        "is_admin": False,
+                    }
+                )
 
             if (
                 is_superuser
                 and extra_data.superuser_help
                 and extra_data.superuser_help.strip()
             ):
-                sections.append({
-                    "title": "超级用户指令",
-                    "content": [
-                        format_usage_for_markdown(extra_data.superuser_help.strip())
-                    ],
-                    "is_admin": True,
-                })
+                sections.append(
+                    {
+                        "title": "超级用户指令",
+                        "content": [
+                            format_usage_for_markdown(extra_data.superuser_help.strip())
+                        ],
+                        "is_admin": True,
+                    }
+                )
 
             page_data = {
                 "title": _plugin.metadata.name,
