@@ -7,8 +7,8 @@ from nonebot_plugin_session import EventSession
 
 from zhenxun.configs.config import Config
 from zhenxun.configs.utils import PluginExtraData, RegisterConfig
-from zhenxun.services.llm.config.providers import get_llm_config
-from zhenxun.services.llm.manager import clear_model_cache
+from zhenxun.services.ai.config import get_llm_config
+from zhenxun.services.ai.llm.manager import clear_model_cache
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import PluginType
 from zhenxun.utils.message import MessageUtils

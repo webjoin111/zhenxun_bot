@@ -1,18 +1,16 @@
 import time
 from typing import Any
 
-from zhenxun.services.llm import (
-    LLMException,
+from zhenxun.services.ai.llm import LLMException
+from zhenxun.services.ai.llm.core import KeyStatus
+from zhenxun.services.ai.llm.manager import (
     get_global_default_model_name,
     get_model_instance,
     list_available_models,
+    reset_key_status,
     set_global_default_model_name,
 )
-from zhenxun.services.llm.core import KeyStatus
-from zhenxun.services.llm.manager import (
-    reset_key_status,
-)
-from zhenxun.services.llm.types import LLMMessage
+from zhenxun.services.ai.types.messages import LLMMessage
 
 
 class DataSource:
@@ -78,7 +76,7 @@ class DataSource:
     @staticmethod
     async def get_key_status(provider_name: str) -> list[dict[str, Any]] | None:
         """获取并排序指定提供商的API Key状态"""
-        from zhenxun.services.llm.manager import get_key_usage_stats
+        from zhenxun.services.ai.llm.manager import get_key_usage_stats
 
         all_stats = await get_key_usage_stats()
         provider_stats = all_stats.get(provider_name)

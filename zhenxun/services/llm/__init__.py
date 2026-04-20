@@ -1,120 +1,78 @@
 """
-LLM 服务模块 - 公共 API 入口
+向下兼容门面 (Facade)
 
-提供统一的 AI 服务调用接口、核心类型定义和模型管理功能。
+利用 sys.modules 魔法，将对 zhenxun.services.llm 及其子模块的导入
+无缝重定向到 zhenxun.services.ai.llm 下，避免破坏任何第三方插件。
+同时在此提供最常用的类导出，作为 LLM 服务的统一入口。
 """
 
-from .api import (
-    chat,
-    code,
-    create_image,
-    embed,
-    embed_documents,
-    embed_query,
-    generate,
-    generate_structured,
-    search,
-)
-from .config import (
-    CommonOverrides,
-    GenConfigBuilder,
-    LLMGenerationConfig,
-    register_llm_configs,
+import sys
+
+from zhenxun.services import logger
+
+logger.warning(
+    "zhenxun.services.llm 已被重构迁移至 zhenxun.services.ai.llm，"
+    "为了更好的性能和兼容性，请及时更新您的插件导入路径。"
 )
 
-register_llm_configs()
-from .api import ModelName
-from .manager import (
-    clear_model_cache,
-    get_cache_stats,
+import zhenxun.services.ai.llm
+import zhenxun.services.ai.llm.adapters
+import zhenxun.services.ai.llm.config.generation
+import zhenxun.services.ai.llm.engine
+import zhenxun.services.ai.protocols
+import zhenxun.services.ai.tools
+import zhenxun.services.ai.types
+
+sys.modules["zhenxun.services.llm.types"] = zhenxun.services.ai.types
+sys.modules["zhenxun.services.llm.types.models"] = zhenxun.services.ai.types
+sys.modules["zhenxun.services.llm.types.protocols"] = zhenxun.services.ai.protocols
+sys.modules["zhenxun.services.llm.types.exceptions"] = zhenxun.services.ai.types
+sys.modules["zhenxun.services.llm.types.capabilities"] = zhenxun.services.ai.types
+
+sys.modules["zhenxun.services.agent.core.types"] = zhenxun.services.ai.types
+sys.modules["zhenxun.services.sandbox.models"] = zhenxun.services.ai.types
+
+prefix_old = "zhenxun.services.llm"
+prefix_new = "zhenxun.services.ai.llm"
+
+for module_name, module_obj in list(sys.modules.items()):
+    if module_name.startswith(prefix_new):
+        old_module_name = module_name.replace(prefix_new, prefix_old, 1)
+        if old_module_name not in sys.modules:
+            sys.modules[old_module_name] = module_obj
+
+sys.modules["zhenxun.services.llm.tools"] = zhenxun.services.ai.tools
+
+from zhenxun.services.ai.chat_session import ChatSession as AI
+from zhenxun.services.ai.llm import *  # noqa: F403
+from zhenxun.services.ai.llm.manager import (
     get_global_default_model_name,
     get_model_instance,
     list_available_models,
     list_embedding_models,
-    list_model_identifiers,
     set_global_default_model_name,
 )
-from .memory import (
-    AIConfig,
-    BaseMemory,
-    MemoryProcessor,
-    set_default_memory_backend,
-)
-from .session import AI
-from .tools import RunContext, ToolInvoker, function_tool, tool_provider_manager
-from .types import (
-    EmbeddingTaskType,
-    LLMContentPart,
-    LLMErrorCode,
-    LLMException,
-    LLMMessage,
-    LLMResponse,
-    ModelDetail,
-    ModelInfo,
-    ModelProvider,
-    ResponseFormat,
-    TaskType,
-    ToolCategory,
-    ToolMetadata,
-    UsageInfo,
-)
-from .types.models import (
-    GeminiCodeExecution,
-    GeminiGoogleSearch,
-    GeminiUrlContext,
-)
-from .utils import create_multimodal_message, message_to_unimessage, unimsg_to_llm_parts
+from zhenxun.services.ai.message_builder import MessageBuilder
+
+create_multimodal_message = MessageBuilder.create_multimodal_message
+message_to_unimessage = MessageBuilder.message_to_unimessage
+unimsg_to_llm_parts = MessageBuilder.unimsg_to_llm_parts
+from zhenxun.services.ai.tools import tool as function_tool
+from zhenxun.services.ai.types.exceptions import LLMException
+from zhenxun.services.ai.types.messages import LLMMessage, LLMResponse
 
 __all__ = [
     "AI",
-    "AIConfig",
-    "BaseMemory",
-    "CommonOverrides",
-    "EmbeddingTaskType",
-    "GeminiCodeExecution",
-    "GeminiGoogleSearch",
-    "GeminiUrlContext",
-    "GenConfigBuilder",
-    "LLMContentPart",
-    "LLMErrorCode",
     "LLMException",
-    "LLMGenerationConfig",
     "LLMMessage",
     "LLMResponse",
-    "MemoryProcessor",
-    "ModelDetail",
-    "ModelInfo",
-    "ModelName",
-    "ModelProvider",
-    "ResponseFormat",
-    "RunContext",
-    "TaskType",
-    "ToolCategory",
-    "ToolInvoker",
-    "ToolMetadata",
-    "UsageInfo",
-    "chat",
-    "clear_model_cache",
-    "code",
-    "create_image",
     "create_multimodal_message",
-    "embed",
-    "embed_documents",
-    "embed_query",
     "function_tool",
-    "generate",
-    "generate_structured",
-    "get_cache_stats",
     "get_global_default_model_name",
     "get_model_instance",
     "list_available_models",
     "list_embedding_models",
-    "list_model_identifiers",
     "message_to_unimessage",
-    "register_llm_configs",
-    "search",
-    "set_default_memory_backend",
     "set_global_default_model_name",
-    "tool_provider_manager",
     "unimsg_to_llm_parts",
 ]

@@ -2,8 +2,8 @@ from typing import Any
 
 from zhenxun import ui
 from zhenxun.services import renderer_service
-from zhenxun.services.llm.core import KeyStatus
-from zhenxun.services.llm.types import ModelModality
+from zhenxun.services.ai.llm.core import KeyStatus
+from zhenxun.services.ai.types.models import ModelModality
 from zhenxun.ui.models import StatusBadgeCell, TextCell
 
 
