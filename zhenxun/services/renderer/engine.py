@@ -20,6 +20,12 @@ from zhenxun.services.log import logger
 from .types import BaseScreenshotEngine
 
 _PLAYWRIGHT_DISCONNECT_ERROR = "Connection closed while reading from the driver"
+_PLAYWRIGHT_TARGET_CLOSED_ERROR_MARKERS = (
+    "TargetClosedError",
+    "Target page, context or browser has been closed",
+    "browser has been closed",
+    "BrowserContext.new_page",
+)
 _UNRETRIEVED_FUTURE_MESSAGE = "Future exception was never retrieved"
 _LOOP_EXCEPTION_FILTER_STATE_ATTR = "_zhenxun_playwright_exception_filter_state"
 _DISCONNECT_SUPPRESSION_WINDOW_SECONDS = 10.0
@@ -133,6 +139,14 @@ def _is_ignorable_playwright_disconnect(ctx: dict[str, Any]) -> bool:
         and isinstance(exc, Exception)
         and _PLAYWRIGHT_DISCONNECT_ERROR in str(exc)
     )
+
+
+def _is_playwright_target_closed_error(exc: Exception) -> bool:
+    exc_name = type(exc).__name__
+    if exc_name == "TargetClosedError":
+        return True
+    message = str(exc)
+    return any(marker in message for marker in _PLAYWRIGHT_TARGET_CLOSED_ERROR_MARKERS)
 
 
 def _get_loop_exception_filter_state(
@@ -1103,29 +1117,54 @@ class PlaywrightEngine(BaseScreenshotEngine):
         template_path: str,
         render_options: dict[str, Any],
     ) -> bytes:
-        generation, context = await self._acquire_context()
-        page = None
-        broken = False
-        try:
-            page = await context.new_page()
-            page_options = self._build_page_options(render_options, pooled=True)
-            viewport = page_options.get("viewport")
-            if isinstance(viewport, dict):
-                width = viewport.get("width")
-                height = viewport.get("height")
-                if isinstance(width, int) and isinstance(height, int):
-                    await page.set_viewport_size({"width": width, "height": height})
-            return await self._render_with_page(
-                page, html, template_path, render_options
-            )
-        except Exception:
-            broken = True
-            raise
-        finally:
-            if page is not None:
-                with contextlib.suppress(Exception):
-                    await page.close()
-            await self._release_context(generation, context, broken=broken)
+        last_error: Exception | None = None
+        for attempt in range(2):
+            generation, context = await self._acquire_context()
+            page = None
+            broken = False
+            try:
+                page = await context.new_page()
+                page_options = self._build_page_options(render_options, pooled=True)
+                viewport = page_options.get("viewport")
+                if isinstance(viewport, dict):
+                    width = viewport.get("width")
+                    height = viewport.get("height")
+                    if isinstance(width, int) and isinstance(height, int):
+                        await page.set_viewport_size({"width": width, "height": height})
+                return await self._render_with_page(
+                    page, html, template_path, render_options
+                )
+            except Exception as e:
+                broken = True
+                last_error = e
+                if attempt == 0:
+                    if _is_playwright_target_closed_error(e):
+                        logger.warning(
+                            "截图引擎浏览器上下文代已失效，切换新代后重试一次。",
+                            "PlaywrightEngine",
+                            e=e,
+                        )
+                        try:
+                            await self._swap_generation("target_closed")
+                        except Exception:
+                            raise e
+                    else:
+                        logger.warning(
+                            "截图引擎上下文已失效，丢弃后重试一次。",
+                            "PlaywrightEngine",
+                            e=e,
+                        )
+                    continue
+                raise
+            finally:
+                if page is not None:
+                    with contextlib.suppress(Exception):
+                        await page.close()
+                await self._release_context(generation, context, broken=broken)
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("截图引擎上下文池渲染失败。")
 
     async def _render_html(
         self,

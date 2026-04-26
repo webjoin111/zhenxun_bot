@@ -10,31 +10,19 @@ import uuid
 
 from zhenxun.services.cache.config import CacheMode
 from zhenxun.services.log import logger
-from zhenxun.utils.enum import LimitCheckType, LimitWatchType, PluginLimitType
+from zhenxun.utils.enum import (
+    BlockType,
+    LimitCheckType,
+    LimitWatchType,
+    PluginLimitType,
+    PluginType,
+)
 from zhenxun.utils.manager.priority_manager import PriorityLifecycle
 
 if TYPE_CHECKING:
     from zhenxun.models.plugin_info import PluginInfo
 
 LOG_COMMAND = "RuntimeCache"
-
-PLUGININFO_MEM_REFRESH_INTERVAL = 1800  # 30分钟 - 插件信息很少变化
-BAN_MEM_REFRESH_INTERVAL = 60
-BAN_MEM_CLEAN_INTERVAL = 60
-BAN_MEM_CLEANUP_DB = True
-BAN_MEM_NEGATIVE_TTL = 5
-BOT_MEM_REFRESH_INTERVAL = 300  # 5分钟
-BOT_MEM_NEGATIVE_TTL = 60
-GROUP_MEM_REFRESH_INTERVAL = 300  # 5分钟 - 群组信息很少变化
-GROUP_MEM_NEGATIVE_TTL = 60
-LEVEL_MEM_REFRESH_INTERVAL = 300  # 5分钟 - 用户等级很少变化
-LEVEL_MEM_NEGATIVE_TTL = 60
-TASK_MEM_REFRESH_INTERVAL = 900
-TASK_MEM_NEGATIVE_TTL = 60
-LIMIT_MEM_REFRESH_INTERVAL = 300  # 5分钟
-LIMIT_MEM_NEGATIVE_TTL = 30
-RUNTIME_CACHE_SYNC_ENABLED = True
-RUNTIME_CACHE_SYNC_CHANNEL = "ZHENXUN_RUNTIME_CACHE_SYNC"
 
 
 def _coerce_int(value, default: int) -> int:
@@ -43,6 +31,27 @@ def _coerce_int(value, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return value_int if value_int >= 0 else default
+
+
+# RuntimeCache 以模型 save/delete 主动失效为主，周期 refresh 只做兜底。
+# 这些默认值避免低压力运行时频繁全量扫表。
+PLUGININFO_MEM_REFRESH_INTERVAL = 3600  # 60分钟
+BAN_MEM_REFRESH_INTERVAL = 300
+BAN_MEM_CLEAN_INTERVAL = 60
+BAN_MEM_CLEANUP_DB = True
+BAN_MEM_NEGATIVE_TTL = 5
+BOT_MEM_REFRESH_INTERVAL = 900  # 15分钟
+BOT_MEM_NEGATIVE_TTL = 60
+GROUP_MEM_REFRESH_INTERVAL = 900  # 15分钟
+GROUP_MEM_NEGATIVE_TTL = 60
+LEVEL_MEM_REFRESH_INTERVAL = 900  # 15分钟
+LEVEL_MEM_NEGATIVE_TTL = 60
+TASK_MEM_REFRESH_INTERVAL = 1800
+TASK_MEM_NEGATIVE_TTL = 60
+LIMIT_MEM_REFRESH_INTERVAL = 900  # 15分钟
+LIMIT_MEM_NEGATIVE_TTL = 30
+RUNTIME_CACHE_SYNC_ENABLED = True
+RUNTIME_CACHE_SYNC_CHANNEL = "ZHENXUN_RUNTIME_CACHE_SYNC"
 
 
 INSTANCE_ID = uuid.uuid4().hex
@@ -87,6 +96,89 @@ def _parse_block_modules(value: str) -> frozenset[str]:
         if part:
             items.append(part)
     return frozenset(items)
+
+
+@dataclass(frozen=True)
+class PluginInfoSnapshot:
+    id: int
+    module: str
+    module_path: str
+    name: str
+    status: bool
+    block_type: BlockType | None
+    load_status: bool
+    author: str | None
+    version: str | None
+    level: int
+    default_status: bool
+    limit_superuser: bool
+    menu_type: str
+    plugin_type: PluginType | None
+    cost_gold: int
+    admin_level: int | None
+    ignore_prompt: bool
+    is_delete: bool
+    parent: str | None
+    is_show: bool
+    ignore_statistics: bool
+    impression: float
+
+    @classmethod
+    def from_model(cls, model) -> "PluginInfoSnapshot":
+        return cls(
+            id=int(getattr(model, "id", 0) or 0),
+            module=str(getattr(model, "module", "") or ""),
+            module_path=str(getattr(model, "module_path", "") or ""),
+            name=str(getattr(model, "name", "") or ""),
+            status=bool(getattr(model, "status", True)),
+            block_type=getattr(model, "block_type", None),
+            load_status=bool(getattr(model, "load_status", True)),
+            author=getattr(model, "author", None),
+            version=getattr(model, "version", None),
+            level=int(getattr(model, "level", 0) or 0),
+            default_status=bool(getattr(model, "default_status", True)),
+            limit_superuser=bool(getattr(model, "limit_superuser", False)),
+            menu_type=str(getattr(model, "menu_type", "") or ""),
+            plugin_type=getattr(model, "plugin_type", None),
+            cost_gold=int(getattr(model, "cost_gold", 0) or 0),
+            admin_level=getattr(model, "admin_level", None),
+            ignore_prompt=bool(getattr(model, "ignore_prompt", False)),
+            is_delete=bool(getattr(model, "is_delete", False)),
+            parent=getattr(model, "parent", None),
+            is_show=bool(getattr(model, "is_show", True)),
+            ignore_statistics=bool(getattr(model, "ignore_statistics", False)),
+            impression=float(getattr(model, "impression", 0) or 0),
+        )
+
+    def to_model(self):
+        from zhenxun.models.plugin_info import PluginInfo
+
+        plugin = PluginInfo(
+            id=self.id,
+            module=self.module,
+            module_path=self.module_path,
+            name=self.name,
+            status=self.status,
+            block_type=self.block_type,
+            load_status=self.load_status,
+            author=self.author,
+            version=self.version,
+            level=self.level,
+            default_status=self.default_status,
+            limit_superuser=self.limit_superuser,
+            menu_type=self.menu_type,
+            plugin_type=self.plugin_type,
+            cost_gold=self.cost_gold,
+            admin_level=self.admin_level,
+            ignore_prompt=self.ignore_prompt,
+            is_delete=self.is_delete,
+            parent=self.parent,
+            is_show=self.is_show,
+            ignore_statistics=self.ignore_statistics,
+            impression=self.impression,
+        )
+        plugin._saved_in_db = True
+        return plugin
 
 
 @dataclass(frozen=True)
@@ -465,6 +557,20 @@ class RuntimeCacheSync:
 
     @classmethod
     async def stop(cls) -> None:
+        cls._ready = False
+        if cls._publish_tasks:
+            tasks = list(cls._publish_tasks)
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*tasks, return_exceptions=True),
+                    timeout=1.0,
+                )
+            except asyncio.TimeoutError:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+            finally:
+                cls._publish_tasks.difference_update(tasks)
         if cls._task and not cls._task.done():
             cls._task.cancel()
         cls._task = None
@@ -480,7 +586,6 @@ class RuntimeCacheSync:
         except Exception:
             pass
         cls._redis = None
-        cls._ready = False
 
     @classmethod
     def publish_event(cls, cache_type: str, action: str, data: dict[str, Any]) -> None:
@@ -559,11 +664,28 @@ class RuntimeCacheSync:
 
 class PluginInfoMemoryCache:
     _lock: ClassVar[asyncio.Lock] = asyncio.Lock()
-    _by_module: ClassVar[dict[str, "PluginInfo"]] = {}
-    _by_module_path: ClassVar[dict[str, "PluginInfo"]] = {}
+    _by_module: ClassVar[dict[str, PluginInfoSnapshot]] = {}
+    _by_module_path: ClassVar[dict[str, PluginInfoSnapshot]] = {}
     _loaded: ClassVar[bool] = False
     _refresh_task: ClassVar[asyncio.Task | None] = None
     _last_refresh: ClassVar[float] = 0.0
+
+    @classmethod
+    def _to_model(cls, snapshot: PluginInfoSnapshot | None) -> "PluginInfo | None":
+        return snapshot.to_model() if snapshot else None
+
+    @classmethod
+    def _store_snapshot(cls, snapshot: PluginInfoSnapshot) -> None:
+        if snapshot.module:
+            old = cls._by_module.get(snapshot.module)
+            if old and old.module_path != snapshot.module_path:
+                cls._by_module_path.pop(old.module_path, None)
+            cls._by_module[snapshot.module] = snapshot
+        if snapshot.module_path:
+            old = cls._by_module_path.get(snapshot.module_path)
+            if old and old.module != snapshot.module:
+                cls._by_module.pop(old.module, None)
+            cls._by_module_path[snapshot.module_path] = snapshot
 
     @classmethod
     async def refresh(cls) -> None:
@@ -571,13 +693,14 @@ class PluginInfoMemoryCache:
 
         async with cls._lock:
             plugins = await PluginInfo.all()
-            by_module: dict[str, "PluginInfo"] = {}
-            by_module_path: dict[str, "PluginInfo"] = {}
+            by_module: dict[str, PluginInfoSnapshot] = {}
+            by_module_path: dict[str, PluginInfoSnapshot] = {}
             for plugin in plugins:
-                if plugin.module:
-                    by_module[plugin.module] = plugin
-                if plugin.module_path:
-                    by_module_path[plugin.module_path] = plugin
+                snapshot = PluginInfoSnapshot.from_model(plugin)
+                if snapshot.module:
+                    by_module[snapshot.module] = snapshot
+                if snapshot.module_path:
+                    by_module_path[snapshot.module_path] = snapshot
             cls._by_module = by_module
             cls._by_module_path = by_module_path
             cls._loaded = True
@@ -596,42 +719,42 @@ class PluginInfoMemoryCache:
     async def get_by_module(cls, module: str) -> "PluginInfo | None":
         if not cls._loaded:
             await cls.ensure_loaded()
-        return cls._by_module.get(module)
+        return cls._to_model(cls._by_module.get(module))
 
     @classmethod
     async def get_all(cls) -> dict[str, "PluginInfo"]:
         if not cls._loaded:
             await cls.ensure_loaded()
-        return dict(cls._by_module)
+        return {
+            module: snapshot.to_model() for module, snapshot in cls._by_module.items()
+        }
 
     @classmethod
     def get_by_module_path(cls, module_path: str) -> "PluginInfo | None":
-        return cls._by_module_path.get(module_path)
+        return cls._to_model(cls._by_module_path.get(module_path))
 
     @classmethod
     def set_plugin(cls, plugin) -> None:
         if not plugin:
             return
-        if plugin.module:
-            cls._by_module[plugin.module] = plugin
-        if getattr(plugin, "module_path", None):
-            cls._by_module_path[plugin.module_path] = plugin
+        snapshot = PluginInfoSnapshot.from_model(plugin)
+        cls._store_snapshot(snapshot)
         cls._loaded = True
         cls._last_refresh = time.time()
 
     @classmethod
     def remove_by_module(cls, module: str) -> None:
-        cls._by_module.pop(module, None)
+        snapshot = cls._by_module.pop(module, None)
+        if snapshot and snapshot.module_path:
+            cls._by_module_path.pop(snapshot.module_path, None)
 
     @classmethod
     async def upsert_from_model(cls, plugin) -> None:
         if not plugin:
             return
         async with cls._lock:
-            if getattr(plugin, "module", None):
-                cls._by_module[plugin.module] = plugin
-            if getattr(plugin, "module_path", None):
-                cls._by_module_path[plugin.module_path] = plugin
+            snapshot = PluginInfoSnapshot.from_model(plugin)
+            cls._store_snapshot(snapshot)
             cls._loaded = True
             cls._last_refresh = time.time()
 
@@ -643,9 +766,13 @@ class PluginInfoMemoryCache:
             return
         async with cls._lock:
             if module:
-                cls._by_module.pop(module, None)
+                snapshot = cls._by_module.pop(module, None)
+                if snapshot and snapshot.module_path:
+                    cls._by_module_path.pop(snapshot.module_path, None)
             if module_path:
-                cls._by_module_path.pop(module_path, None)
+                snapshot = cls._by_module_path.pop(module_path, None)
+                if snapshot and snapshot.module:
+                    cls._by_module.pop(snapshot.module, None)
 
     @classmethod
     async def _refresh_loop(cls, interval: int) -> None:

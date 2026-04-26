@@ -5,11 +5,10 @@ from tortoise import fields
 from tortoise.exceptions import IntegrityError
 
 from zhenxun.models.goods_info import GoodsInfo
+from zhenxun.services.buffered_writers import append_user_gold_log
 from zhenxun.services.db_context import Model
 from zhenxun.utils.enum import CacheType, GoldHandle
 from zhenxun.utils.exception import GoodsNotFound, InsufficientGold
-
-from .user_gold_log import UserGoldLog
 
 
 class UserConsole(Model):
@@ -78,6 +77,17 @@ class UserConsole(Model):
         return user
 
     @classmethod
+    async def _get_user_for_write(
+        cls, user_id: str, platform: str | None = None
+    ) -> "UserConsole":
+        """获取写入用用户；已有用户不走 get_or_create，避免重复清理缓存。"""
+        user = await cls.get_or_none(user_id=user_id)
+        if user is not None:
+            return user
+        user, _ = await cls.get_or_create_user(user_id=user_id, platform=platform)
+        return user
+
+    @classmethod
     async def get_new_uid(cls) -> int:
         """获取最新uid
 
@@ -103,10 +113,10 @@ class UserConsole(Model):
             source: 来源
             platform: 平台.
         """
-        user, _ = await cls.get_or_create_user(user_id=user_id, platform=platform)
+        user = await cls._get_user_for_write(user_id=user_id, platform=platform)
         user.gold += gold
         await user.save(update_fields=["gold"])
-        await UserGoldLog.create(
+        await append_user_gold_log(
             user_id=user_id, gold=gold, handle=GoldHandle.GET, source=source
         )
 
@@ -131,12 +141,12 @@ class UserConsole(Model):
         异常:
             InsufficientGold: 金币不足
         """
-        user, _ = await cls.get_or_create_user(user_id=user_id, platform=platform)
+        user = await cls._get_user_for_write(user_id=user_id, platform=platform)
         if user.gold < gold:
             raise InsufficientGold()
         user.gold -= gold
         await user.save(update_fields=["gold"])
-        await UserGoldLog.create(
+        await append_user_gold_log(
             user_id=user_id, gold=gold, handle=handle, source=plugin_module
         )
 
@@ -152,7 +162,7 @@ class UserConsole(Model):
             num: 道具数量.
             platform: 平台.
         """
-        user, _ = await cls.get_or_create_user(user_id=user_id, platform=platform)
+        user = await cls._get_user_for_write(user_id=user_id, platform=platform)
         if goods_uuid not in user.props:
             user.props[goods_uuid] = 0
         user.props[goods_uuid] += num
@@ -186,7 +196,7 @@ class UserConsole(Model):
             num: 道具数量.
             platform: 平台.
         """
-        user, _ = await cls.get_or_create_user(user_id=user_id, platform=platform)
+        user = await cls._get_user_for_write(user_id=user_id, platform=platform)
 
         if goods_uuid not in user.props or user.props[goods_uuid] < num:
             raise GoodsNotFound("未找到商品或道具数量不足...")

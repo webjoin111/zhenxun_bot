@@ -3,12 +3,12 @@ from pathlib import Path
 import random
 import shutil
 
-from aiocache import cached
 import ujson as json
 
 from zhenxun.builtin_plugins.plugin_store.models import StorePluginInfo
 from zhenxun.configs.path_config import TEMP_PATH
 from zhenxun.models.plugin_info import PluginInfo
+from zhenxun.services.cache.bounded_ttl import BoundedTTLCache
 from zhenxun.services.log import logger
 from zhenxun.services.plugin_init import PluginInitManager
 from zhenxun.utils.enum import PluginType
@@ -25,6 +25,14 @@ from .config import (
     LOG_COMMAND,
 )
 from .exceptions import PluginStoreException
+
+_PLUGIN_STORE_DATA_CACHE = BoundedTTLCache[
+    str, tuple[list[StorePluginInfo], list[StorePluginInfo]]
+](
+    "PLUGIN_STORE_DATA",
+    ttl_seconds=60,
+    max_items=1,
+)
 
 
 def row_style(column: str, text: str) -> RowStyle:
@@ -56,20 +64,9 @@ class StoreManager:
         relative_parts = [part for part in plugin_info.module_path.split(".") if part]
         relative_path = Path(*relative_parts) if relative_parts else Path(plugin_name)
         path = BASE_PATH.parent / relative_path
-        if plugin_info.is_dir:
-            return path
-        return path.parent / f"{plugin_name}.py"
+        return path if plugin_info.is_dir else path.parent / f"{plugin_name}.py"
 
     @classmethod
-    def _is_plugin_installed(
-        cls, plugin_info: StorePluginInfo, *, is_external: bool
-    ) -> bool:
-        return cls._resolve_local_plugin_path(
-            plugin_info, is_external=is_external
-        ).exists()
-
-    @classmethod
-    @cached(60)
     async def get_data(cls) -> tuple[list[StorePluginInfo], list[StorePluginInfo]]:
         """获取插件信息数据
 
@@ -77,15 +74,22 @@ class StoreManager:
             tuple[list[StorePluginInfo], list[StorePluginInfo]]:
                 原生插件信息数据，第三方插件信息数据
         """
+        cache_key = "plugins_json"
+        if cached_data := await _PLUGIN_STORE_DATA_CACHE.get(cache_key):
+            return cached_data
+
         plugins = await RepoFileManager.get_file_content(
             DEFAULT_GITHUB_URL, "plugins.json"
         )
         extra_plugins = await RepoFileManager.get_file_content(
             EXTRA_GITHUB_URL, "plugins.json", "index"
         )
-        return [StorePluginInfo(**plugin) for plugin in json.loads(plugins)], [
-            StorePluginInfo(**plugin) for plugin in json.loads(extra_plugins)
-        ]
+        result = (
+            [StorePluginInfo(**plugin) for plugin in json.loads(plugins)],
+            [StorePluginInfo(**plugin) for plugin in json.loads(extra_plugins)],
+        )
+        await _PLUGIN_STORE_DATA_CACHE.set(cache_key, result)
+        return result
 
     @classmethod
     def version_check(cls, plugin_info: StorePluginInfo, suc_plugin: dict[str, str]):
@@ -330,13 +334,12 @@ class StoreManager:
             source: 源
         """
         repo_type = RepoType.GITHUB if is_external else None
-        if source == "ali":
+        if (
+            source != "ali" and source != "git" and plugin_info.ali_url
+        ) or source == "ali":
             repo_type = RepoType.ALIYUN
         elif source == "git":
             repo_type = RepoType.GITHUB
-        else:
-            if plugin_info.ali_url:
-                repo_type = RepoType.ALIYUN
         module_path = plugin_info.module_path
         is_dir = plugin_info.is_dir
         github_url = plugin_info.github_url
@@ -380,7 +383,7 @@ class StoreManager:
             requirement_file = target_dir / requirement_path.path
             if requirement_file.exists():
                 is_install_req = True
-                await VirtualEnvPackageManager.install_requirement(requirement_file)
+                await VirtualEnvPackageManager.add_requirement(requirement_file)
 
         if not is_install_req:
             # 从仓库根目录查找文件
@@ -401,13 +404,13 @@ class StoreManager:
                     f"开始安装插件 {module_path} 依赖文件: {requirement_path}",
                     LOG_COMMAND,
                 )
-                await VirtualEnvPackageManager.install_requirement(requirement_path)
+                await VirtualEnvPackageManager.add_requirement(requirement_path)
             if requirements_path.exists():
                 logger.info(
                     f"开始安装插件 {module_path} 依赖文件: {requirements_path}",
                     LOG_COMMAND,
                 )
-                await VirtualEnvPackageManager.install_requirement(requirements_path)
+                await VirtualEnvPackageManager.add_requirement(requirements_path)
 
     @classmethod
     async def remove_plugin(cls, index_or_module: str) -> str:

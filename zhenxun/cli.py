@@ -8,11 +8,26 @@
 
 from __future__ import annotations
 
+import atexit
 import importlib.metadata
+import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import time
+
+GRACEFUL_SHUTDOWN_TIMEOUT = 15
+WORKER_POLL_INTERVAL = 0.1
+RESTART_POLL_INTERVAL = 0.5
+WORKER_SOFT_EXIT_TIMEOUT = 15.0
+WORKER_TERMINATE_TIMEOUT = 5.0
+WORKER_KILL_TIMEOUT = 5.0
+
+
+def _launcher_log(message: str) -> None:
+    sys.stderr.write(f"[zx launcher] {message}\n")
+    sys.stderr.flush()
 
 
 def _print_version() -> None:
@@ -94,11 +109,17 @@ def _run_worker() -> None:
             nonebot.logger.info(f"加载第三方插件目录: {ext}")
             nonebot.load_plugins(ext)
 
-    nonebot.run()
+    nonebot.run(timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_TIMEOUT)
 
 
 def _build_worker_command() -> list[str]:
     return [sys.executable, "-m", "zhenxun.cli", "run-worker"]
+
+
+def _get_worker_creationflags() -> int:
+    if os.name == "nt":
+        return getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    return 0
 
 
 def _wait_worker_exit(proc: subprocess.Popen, timeout_seconds: float) -> bool:
@@ -106,20 +127,51 @@ def _wait_worker_exit(proc: subprocess.Popen, timeout_seconds: float) -> bool:
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             return True
-        time.sleep(0.1)
+        time.sleep(WORKER_POLL_INTERVAL)
     return proc.poll() is not None
 
 
 def _terminate_worker(proc: subprocess.Popen) -> None:
     if proc.poll() is not None:
         return
-    if _wait_worker_exit(proc, 8.0):
+    _launcher_log(f"stopping worker pid={proc.pid}")
+    if os.name == "nt":
+        ctrl_break_event = getattr(signal, "CTRL_BREAK_EVENT", None)
+        if ctrl_break_event is not None:
+            try:
+                _launcher_log(f"sending CTRL_BREAK_EVENT to worker pid={proc.pid}")
+                proc.send_signal(ctrl_break_event)
+            except Exception as e:
+                _launcher_log(f"failed to send CTRL_BREAK_EVENT: {e!r}")
+            else:
+                if _wait_worker_exit(proc, WORKER_SOFT_EXIT_TIMEOUT):
+                    _launcher_log(
+                        f"worker pid={proc.pid} exited after CTRL_BREAK_EVENT "
+                        f"with code {proc.returncode}"
+                    )
+                    return
+                _launcher_log(
+                    f"worker pid={proc.pid} did not exit after "
+                    f"{WORKER_SOFT_EXIT_TIMEOUT:.0f}s"
+                )
+    if _wait_worker_exit(proc, 1.0):
         return
-    proc.terminate()
-    if _wait_worker_exit(proc, 5.0):
-        return
+    try:
+        _launcher_log(f"terminating worker pid={proc.pid}")
+        proc.terminate()
+    except Exception as e:
+        _launcher_log(f"failed to terminate worker: {e!r}")
+    else:
+        if _wait_worker_exit(proc, WORKER_TERMINATE_TIMEOUT):
+            _launcher_log(
+                f"worker pid={proc.pid} exited after terminate with code "
+                f"{proc.returncode}"
+            )
+            return
+        _launcher_log(f"worker pid={proc.pid} did not exit after terminate timeout")
+    _launcher_log(f"killing worker pid={proc.pid}")
     proc.kill()
-    proc.wait(timeout=5)
+    proc.wait(timeout=WORKER_KILL_TIMEOUT)
 
 
 def _run_launcher() -> None:
@@ -130,19 +182,83 @@ def _run_launcher() -> None:
     )
 
     clear_launcher_restart_signal()
-    while True:
-        worker = subprocess.Popen(_build_worker_command(), cwd=str(cwd))
+    current_worker: subprocess.Popen | None = None
+    stop_requested = False
+    stop_signal: int | None = None
+
+    def _cleanup_current_worker() -> None:
+        if current_worker is not None:
+            _terminate_worker(current_worker)
+
+    atexit.register(_cleanup_current_worker)
+
+    def _handle_launcher_signal(signum, _frame) -> None:
+        nonlocal stop_requested, stop_signal
+        if stop_requested:
+            _launcher_log(f"received signal {signum} while stopping, exiting launcher")
+            raise SystemExit(128 + int(signum))
+        stop_requested = True
+        stop_signal = int(signum)
+        _launcher_log(f"received signal {signum}, scheduling worker shutdown")
+
+    handled_signals = [signal.SIGINT]
+    if hasattr(signal, "SIGTERM"):
+        handled_signals.append(signal.SIGTERM)
+    if hasattr(signal, "SIGBREAK"):
+        handled_signals.append(signal.SIGBREAK)
+    for sig in handled_signals:
         try:
-            return_code = worker.wait()
+            signal.signal(sig, _handle_launcher_signal)
+        except Exception:
+            pass
+
+    while True:
+        if stop_requested:
+            raise SystemExit(128 + int(stop_signal or signal.SIGINT))
+        worker_env = os.environ.copy()
+        worker_env["ZHENXUN_LAUNCHER_PID"] = str(os.getpid())
+        worker = subprocess.Popen(
+            _build_worker_command(),
+            cwd=str(cwd),
+            creationflags=_get_worker_creationflags(),
+            env=worker_env,
+        )
+        current_worker = worker
+        restart_requested = False
+        return_code: int | None = None
+        next_restart_check = 0.0
+        try:
+            while True:
+                return_code = worker.poll()
+                if return_code is not None:
+                    break
+                if stop_requested:
+                    clear_launcher_restart_signal()
+                    _terminate_worker(worker)
+                    raise SystemExit(128 + int(stop_signal or signal.SIGINT))
+                now = time.monotonic()
+                if now >= next_restart_check:
+                    next_restart_check = now + RESTART_POLL_INTERVAL
+                    if consume_launcher_restart_signal():
+                        restart_requested = True
+                        _launcher_log(
+                            "detected restart request, stopping current worker"
+                        )
+                        _terminate_worker(worker)
+                        return_code = worker.poll()
+                        break
+                time.sleep(WORKER_POLL_INTERVAL)
         except KeyboardInterrupt:
             clear_launcher_restart_signal()
             _terminate_worker(worker)
             return
+        finally:
+            if current_worker is worker:
+                current_worker = None
 
-        should_restart = consume_launcher_restart_signal()
-        if should_restart:
+        if restart_requested or consume_launcher_restart_signal():
             continue
-        raise SystemExit(return_code)
+        raise SystemExit(return_code if return_code is not None else 1)
 
 
 def main() -> None:

@@ -19,9 +19,10 @@ from zhenxun.utils.limiters import CountLimiter, FreqLimiter, UserBlockLimiter
 from zhenxun.utils.manager.priority_manager import PriorityLifecycle
 from zhenxun.utils.message import MessageUtils
 from zhenxun.utils.time_utils import TimeUtils
-from zhenxun.utils.utils import get_entity_ids
+from zhenxun.utils.utils import EntityIDs, get_entity_ids
 
 from .config import LOGGER_COMMAND, WARNING_THRESHOLD
+from .context import PermissionContext
 from .exception import SkipPluginException
 
 driver = nonebot.get_driver()
@@ -31,7 +32,7 @@ _LIMIT_NOTICE_LIMITER = FreqLimiter(_LIMIT_NOTICE_CD)
 _LIMIT_NOTICE_TASKS: set[asyncio.Task] = set()
 
 
-@PriorityLifecycle.on_startup(priority=5)
+@PriorityLifecycle.on_startup(priority=7)
 async def _():
     """初始化限制"""
     await LimitManager.init_limit()
@@ -117,6 +118,7 @@ class LimitManager:
             cls.cd_limit = {}
             cls.block_limit = {}
             cls.count_limit = {}
+            cls.module_limit_cache.clear()
             # 添加新数据
             for limit in limit_list:
                 cls.add_limit(limit)
@@ -137,22 +139,22 @@ class LimitManager:
         """
         if limit.module not in cls.add_module:
             cls.add_module.append(limit.module)
-            if limit.limit_type == PluginLimitType.BLOCK:
-                cls.block_limit[limit.module] = Limit(
-                    limit=limit, limiter=UserBlockLimiter()
-                )
-            elif limit.limit_type == PluginLimitType.CD:
-                cd_value = int(limit.cd or 0)
-                cls.cd_limit[limit.module] = Limit(
-                    limit=limit, limiter=FreqLimiter(cd_value)
-                )
-            elif limit.limit_type == PluginLimitType.COUNT:
-                max_count = int(limit.max_count or 0)
-                if max_count <= 0:
-                    return
-                cls.count_limit[limit.module] = Limit(
-                    limit=limit, limiter=CountLimiter(max_count)
-                )
+        if limit.limit_type == PluginLimitType.BLOCK:
+            cls.block_limit[limit.module] = Limit(
+                limit=limit, limiter=UserBlockLimiter()
+            )
+        elif limit.limit_type == PluginLimitType.CD:
+            cd_value = int(limit.cd or 0)
+            cls.cd_limit[limit.module] = Limit(
+                limit=limit, limiter=FreqLimiter(cd_value)
+            )
+        elif limit.limit_type == PluginLimitType.COUNT:
+            max_count = int(limit.max_count or 0)
+            if max_count <= 0:
+                return
+            cls.count_limit[limit.module] = Limit(
+                limit=limit, limiter=CountLimiter(max_count)
+            )
 
     @classmethod
     def unblock(
@@ -322,14 +324,23 @@ class LimitManager:
                 limiter.increase(key_type)
 
 
-async def auth_limit(plugin: PluginInfo, session: Uninfo):
+async def auth_limit(
+    plugin: PluginInfo,
+    session: Uninfo,
+    *,
+    context: PermissionContext | None = None,
+    entity: EntityIDs | None = None,
+):
     """插件限制
 
     参数:
         plugin: PluginInfo
         session: Uninfo
     """
-    entity = get_entity_ids(session)
+    if context is not None:
+        entity = context.entity
+    if entity is None:
+        entity = get_entity_ids(session)
     try:
         await asyncio.wait_for(
             LimitManager.check(

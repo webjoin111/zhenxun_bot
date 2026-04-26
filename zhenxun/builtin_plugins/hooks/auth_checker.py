@@ -1,7 +1,7 @@
 import asyncio
 from collections.abc import Awaitable, Callable
 import contextlib
-import os
+import importlib
 import re
 import time
 from typing import cast
@@ -11,7 +11,6 @@ from nonebot.adapters import Bot, Event
 from nonebot.exception import IgnoredException
 from nonebot.matcher import Matcher
 import nonebot.message as nb_message
-from nonebot_plugin_alconna import UniMsg
 from nonebot_plugin_uninfo import Uninfo
 
 from zhenxun.configs.utils import PluginExtraData
@@ -33,7 +32,6 @@ from zhenxun.services.message_load import is_overloaded
 from zhenxun.utils.enum import BlockType, GoldHandle, PluginType
 from zhenxun.utils.exception import InsufficientGold
 from zhenxun.utils.platform import PlatformUtils
-from zhenxun.utils.utils import get_entity_ids
 
 from .auth.auth_admin import auth_admin
 from .auth.auth_ban import auth_ban
@@ -44,6 +42,16 @@ from .auth.auth_limit import LimitManager, auth_limit
 from .auth.auth_plugin import auth_plugin
 from .auth.bot_filter import bot_filter
 from .auth.config import LOGGER_COMMAND, WARNING_THRESHOLD
+from .auth.context import (
+    EVENT_CACHE,
+    STATE_PLAIN_TEXT,
+    EventContext,
+    PermissionContext,
+    get_event_context,
+    get_permission_side_effect_cache,
+    set_route_modules,
+    store_permission_context,
+)
 from .auth.exception import (
     IsSuperuserException,
     PermissionExemption,
@@ -53,7 +61,6 @@ from .auth.utils import send_message
 
 AUTH_HOOKS_CONCURRENCY_LIMIT = 5
 AUTH_DB_CONCURRENCY_LIMIT = 6
-AUTH_EVENT_CACHE_TTL = 5  # 增加到5秒，减少缓存抖动
 
 
 # 超时设置（秒）
@@ -74,13 +81,6 @@ CIRCUIT_RESET_TIME = 300  # 5分钟
 HOOKS_CONCURRENCY_LIMIT = AUTH_HOOKS_CONCURRENCY_LIMIT
 DB_CONCURRENCY_LIMIT = AUTH_DB_CONCURRENCY_LIMIT
 
-EVENT_CACHE_TTL = AUTH_EVENT_CACHE_TTL
-EVENT_CACHE = (
-    CacheDict("AUTH_EVENT_CACHE", expire=EVENT_CACHE_TTL)
-    if EVENT_CACHE_TTL > 0
-    else None
-)
-
 # 路由索引缓存
 _ROUTE_INDEX_LOCK = asyncio.Lock()
 _ROUTE_INDEX_READY = False
@@ -91,21 +91,17 @@ MATCHER_ROUTE_PREFILTER_TTL = 2
 PREFILTER_STATS_LOG_INTERVAL = 10.0
 CACHE_SWEEP_INTERVAL = 1.0
 
-CPU_COUNT = os.cpu_count() or 4
-COMMAND_MATCHER_CONCURRENCY = max(8, min(48, CPU_COUNT * 4))
-HEAVY_COMMAND_CONCURRENCY = max(1, min(3, CPU_COUNT // 2))
-HEAVY_COMMAND_MODULES = frozenset({"shop", "sign_in"})
-
 # 全局信号量与计数器
 HOOKS_ACTIVE_COUNT = 0
 HOOKS_SEMAPHORE = asyncio.Semaphore(HOOKS_CONCURRENCY_LIMIT)
-COMMAND_MATCHER_SEMAPHORE = asyncio.Semaphore(COMMAND_MATCHER_CONCURRENCY)
-HEAVY_COMMAND_SEMAPHORE = asyncio.Semaphore(HEAVY_COMMAND_CONCURRENCY)
 
 DB_SEMAPHORE = asyncio.Semaphore(DB_CONCURRENCY_LIMIT)
 DB_ACTIVE_COUNT = 0
 _CHECK_MATCHER_PATCHED = False
 _ORIGINAL_CHECK_AND_RUN_MATCHER: Callable[..., Awaitable[None]] | None = None
+_HANDLE_EVENT_PATCHED = False
+_ORIGINAL_HANDLE_EVENT: Callable[..., Awaitable[None]] | None = None
+_ORIGINAL_ADAPTER_HANDLE_EVENTS: dict[object, object] = {}
 _MATCHER_COMMAND_TYPE_CACHE: dict[type[Matcher], bool] = {}
 _MATCHER_COMMAND_LITERAL_CACHE: dict[type[Matcher], tuple[str, ...] | None] = {}
 _MATCHER_ALCONNA_SHORTCUT_CACHE: dict[type[Matcher], bool] = {}
@@ -115,6 +111,10 @@ _CHECK_MATCHER_ROUTE_CACHE = CacheDict(
 _PREFILTER_STATS = {
     "checked": 0,
     "skipped": 0,
+    "before_task_checked": 0,
+    "before_task_skipped": 0,
+    "inside_task_checked": 0,
+    "inside_task_skipped": 0,
     "type_miss": 0,
     "route_miss": 0,
     "command_miss": 0,
@@ -161,33 +161,6 @@ def _debug_log(message: str, *args, **kwargs) -> None:
     if is_overloaded():
         return
     logger.debug(message, *args, **kwargs)
-
-
-def _event_cache_key(event: Event, session: Uninfo, entity) -> str:
-    msg_id = getattr(event, "message_id", None)
-    if msg_id is None:
-        msg_id = getattr(event, "id", None)
-    if msg_id is None:
-        msg_id = id(event)
-    platform = PlatformUtils.get_platform(session)
-    group_id = entity.group_id or ""
-    channel_id = entity.channel_id or ""
-    return (
-        f"{platform}:{session.self_id}:{entity.user_id}:"
-        f"{group_id}:{channel_id}:{msg_id}"
-    )
-
-
-def _get_event_cache(event: Event, session: Uninfo, entity):
-    if not EVENT_CACHE:
-        return None
-    key = _event_cache_key(event, session, entity)
-    try:
-        return EVENT_CACHE[key]
-    except KeyError:
-        cache = {}
-        EVENT_CACHE[key] = cache
-        return cache
 
 
 def _normalize_command(command: str) -> str:
@@ -488,6 +461,9 @@ def _event_plain_text(event: Event) -> str:
 def _state_plain_text(state: dict | None) -> str:
     if state is None:
         return ""
+    context = get_event_context(state)
+    if context is not None:
+        return context.plain_text.strip()
     text = state.get("_zx_plain_text")
     if isinstance(text, str):
         return text.strip()
@@ -496,6 +472,9 @@ def _state_plain_text(state: dict | None) -> str:
 
 def _get_route_modules_for_event(event: Event, state: dict | None = None) -> set[str]:
     if state is not None:
+        context = get_event_context(state)
+        if context is not None and context.route_modules_loaded:
+            return context.route_modules
         route_modules = state.get("_zx_route_modules")
         if isinstance(route_modules, set):
             return route_modules
@@ -506,15 +485,67 @@ def _get_route_modules_for_event(event: Event, state: dict | None = None) -> set
         route_modules = _match_route_modules(_event_plain_text(event))
         _CHECK_MATCHER_ROUTE_CACHE[key] = route_modules
     if state is not None:
-        state["_zx_route_modules"] = route_modules
+        context = get_event_context(state)
+        if context is not None:
+            set_route_modules(state, context, route_modules)
+        else:
+            state["_zx_route_modules"] = route_modules
     return route_modules
 
 
-def _record_prefilter_stats(skipped: bool, reason: str | None) -> None:
+def _prepare_handle_event_state(event: Event, state: dict) -> None:
+    get_permission_side_effect_cache(state=state)
+    if event.get_type() != "message":
+        return
+    if _state_plain_text(state):
+        return
+    text = _event_plain_text(event)
+    if text:
+        state[STATE_PLAIN_TEXT] = text
+
+
+def _build_matcher_state(base_state: dict) -> dict:
+    get_permission_side_effect_cache(state=base_state)
+    matcher_state = base_state.copy()
+    get_permission_side_effect_cache(state=matcher_state)
+    return matcher_state
+
+
+async def _run_selected_matcher(
+    matcher: type[Matcher],
+    bot: Bot,
+    event: Event,
+    state: dict,
+    stack,
+    dependency_cache,
+) -> None:
+    await nb_message.check_and_run_matcher(
+        matcher,
+        bot,
+        event,
+        state,
+        stack,
+        dependency_cache,
+    )
+
+
+def _record_prefilter_stats(
+    skipped: bool,
+    reason: str | None,
+    stage: str = "inside_task",
+) -> None:
     global _PREFILTER_LAST_LOG
     _PREFILTER_STATS["checked"] += 1
     if skipped:
         _PREFILTER_STATS["skipped"] += 1
+    if stage == "before_task":
+        _PREFILTER_STATS["before_task_checked"] += 1
+        if skipped:
+            _PREFILTER_STATS["before_task_skipped"] += 1
+    else:
+        _PREFILTER_STATS["inside_task_checked"] += 1
+        if skipped:
+            _PREFILTER_STATS["inside_task_skipped"] += 1
     if reason == "type_miss":
         _PREFILTER_STATS["type_miss"] += 1
     elif reason == "route_miss":
@@ -537,6 +568,10 @@ def _record_prefilter_stats(skipped: bool, reason: str | None) -> None:
             "matcher prefilter stats: "
             f"checked={_PREFILTER_STATS['checked']} "
             f"skipped={_PREFILTER_STATS['skipped']} "
+            f"before_task={_PREFILTER_STATS['before_task_skipped']}/"
+            f"{_PREFILTER_STATS['before_task_checked']} "
+            f"inside_task={_PREFILTER_STATS['inside_task_skipped']}/"
+            f"{_PREFILTER_STATS['inside_task_checked']} "
             f"type_miss={_PREFILTER_STATS['type_miss']} "
             f"route_miss={_PREFILTER_STATS['route_miss']} "
             f"command_miss={_PREFILTER_STATS['command_miss']} "
@@ -643,15 +678,6 @@ def _matcher_has_alconna_shortcuts(matcher_cls: type[Matcher]) -> bool:
     return has_shortcuts
 
 
-def _is_heavy_command_module(module: str) -> bool:
-    normalized = module.strip().lower()
-    if not normalized:
-        return False
-    if normalized in HEAVY_COMMAND_MODULES:
-        return True
-    return any(normalized.endswith(f".{name}") for name in HEAVY_COMMAND_MODULES)
-
-
 async def _check_matcher_prefilter(
     matcher_cls: type[Matcher], event: Event, state: dict | None = None
 ) -> tuple[bool, str | None]:
@@ -686,6 +712,17 @@ async def _check_matcher_prefilter(
     if not module:
         return False, None
 
+    command_matched = False
+    matcher_commands = _extract_matcher_command_literals(matcher_cls)
+    if matcher_commands:
+        for command in matcher_commands:
+            if _command_matches(text, command):
+                command_matched = True
+                break
+        else:
+            if not _matcher_has_alconna_shortcuts(matcher_cls):
+                return True, "command_miss"
+
     ai_route_modules = _collect_ai_route_modules(event, state)
     ai_route_heads = _collect_ai_route_heads(event, state)
     if ai_route_modules and module not in ai_route_modules:
@@ -696,25 +733,85 @@ async def _check_matcher_prefilter(
         await _ensure_route_index()
 
     if module not in _ROUTE_MODULES_WITH_COMMANDS:
-        matcher_commands = _extract_matcher_command_literals(matcher_cls)
-        if matcher_commands:
-            for command in matcher_commands:
-                if _command_matches(text, command):
-                    return False, None
-            if _matcher_has_alconna_shortcuts(matcher_cls):
-                return False, None
-            return True, "command_miss"
         return False, None
 
     route_modules = _get_route_modules_for_event(event, state)
     if module not in route_modules:
+        if command_matched:
+            return False, None
         if _matcher_has_alconna_shortcuts(matcher_cls):
             return False, None
         return True, "route_miss"
     return False, None
 
 
-_MATCHER_SEMAPHORE_TIMEOUT = 8.0
+def _check_matcher_prefilter_before_task(
+    matcher_cls: type[Matcher], event: Event, state: dict | None = None
+) -> tuple[bool, str | None]:
+    """Conservative selector before creating matcher task.
+
+    This mirrors the async matcher prefilter but never performs IO or route-index
+    rebuild. If anything is uncertain, let the existing check_and_run_matcher
+    patch handle it inside the task.
+    """
+    event_type = event.get_type()
+    matcher_type = getattr(matcher_cls, "type", "") or ""
+    if isinstance(matcher_type, str) and matcher_type and matcher_type != event_type:
+        return True, "type_miss"
+
+    if event_type != "message":
+        return False, None
+
+    if getattr(matcher_cls, "temp", False):
+        return False, None
+
+    if not _is_command_matcher_class(matcher_cls):
+        return False, None
+
+    text = _state_plain_text(state)
+    if not text:
+        text = _event_plain_text(event)
+        if state is not None and text:
+            state["_zx_plain_text"] = text
+    if not text:
+        return True, "empty_text"
+
+    module = _matcher_module_name(matcher_cls)
+    if not module:
+        return False, None
+
+    command_matched = False
+    matcher_commands = _extract_matcher_command_literals(matcher_cls)
+    has_alconna_shortcuts = _matcher_has_alconna_shortcuts(matcher_cls)
+    if matcher_commands:
+        for command in matcher_commands:
+            if _command_matches(text, command):
+                command_matched = True
+                break
+        else:
+            if not has_alconna_shortcuts:
+                return True, "command_miss"
+
+    ai_route_modules = _collect_ai_route_modules(event, state)
+    ai_route_heads = _collect_ai_route_heads(event, state)
+    if ai_route_modules and module not in ai_route_modules:
+        if not _matcher_matches_ai_route_heads(matcher_cls, ai_route_heads):
+            return True, "route_miss"
+
+    if not _ROUTE_INDEX_READY:
+        return False, None
+
+    if module not in _ROUTE_MODULES_WITH_COMMANDS:
+        return False, None
+
+    route_modules = _get_route_modules_for_event(event, state)
+    if module not in route_modules:
+        if command_matched or has_alconna_shortcuts:
+            return False, None
+        return True, "route_miss"
+    return False, None
+
+
 _MAX_MATCHER_CACHE = 512
 
 
@@ -729,7 +826,7 @@ async def _patched_check_and_run_matcher(
     skip, reason = await _check_matcher_prefilter(
         Matcher, event, state if isinstance(state, dict) else None
     )
-    _record_prefilter_stats(skip, reason)
+    _record_prefilter_stats(skip, reason, "inside_task")
     if skip:
         return
 
@@ -744,28 +841,6 @@ async def _patched_check_and_run_matcher(
         "stack": stack,
         "dependency_cache": dependency_cache,
     }
-    if _is_command_matcher_class(Matcher):
-        module = _matcher_module_name(Matcher)
-        sem = (
-            HEAVY_COMMAND_SEMAPHORE
-            if _is_heavy_command_module(module)
-            else COMMAND_MATCHER_SEMAPHORE
-        )
-        try:
-            await asyncio.wait_for(sem.acquire(), timeout=_MATCHER_SEMAPHORE_TIMEOUT)
-        except asyncio.TimeoutError:
-            logger.warning(
-                f"matcher semaphore acquire timeout for {module}, "
-                "executing without concurrency limit",
-                LOGGER_COMMAND,
-            )
-            await original(**kwargs)
-            return
-        try:
-            await original(**kwargs)
-        finally:
-            sem.release()
-        return
     await original(**kwargs)
 
 
@@ -788,27 +863,137 @@ def _uninstall_matcher_prefilter() -> None:
     _ORIGINAL_CHECK_AND_RUN_MATCHER = None
 
 
-def _get_message_text(
-    message: UniMsg | None,
-    event_cache: dict | None,
-    event: Event | None = None,
-) -> str:
-    if event_cache is not None:
-        cached = event_cache.get("plain_text")
-        if isinstance(cached, str):
-            return cached
+async def _patched_handle_event(bot: Bot, event: Event) -> None:
+    show_log = True
+    escape_tag = getattr(nb_message, "escape_tag")
+    logger_ = getattr(nb_message, "logger")
+    no_log_exception = getattr(nb_message, "NoLogException")
 
-    text = ""
-    if message is not None:
-        with contextlib.suppress(Exception):
-            text = message.extract_plain_text()
-    if not text and event is not None:
-        with contextlib.suppress(Exception):
-            text = (event.get_plaintext() or "").strip()
+    log_msg = f"<m>{escape_tag(bot.type)} {escape_tag(bot.self_id)}</m> | "
+    try:
+        log_msg += event.get_log_string()
+    except no_log_exception:
+        show_log = False
+    if show_log:
+        logger_.opt(colors=True).success(log_msg)
 
-    if event_cache is not None:
-        event_cache["plain_text"] = text
-    return text
+    state = {}
+    dependency_cache = {}
+    async_exit_stack = getattr(nb_message, "AsyncExitStack")
+    apply_event_preprocessors = getattr(nb_message, "_apply_event_preprocessors")
+    apply_event_postprocessors = getattr(nb_message, "_apply_event_postprocessors")
+    trie_rule = getattr(nb_message, "TrieRule")
+    matchers = getattr(nb_message, "matchers")
+    catch = getattr(nb_message, "catch")
+    stop_propagation = getattr(nb_message, "StopPropagation")
+    handle_exception = getattr(nb_message, "_handle_exception")
+    anyio_mod = getattr(nb_message, "anyio")
+    run_coro_with_shield = getattr(nb_message, "run_coro_with_shield")
+
+    async with async_exit_stack() as stack:
+        if not await apply_event_preprocessors(
+            bot=bot,
+            event=event,
+            state=state,
+            stack=stack,
+            dependency_cache=dependency_cache,
+        ):
+            return
+
+        try:
+            trie_rule.get_value(bot, event, state)
+        except Exception as e:
+            logger_.opt(colors=True, exception=e).warning(
+                "Error while parsing command for event"
+            )
+        _prepare_handle_event_state(event, state)
+
+        break_flag = False
+
+        def _handle_stop_propagation(_exc_group) -> None:
+            nonlocal break_flag
+            break_flag = True
+            logger_.debug("Stop event propagation")
+
+        for priority in sorted(matchers.keys()):
+            if break_flag:
+                break
+
+            if show_log:
+                logger_.debug(f"Checking for matchers in priority {priority}...")
+
+            if not (priority_matchers := matchers[priority]):
+                continue
+
+            with catch(
+                {
+                    stop_propagation: _handle_stop_propagation,
+                    Exception: handle_exception(
+                        "<r><bg #f8bbd0>Error when checking Matcher.</bg #f8bbd0></r>"
+                    ),
+                }
+            ):
+                async with anyio_mod.create_task_group() as tg:
+                    for matcher in priority_matchers:
+                        skip, reason = _check_matcher_prefilter_before_task(
+                            matcher,
+                            event,
+                            state,
+                        )
+                        _record_prefilter_stats(skip, reason, "before_task")
+                        if skip:
+                            continue
+                        matcher_state = _build_matcher_state(state)
+                        tg.start_soon(
+                            run_coro_with_shield,
+                            _run_selected_matcher(
+                                matcher,
+                                bot,
+                                event,
+                                matcher_state,
+                                stack,
+                                dependency_cache,
+                            ),
+                        )
+
+        if show_log:
+            logger_.debug("Checking for matchers completed")
+
+        await apply_event_postprocessors(bot, event, state, stack, dependency_cache)
+
+
+def _install_handle_event_selector() -> None:
+    global _HANDLE_EVENT_PATCHED, _ORIGINAL_HANDLE_EVENT
+    if _HANDLE_EVENT_PATCHED:
+        return
+    _ORIGINAL_HANDLE_EVENT = nb_message.handle_event
+    nb_message.handle_event = _patched_handle_event  # type: ignore[assignment]
+    for module_name in (
+        "nonebot.adapters.onebot.v11.bot",
+        "nonebot.adapters.onebot.v12.bot",
+        "onebug.mixin.process",
+    ):
+        with contextlib.suppress(Exception):
+            module = importlib.import_module(module_name)
+            current = getattr(module, "handle_event", None)
+            if current is not None:
+                _ORIGINAL_ADAPTER_HANDLE_EVENTS[module] = current
+                setattr(module, "handle_event", _patched_handle_event)
+    _HANDLE_EVENT_PATCHED = True
+
+
+def _uninstall_handle_event_selector() -> None:
+    global _HANDLE_EVENT_PATCHED, _ORIGINAL_HANDLE_EVENT
+    if not _HANDLE_EVENT_PATCHED:
+        return
+    if _ORIGINAL_HANDLE_EVENT is not None:
+        nb_message.handle_event = _ORIGINAL_HANDLE_EVENT  # type: ignore[assignment]
+    for module, original in list(_ORIGINAL_ADAPTER_HANDLE_EVENTS.items()):
+        with contextlib.suppress(Exception):
+            setattr(module, "handle_event", original)
+    _ORIGINAL_ADAPTER_HANDLE_EVENTS.clear()
+    _HANDLE_EVENT_PATCHED = False
+    _ORIGINAL_HANDLE_EVENT = None
 
 
 async def _get_route_context(text: str, event_cache: dict | None) -> set[str]:
@@ -843,12 +1028,14 @@ async def start_auth_runtime_tasks() -> None:
     global _CACHE_SWEEP_TASK
     await _ensure_route_index()
     _install_matcher_prefilter()
+    _install_handle_event_selector()
     if _CACHE_SWEEP_TASK is None or _CACHE_SWEEP_TASK.done():
         _CACHE_SWEEP_TASK = asyncio.create_task(_cache_sweep_loop())
 
 
 async def stop_auth_runtime_tasks() -> None:
     global _CACHE_SWEEP_TASK
+    _uninstall_handle_event_selector()
     _uninstall_matcher_prefilter()
     task = _CACHE_SWEEP_TASK
     _CACHE_SWEEP_TASK = None
@@ -873,6 +1060,12 @@ async def _has_limits_cached(module: str, event_cache: dict | None) -> bool:
 @contextlib.asynccontextmanager
 async def _db_section():
     global DB_ACTIVE_COUNT
+    if DB_SEMAPHORE.locked():
+        logger.warning(
+            "db semaphore saturated, allowing permission check to continue",
+            LOGGER_COMMAND,
+        )
+        raise PermissionExemption("db semaphore saturated, allow pass")
     await DB_SEMAPHORE.acquire()
     DB_ACTIVE_COUNT += 1
     try:
@@ -918,7 +1111,9 @@ def _group_has_plugin_block(group, module: str) -> bool:
     )
 
 
-def _needs_auth_plugin(plugin: PluginInfo, group, entity) -> bool:
+def _needs_auth_plugin(plugin: PluginInfo, context: PermissionContext) -> bool:
+    group = context.group
+    entity = context.entity
     if plugin.block_type == BlockType.ALL and not plugin.status:
         if group and getattr(group, "is_super", False):
             return False
@@ -953,11 +1148,11 @@ async def _get_bot_data_cached(
 
 
 async def _get_admin_levels_cached(
-    session: Uninfo, entity, event_cache
+    entity, event_cache
 ) -> tuple[tuple[LevelUserSnapshot | None, LevelUserSnapshot | None] | None, bool]:
     if event_cache is not None and "admin_levels" in event_cache:
         return event_cache.get("admin_levels"), event_cache.get("admin_timeout", False)
-    levels = await LevelUserMemoryCache.get_levels(session.user.id, entity.group_id)
+    levels = await LevelUserMemoryCache.get_levels(entity.user_id, entity.group_id)
     if event_cache is not None:
         event_cache["admin_levels"] = levels
         event_cache["admin_timeout"] = False
@@ -1074,12 +1269,18 @@ async def get_plugin_and_user(
             if user_id in user_cache:
                 user = user_cache[user_id]
             else:
-                async with _db_section():
-                    user = await _fetch_user_readonly(user_dao, user_id)
+                try:
+                    async with _db_section():
+                        user = await _fetch_user_readonly(user_dao, user_id)
+                except PermissionExemption:
+                    user = None
                 user_cache[user_id] = user
         else:
-            async with _db_section():
-                user = await _fetch_user_readonly(user_dao, user_id)
+            try:
+                async with _db_section():
+                    user = await _fetch_user_readonly(user_dao, user_id)
+            except PermissionExemption:
+                user = None
 
     return plugin, user
 
@@ -1089,7 +1290,7 @@ async def get_plugin_cost(
     plugin: PluginInfo,
     session: Uninfo,
     *,
-    is_superuser: bool = False,
+    context: PermissionContext | None = None,
 ) -> int:
     """获取插件费用
 
@@ -1106,7 +1307,10 @@ async def get_plugin_cost(
     返回:
         int: 调用插件金币费用
     """
-    cost_gold = await with_timeout(auth_cost(user, plugin, session), name="auth_cost")
+    cost_gold = await with_timeout(
+        auth_cost(user, plugin, session, context=context), name="auth_cost"
+    )
+    is_superuser = context.is_superuser if context is not None else False
     if is_superuser:
         if plugin.plugin_type == PluginType.SUPERUSER:
             raise IsSuperuserException()
@@ -1124,7 +1328,7 @@ async def reduce_gold(user_id: str, module: str, cost_gold: int, session: Uninfo
         cost_gold: 消耗金币
         session: Uninfo
     """
-    user_dao = DataAccess(UserConsole)
+    should_clear_cache = False
     try:
         await with_timeout(
             UserConsole.reduce_gold(
@@ -1141,14 +1345,16 @@ async def reduce_gold(user_id: str, module: str, cost_gold: int, session: Uninfo
             u.gold = 0
             await u.save(update_fields=["gold"])
     except asyncio.TimeoutError:
+        should_clear_cache = True
         logger.error(
             f"扣除金币超时，用户: {user_id}, 金币: {cost_gold}",
             LOGGER_COMMAND,
             session=session,
         )
 
-    # 清除缓存，使下次查询时从数据库获取最新数据
-    await user_dao.clear_cache(user_id=user_id)
+    # 正常写入路径由 UserConsole.save() 统一失效缓存；超时状态不确定时兜底清理。
+    if should_clear_cache:
+        await DataAccess(UserConsole).clear_cache(user_id=user_id)
     logger.debug(f"调用功能花费金币: {cost_gold}", LOGGER_COMMAND, session=session)
 
 
@@ -1174,16 +1380,15 @@ async def time_hook(coro, name, recorder: HookTraceRecorder | None = None):
 
 
 async def _enter_hooks_section():
-    """尝试获取全局信号量并更新计数器，超时则抛出 PermissionExemption。"""
+    """尝试获取全局信号量并更新计数器，饱和时快速放行。"""
     global HOOKS_ACTIVE_COUNT
-    try:
-        await asyncio.wait_for(HOOKS_SEMAPHORE.acquire(), timeout=TIMEOUT_SECONDS)
-    except asyncio.TimeoutError:
+    if HOOKS_SEMAPHORE.locked():
         logger.warning(
-            "hooks semaphore acquire timeout, allowing pass",
+            "hooks semaphore saturated, allowing pass",
             LOGGER_COMMAND,
         )
-        raise PermissionExemption("hooks semaphore timeout, allow pass")
+        raise PermissionExemption("hooks semaphore saturated, allow pass")
+    await HOOKS_SEMAPHORE.acquire()
     HOOKS_ACTIVE_COUNT += 1
 
 
@@ -1197,14 +1402,7 @@ async def _leave_hooks_section():
 
 async def route_precheck(
     matcher: Matcher,
-    event: Event,
-    session: Uninfo,
-    message: UniMsg | None,
-    *,
-    entity=None,
-    event_cache: dict | None = None,
-    text: str | None = None,
-    route_modules: set[str] | None = None,
+    context: EventContext,
 ) -> bool:
     module = matcher.plugin_name or ""
     if not module:
@@ -1213,19 +1411,20 @@ async def route_precheck(
         return False
     if not _is_command_matcher_class(type(matcher)):
         return False
-    if entity is None:
-        entity = get_entity_ids(session)
-    if event_cache is None:
-        event_cache = _get_event_cache(event, session, entity)
-    if text is None:
-        text = _get_message_text(message, event_cache, event)
+
+    route_modules = context.route_modules if context.route_modules_loaded else None
     if route_modules is None:
-        route_modules = await _get_route_context(text, event_cache)
+        route_modules = await _get_route_context(
+            context.plain_text,
+            context.event_cache,
+        )
+        set_route_modules(None, context, route_modules)
+
     if module in _ROUTE_MODULES_WITH_COMMANDS and module not in route_modules:
         if _matcher_has_alconna_shortcuts(type(matcher)):
             return False
-        if event_cache is not None:
-            event_cache["route_skip"] = True
+        if context.event_cache is not None:
+            context.event_cache["route_skip"] = True
         return True
     return False
 
@@ -1235,14 +1434,10 @@ async def auth(
     event: Event,
     bot: Bot,
     session: Uninfo,
-    message: UniMsg | None,
     *,
+    context: EventContext,
     skip_ban: bool = False,
-    entity=None,
-    event_cache: dict | None = None,
-    text: str | None = None,
-    route_modules: set[str] | None = None,
-    is_superuser: bool = False,
+    state: dict | None = None,
 ):
     """权限检查
 
@@ -1251,20 +1446,28 @@ async def auth(
         event: Event
         bot: bot
         session: Uninfo
-        message: UniMsg
+        context: EventContext
     """
     start_time = time.time()
     cost_gold = 0
     ignore_flag = False
-    if entity is None:
-        entity = get_entity_ids(session)
+    entity = context.entity
+    event_cache = context.event_cache
+    text = context.plain_text
+    is_superuser = context.is_superuser
+    route_modules = context.route_modules if context.route_modules_loaded else None
     module = matcher.plugin_name or ""
     is_command_matcher = _is_command_matcher_class(type(matcher))
-    if event_cache is None:
-        event_cache = _get_event_cache(event, session, entity)
     auth_allowed = None
     auth_result_cache = None
     admin_checked_pre = False
+    permission_context: PermissionContext | None = None
+    side_effect_cache = get_permission_side_effect_cache(
+        state=state,
+        event_cache=event_cache,
+    )
+    side_effect_lock = None
+    entered_side_effect_lock = False
 
     # 仅在慢请求时记录 hook 明细，避免热路径高频构造字符串
     hook_recorder = HookTraceRecorder(start_time)
@@ -1278,14 +1481,17 @@ async def auth(
             auth_allowed = True
             return
 
-        if event_cache is not None:
-            auth_result_cache = event_cache.setdefault("auth_result", {})
-            cached_result = auth_result_cache.get(module)
-            if cached_result is not None:
-                allowed, reason = cached_result
-                if not allowed:
-                    raise SkipPluginException(reason or "auth cached skip")
-                return
+        side_effect_lock = side_effect_cache.lock_for(module)
+        await side_effect_lock.acquire()
+        entered_side_effect_lock = True
+
+        auth_result_cache = side_effect_cache.auth_results
+        cached_result = auth_result_cache.get(module)
+        if cached_result is not None:
+            allowed, reason = cached_result
+            if not allowed:
+                raise SkipPluginException(reason or "auth cached skip")
+            return
 
         if _is_hidden_plugin(matcher):
             auth_allowed = True
@@ -1293,10 +1499,9 @@ async def auth(
         if event_cache is not None and event_cache.get("ban_state") is True:
             raise SkipPluginException("user or group banned (cached)")
 
-        if text is None:
-            text = _get_message_text(message, event_cache, event)
         if route_modules is None:
             route_modules = await _get_route_context(text, event_cache)
+            set_route_modules(state, context, route_modules)
         route_skip_checks = (
             is_command_matcher
             and module in _ROUTE_MODULES_WITH_COMMANDS
@@ -1310,7 +1515,7 @@ async def auth(
             auth_allowed = True
             return
 
-        platform = PlatformUtils.get_platform(session)
+        platform = context.platform
         # 获取插件和用户数据
         plugin_user_start = time.time()
         try:
@@ -1336,6 +1541,14 @@ async def auth(
             auth_allowed = True
             return
 
+        permission_context = PermissionContext(
+            event=context,
+            module=module,
+            plugin=plugin,
+            user=user,
+        )
+        store_permission_context(state, permission_context)
+
         if not route_skip_checks and _needs_admin_check(plugin):
             if plugin.plugin_type in {
                 PluginType.SUPERUSER,
@@ -1356,13 +1569,18 @@ async def auth(
                     admin_timeout = False
                     if event_cache is not None:
                         admin_levels, admin_timeout = await _get_admin_levels_cached(
-                            session, entity, event_cache
+                            entity, event_cache
                         )
+                    permission_context.admin_levels = admin_levels
                     if admin_timeout:
                         hook_recorder.set("auth_admin", "timeout")
                     else:
                         admin_start = time.time()
-                        await auth_admin(plugin, session, cached_levels=admin_levels)
+                        await auth_admin(
+                            plugin,
+                            session,
+                            context=permission_context,
+                        )
                         hook_recorder.set(
                             "auth_admin", f"{time.time() - admin_start:.3f}s(pre)"
                         )
@@ -1386,8 +1604,7 @@ async def auth(
                         matcher,
                         session,
                         plugin,
-                        entity=entity,
-                        is_superuser=is_superuser,
+                        context=permission_context,
                     )
                     hook_recorder.set("auth_ban", f"{time.time() - ban_start:.3f}s")
                     if event_cache is not None:
@@ -1407,7 +1624,7 @@ async def auth(
                         user,
                         plugin,
                         session,
-                        is_superuser=is_superuser,
+                        context=permission_context,
                     ),
                     name="get_plugin_cost",
                 )
@@ -1421,7 +1638,7 @@ async def auth(
             hook_recorder.set("cost_gold", "skipped")
 
         # 执行 bot_filter
-        bot_filter(session)
+        bot_filter(session, context=permission_context)
 
         group = await _get_group_cached(entity, event_cache)
 
@@ -1439,12 +1656,22 @@ async def auth(
             and not route_skip_checks
         ):
             admin_levels, admin_timeout = await _get_admin_levels_cached(
-                session, entity, event_cache
+                entity, event_cache
             )
+
+        permission_context.group = group
+        permission_context.bot_data = bot_data
+        if admin_levels is not None:
+            permission_context.admin_levels = admin_levels
+        store_permission_context(state, permission_context)
 
         # 并行执行所有 hook 检查，并记录执行时间
         hooks_start = time.time()
         allow_sleep_bypass = _is_bot_wake_command(module, text)
+
+        # 先进入 hooks 并行检查区域；饱和时快速放行，避免创建并积压协程。
+        await _enter_hooks_section()
+        entered_hooks = True
 
         # 创建所有 hook 任务
         hook_tasks = []
@@ -1455,6 +1682,7 @@ async def auth(
                         plugin,
                         bot.self_id,
                         allow_sleep_bypass=allow_sleep_bypass,
+                        context=permission_context,
                     ),
                     "auth_bot",
                     hook_recorder,
@@ -1472,6 +1700,7 @@ async def auth(
                             bot_data=bot_data,
                             skip_fetch=True,
                             allow_sleep_bypass=allow_sleep_bypass,
+                            context=permission_context,
                         ),
                         "auth_bot",
                         hook_recorder,
@@ -1483,7 +1712,13 @@ async def auth(
         else:
             hook_tasks.append(
                 time_hook(
-                    auth_group(plugin, group, text, entity.group_id),
+                    auth_group(
+                        plugin,
+                        group,
+                        text,
+                        entity.group_id,
+                        context=permission_context,
+                    ),
                     "auth_group",
                     hook_recorder,
                 )
@@ -1492,7 +1727,11 @@ async def auth(
         if not route_skip_checks and plugin.admin_level and not admin_checked_pre:
             if event_cache is None:
                 hook_tasks.append(
-                    time_hook(auth_admin(plugin, session), "auth_admin", hook_recorder)
+                    time_hook(
+                        auth_admin(plugin, session, context=permission_context),
+                        "auth_admin",
+                        hook_recorder,
+                    )
                 )
             else:
                 if admin_timeout:
@@ -1500,7 +1739,11 @@ async def auth(
                 else:
                     hook_tasks.append(
                         time_hook(
-                            auth_admin(plugin, session, cached_levels=admin_levels),
+                            auth_admin(
+                                plugin,
+                                session,
+                                context=permission_context,
+                            ),
                             "auth_admin",
                             hook_recorder,
                         )
@@ -1510,7 +1753,7 @@ async def auth(
 
         if is_superuser:
             hook_recorder.set("auth_plugin", "superuser")
-        elif not route_skip_checks and _needs_auth_plugin(plugin, group, entity):
+        elif not route_skip_checks and _needs_auth_plugin(plugin, permission_context):
             hook_tasks.append(
                 time_hook(
                     auth_plugin(
@@ -1518,6 +1761,7 @@ async def auth(
                         group,
                         session,
                         event,
+                        context=permission_context,
                         skip_group_block=is_superuser,
                     ),
                     "auth_plugin",
@@ -1531,17 +1775,16 @@ async def auth(
             has_limits = await _has_limits_cached(module, event_cache)
             if has_limits:
                 hook_tasks.append(
-                    time_hook(auth_limit(plugin, session), "auth_limit", hook_recorder)
+                    time_hook(
+                        auth_limit(plugin, session, context=permission_context),
+                        "auth_limit",
+                        hook_recorder,
+                    )
                 )
             else:
                 hook_recorder.set("auth_limit", "skipped")
         else:
             hook_recorder.set("auth_limit", "skipped")
-
-        if hook_tasks:
-            # 进入 hooks 并行检查区域（会在高并发时排队）
-            await _enter_hooks_section()
-            entered_hooks = True
 
         # 使用 gather 并行执行所有 hook，但添加总体超时控制
         try:
@@ -1599,6 +1842,9 @@ async def auth(
                 )
         if auth_result_cache is not None and auth_allowed is not None:
             auth_result_cache[module] = (auth_allowed, None)
+        if entered_side_effect_lock and side_effect_lock is not None:
+            with contextlib.suppress(Exception):
+                side_effect_lock.release()
     # 扣除金币
     if not ignore_flag and cost_gold > 0:
         gold_start = time.time()
