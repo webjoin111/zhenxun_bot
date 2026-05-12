@@ -1,4 +1,4 @@
-from zhenxun.services.ai.types.knowledge import Document
+from zhenxun.services.ai.knowledge.models import Document
 
 from .strategy import ChunkingStrategy
 
@@ -42,3 +42,4 @@ class DocumentChunking(ChunkingStrategy):
             chunks.append(self._create_chunk_doc(document, chunk_index, chunk_content))
 
         return chunks
+

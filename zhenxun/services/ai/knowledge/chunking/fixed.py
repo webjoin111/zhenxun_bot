@@ -1,4 +1,4 @@
-from zhenxun.services.ai.types.knowledge import Document
+from zhenxun.services.ai.knowledge.models import Document
 
 from .strategy import ChunkingStrategy
 
@@ -49,3 +49,4 @@ class FixedSizeChunking(ChunkingStrategy):
             start = end - self.overlap
 
         return chunks
+

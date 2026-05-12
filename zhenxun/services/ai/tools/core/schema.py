@@ -1,12 +1,69 @@
+from abc import ABC, abstractmethod
 from collections.abc import Callable
 import inspect
+import json
 import re
-from typing import Any, get_type_hints
+from typing import Annotated, Any, get_args, get_origin, get_type_hints
 
+from nonebot.adapters import Bot, Event
+from nonebot.permission import SUPERUSER
 from pydantic import BaseModel, Field, create_model
 from pydantic.fields import FieldInfo
 
-from .di import DependencyInjector
+from zhenxun.services.ai.run import DependencyInjector
+from zhenxun.services.ai.run.context import RunContext
+from zhenxun.services.ai.utils.runtime_utils import ContextUtils
+from zhenxun.services.cache.runtime_cache import LevelUserMemoryCache
+from zhenxun.utils.pydantic_compat import model_json_schema
+
+
+class FieldPermission(ABC):
+    """字段级权限校验基类/协议"""
+
+    @abstractmethod
+    async def check(self, context: RunContext) -> bool:
+        """返回当前上下文（用户）是否有权使用该字段"""
+        pass
+
+
+class RequireSuperUser(FieldPermission):
+    """仅限超级管理员可见的字段参数"""
+
+    async def check(self, context: RunContext) -> bool:
+        bot = getattr(context.deps, "bot", None)
+        event = getattr(context.deps, "event", None)
+        if isinstance(bot, Bot) and isinstance(event, Event):
+            return await SUPERUSER(bot, event)
+        return False
+
+
+class RequireAdminLevel(FieldPermission):
+    """仅限满足群等级要求的管理员可见的字段参数"""
+
+    def __init__(self, min_level: int = 1):
+        self.min_level = min_level
+
+    async def check(self, context: RunContext) -> bool:
+        bot = getattr(context.deps, "bot", None)
+        event = getattr(context.deps, "event", None)
+
+        if isinstance(bot, Bot) and isinstance(event, Event) and await SUPERUSER(bot, event):
+            return True
+
+        user_id = ContextUtils.extract_user_id(context.deps)
+        group_id = ContextUtils.extract_group_id(context.deps)
+
+        if not user_id or not group_id:
+            return False
+
+        global_user, group_users = await LevelUserMemoryCache.get_levels(
+            user_id, group_id
+        )
+        user_level = global_user.user_level if global_user else 0
+        if group_users:
+            user_level = max(user_level, group_users.user_level)
+
+        return user_level >= self.min_level
 
 
 def _parse_docstring(docstring: str | None) -> tuple[str, dict[str, str]]:
@@ -76,25 +133,112 @@ def build_tool_model(
         desc = doc_params.get(name, "")
         default_val = param.default
 
+        user_desc = None
+        if isinstance(default_val, FieldInfo) and default_val.description:
+            user_desc = default_val.description
+        elif get_origin(anno) is Annotated:
+            for arg in get_args(anno)[1:]:
+                if isinstance(arg, FieldInfo) and arg.description:
+                    user_desc = arg.description
+                    break
+
+        final_desc = user_desc or desc
+
         if isinstance(default_val, FieldInfo):
             field_info = default_val
-            if not field_info.description and desc:
-                field_info.description = desc
+            if not field_info.description and final_desc:
+                field_info.description = final_desc
             field_definitions[name] = (anno, field_info)
         else:
             if default_val is inspect.Parameter.empty:
-                field_info = Field(..., description=desc)
+                field_info = Field(..., description=final_desc)
             else:
-                field_info = Field(default=default_val, description=desc)
+                field_info = Field(default=default_val, description=final_desc)
             field_definitions[name] = (anno, field_info)
 
-    DynamicModel = create_model(
-        f"DynamicToolModel_{func.__name__}", **field_definitions
-    )
-    schema_def = DynamicModel.model_json_schema(mode="serialization")
+    try:
+        DynamicModel = create_model(
+            f"DynamicToolModel_{func.__name__}", **field_definitions
+        )
+        schema_def = DynamicModel.model_json_schema(mode="serialization")
+    except Exception as e:
+        error_msg = str(e)
+        raise ValueError(
+            f"无法为工具 '{func.__name__}' 生成合法的 JSON Schema。\n"
+            f"原因：函数的参数中包含了大模型无法解析的复杂类型（如 Bot, Event, 自定义类等）。\n"
+            f"💡 修复建议：如果该参数是底层框架依赖（如需要用到 nonebot 的 Bot），请务必使用 `Inject.XXX` 进行注解声明（例如 `bot: Inject.Bot`），这样系统会自动将其隐藏，不会发给大模型。\n"
+            f"底层报错：{error_msg}"
+        ) from e
 
     schema_def.pop("title", None)
     if strict:
         schema_def["additionalProperties"] = False
 
     return schema_def, DynamicModel
+
+
+def build_schema_hint(args_schema: type[BaseModel] | None) -> str:
+    """
+    构建友好的人类可读 Schema 提示，供大模型在参数错误时进行自愈反思。
+    """
+    if args_schema is None:
+        return ""
+    try:
+        schema = model_json_schema(args_schema)
+        props = schema.get("properties", {})
+        req = schema.get("required", [])
+
+        hint = (
+            f"\n\n💡 [系统提示] 该工具期望的正确 JSON 参数格式为:\n"
+            f"```json\n{json.dumps(props, ensure_ascii=False, indent=2)}\n```\n"
+            f"必填字段: {req}"
+        )
+        return hint
+    except Exception:
+        return ""
+
+
+async def prune_schema_by_permissions(
+    model_class: type[BaseModel], context: RunContext, schema: dict[str, Any]
+) -> dict[str, Any]:
+    """根据当前运行时上下文 (RunContext) 动态裁剪无权限的 Schema 字段"""
+    properties = schema.get("properties", {})
+    required = schema.get("required", [])
+    fields_to_remove = []
+
+    fields = getattr(model_class, "model_fields", getattr(model_class, "__fields__", {}))
+
+    for field_name, field_info in fields.items():
+        for meta in field_info.metadata:
+            if isinstance(meta, FieldPermission):
+                if not await meta.check(context):
+                    fields_to_remove.append(field_name)
+                break
+
+    for field_name in fields_to_remove:
+        properties.pop(field_name, None)
+        if field_name in required:
+            required.remove(field_name)
+
+    if "required" in schema and not required:
+        schema.pop("required", None)
+
+    return schema
+
+
+async def check_field_permissions(
+    model_class: type[BaseModel], kwargs: dict[str, Any], context: RunContext
+) -> None:
+    """验证传入的参数是否绕过了权限限制"""
+    fields = getattr(model_class, "model_fields", getattr(model_class, "__fields__", {}))
+    for field_name, field_info in fields.items():
+        if field_name in kwargs:
+            for meta in field_info.metadata:
+                if isinstance(meta, FieldPermission):
+                    if not await meta.check(context):
+                        from zhenxun.services.ai.core.exceptions import ToolRetryError
+
+                        raise ToolRetryError(
+                            f"权限拒绝：您当前的用户身份无权使用参数 '{field_name}'。请移除该参数后重新规划并调用此工具。"
+                        )
+                    break

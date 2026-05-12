@@ -4,31 +4,40 @@ LLM 模型实现类
 包含 LLM 模型的抽象基类和具体实现，负责与各种 AI 提供商的 API 交互。
 """
 
-from typing import Any, TypeVar
+from __future__ import annotations
+
+from typing import Any, TypeVar, cast
 
 from pydantic import BaseModel
 
-from zhenxun.services.ai.config import get_llm_config
-from zhenxun.services.ai.llm.engine import BaseEngine
-from zhenxun.services.ai.protocols import LLMContext, LLMMiddleware, NextCall
-from zhenxun.services.ai.protocols.llm import LLMModelBase
-from zhenxun.services.ai.types.configs import (
+from zhenxun.services.ai.config import ProviderConfig, get_llm_config
+from zhenxun.services.ai.core.configs import (
+    GenerationConfig,
     LLMEmbeddingConfig,
-    LLMGenerationConfig,
+    TTSConfig,
 )
-from zhenxun.services.ai.config import ProviderConfig
-from zhenxun.services.ai.types.exceptions import LLMErrorCode, LLMException
-from zhenxun.services.ai.types.messages import LLMMessage, LLMResponse
-from zhenxun.services.ai.types.models import (
+from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
+from zhenxun.services.ai.core.messages import (
+    AudioResponse,
+    EmbeddingResponse,
+    LLMMessage,
+    LLMResponse,
+    UsageInfo,
+)
+from zhenxun.services.ai.core.models import (
     ModelCapabilities,
     ModelDetail,
-    ModelModality,
 )
-from zhenxun.services.ai.types.tools import ToolChoice
+from zhenxun.services.ai.core.engine.token_estimator import parse_usage_info
+from zhenxun.services.ai.llm.engine import BaseEngine
+from zhenxun.services.ai.protocols import LLMContext
+from zhenxun.services.ai.protocols.llm import LLMModelBase
+from zhenxun.services.ai.protocols.middleware import LLMMiddleware, NextCall
+from zhenxun.services.ai.tools.models import ToolChoice
 from zhenxun.services.log import logger
 
 from .core import (
-    KeyStatusStore,
+    HealthManager,
     RetryConfig,
 )
 
@@ -42,21 +51,22 @@ class LLMModel(LLMModelBase):
         self,
         provider_config: ProviderConfig,
         model_detail: ModelDetail,
-        key_store: KeyStatusStore,
+        health_manager: HealthManager,
         engine: BaseEngine,
         capabilities: ModelCapabilities,
-        config_override: LLMGenerationConfig | None = None,
+        config_override: GenerationConfig | None = None,
     ):
         self.provider_config = provider_config
         self.model_detail = model_detail
-        self.key_store = key_store
+        self.health_manager = health_manager
         self.engine: BaseEngine = engine
         self.capabilities = capabilities
         self._generation_config = config_override
 
         self.provider_name = provider_config.name
-        self.api_type = provider_config.api_type
+        self.api_type = model_detail.api_type or provider_config.api_type
         self.api_base = provider_config.api_base
+        self.path_prefix = model_detail.path_prefix
         self.api_keys = (
             [provider_config.api_key]
             if isinstance(provider_config.api_key, str)
@@ -64,49 +74,11 @@ class LLMModel(LLMModelBase):
         )
         self.model_name = model_detail.model_name
         self.temperature = model_detail.temperature
-        self.max_tokens = model_detail.max_tokens
+        self.generation_max_tokens = model_detail.generation_max_tokens
 
         self._is_closed = False
         self._ref_count = 0
         self._middlewares: list[LLMMiddleware] = []
-
-    def _has_modality(self, modality: ModelModality, is_input: bool = True) -> bool:
-        target_set = (
-            self.capabilities.input_modalities
-            if is_input
-            else self.capabilities.output_modalities
-        )
-        return modality in target_set
-
-    @property
-    def can_process_images(self) -> bool:
-        """检查模型是否支持图片作为输入。"""
-        return self._has_modality(ModelModality.IMAGE)
-
-    @property
-    def can_process_video(self) -> bool:
-        """检查模型是否支持视频作为输入。"""
-        return self._has_modality(ModelModality.VIDEO)
-
-    @property
-    def can_process_audio(self) -> bool:
-        """检查模型是否支持音频作为输入。"""
-        return self._has_modality(ModelModality.AUDIO)
-
-    @property
-    def can_generate_images(self) -> bool:
-        """检查模型是否支持生成图片。"""
-        return self._has_modality(ModelModality.IMAGE, is_input=False)
-
-    @property
-    def can_generate_audio(self) -> bool:
-        """检查模型是否支持生成音频 (TTS)。"""
-        return self._has_modality(ModelModality.AUDIO, is_input=False)
-
-    @property
-    def is_embedding_model(self) -> bool:
-        """检查这是否是一个嵌入模型。"""
-        return self.capabilities.is_embedding_model
 
     def add_middleware(self, middleware: LLMMiddleware) -> None:
         """注册一个中间件到处理管道的最外层"""
@@ -123,7 +95,6 @@ class LLMModel(LLMModelBase):
             KeySelectionMiddleware,
             LoggingMiddleware,
             RetryMiddleware,
-            StructuredOutputMiddleware,
         )
 
         client_settings = get_llm_config().client_settings
@@ -139,17 +110,19 @@ class LLMModel(LLMModelBase):
             async def _noop(_: LLMContext) -> LLMResponse:
                 raise RuntimeError("EngineExecutionMiddleware 不应调用 next_call")
 
-            return await engine_middleware(ctx, _noop)
+            return await engine_middleware(ctx, cast(NextCall, _noop))
 
         def _wrap(middleware: LLMMiddleware, next_call: NextCall) -> NextCall:
             async def _handler(inner_ctx: LLMContext) -> LLMResponse:
                 return await middleware(inner_ctx, next_call)
 
-            return _handler
+            return cast(NextCall, _handler)
 
-        handler: NextCall = terminal_handler
+        handler: NextCall = cast(NextCall, terminal_handler)
         handler = _wrap(
-            KeySelectionMiddleware(self.key_store, self.provider_name, self.api_keys),
+            KeySelectionMiddleware(
+                self.health_manager, self.provider_name, self.api_keys
+            ),
             handler,
         )
         handler = _wrap(
@@ -157,12 +130,7 @@ class LLMModel(LLMModelBase):
             handler,
         )
         handler = _wrap(
-            RetryMiddleware(retry_config, self.key_store),
-            handler,
-        )
-
-        handler = _wrap(
-            StructuredOutputMiddleware(),
+            RetryMiddleware(retry_config, self.health_manager),
             handler,
         )
 
@@ -186,6 +154,8 @@ class LLMModel(LLMModelBase):
             and "openai" not in self.model_name.lower()
         ):
             return "gemini"
+        if "minimax" in self.model_name.lower():
+            return "minimax"
         return "openai"
 
     async def _select_api_key(self, failed_keys: set[str] | None = None) -> str:
@@ -196,7 +166,7 @@ class LLMModel(LLMModelBase):
                 code=LLMErrorCode.NO_AVAILABLE_KEYS,
             )
 
-        selected_key = await self.key_store.get_next_available_key(
+        selected_key = await self.health_manager.get_next_available_key(
             self.provider_name, self.api_keys, failed_keys
         )
 
@@ -251,12 +221,12 @@ class LLMModel(LLMModelBase):
         此方法作为中间件管道的终点被调用。
         """
         pipeline_handler = self._build_pipeline()
-        return await pipeline_handler(context)
+        return cast(LLMResponse, await pipeline_handler(context))
 
     async def generate_response(
         self,
         messages: list[LLMMessage],
-        config: LLMGenerationConfig | None = None,
+        config: GenerationConfig | None = None,
         tools: list[Any] | None = None,
         tool_choice: str | dict[str, Any] | ToolChoice | None = None,
         timeout: float | None = None,
@@ -273,7 +243,7 @@ class LLMModel(LLMModelBase):
         elif config:
             final_request_config = config
         else:
-            final_request_config = self._generation_config or LLMGenerationConfig()
+            final_request_config = self._generation_config or GenerationConfig()
 
         normalized_tools: list[Any] | None = None
         if tools:
@@ -294,17 +264,44 @@ class LLMModel(LLMModelBase):
             cancellation_token=cancellation_token,
         )
 
-        return await self._execute_core_generation(context)
+        capabilities = (extra or {}).get("__sys_capabilities", [])
+        run_ctx = (extra or {}).get("run_context")
+        if not run_ctx:
+            from zhenxun.services.ai.run import RunContext
+
+            run_ctx = RunContext()
+
+        from zhenxun.services.ai.protocols.capabilities import CombinedCapability
+
+        combined_cap = CombinedCapability(capabilities)
+
+        context = await combined_cap.before_model_request(run_ctx, context)
+
+        async def inner_handler(ctx: LLMContext) -> LLMResponse:
+            return await self._execute_core_generation(ctx)
+
+        try:
+            response = await combined_cap.wrap_model_request(
+                run_ctx, context, inner_handler
+            )
+            response = await combined_cap.after_model_request(
+                run_ctx, context, response
+            )
+            return response
+        except Exception as e:
+            return await combined_cap.on_model_request_error(run_ctx, context, e)
 
     async def generate_embeddings(
         self,
         texts: list[str],
         config: LLMEmbeddingConfig | None = None,
-    ) -> list[list[float]]:
+    ) -> EmbeddingResponse:
         """生成文本嵌入向量"""
         self._check_not_closed()
         if not texts:
-            return []
+            return EmbeddingResponse(
+                embeddings=[], usage=UsageInfo(), model_name=self.model_name
+            )
 
         final_config = config or LLMEmbeddingConfig()
 
@@ -328,7 +325,11 @@ class LLMModel(LLMModelBase):
                 "嵌入请求未返回 embeddings 数据",
                 code=LLMErrorCode.EMBEDDING_FAILED,
             )
-        return embeddings
+
+        usage_obj = cast(UsageInfo, parse_usage_info(response.usage_info))
+        return EmbeddingResponse(
+            embeddings=embeddings, usage=usage_obj, model_name=self.model_name
+        )
 
     async def rerank(
         self,
@@ -353,6 +354,35 @@ class LLMModel(LLMModelBase):
         return (
             response.cache_info.get("rerank_results", []) if response.cache_info else []
         )
+
+    async def generate_speech(
+        self,
+        input_text: str,
+        voice: str,
+        config: TTSConfig | None = None,
+    ) -> AudioResponse:
+        """生成语音"""
+        self._check_not_closed()
+        if not input_text:
+            raise LLMException(
+                "语音合成文本不能为空", code=LLMErrorCode.INVALID_PARAMETER
+            )
+
+        final_config = config or TTSConfig()
+
+        context = LLMContext(
+            messages=[],
+            config=final_config,
+            tools=None,
+            tool_choice=None,
+            timeout=None,
+            request_type="speech_generation",
+            extra={"input_text": input_text, "voice": voice},
+        )
+
+        pipeline = self._build_pipeline()
+        llm_response = await pipeline(context)
+        return cast(AudioResponse, llm_response.parsed_obj)
 
     def __str__(self) -> str:
         status = "closed" if self._is_closed else "active"

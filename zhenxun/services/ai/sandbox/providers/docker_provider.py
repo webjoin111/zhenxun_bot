@@ -1,4 +1,4 @@
-from zhenxun.services.ai.types.sandbox import (
+from zhenxun.services.ai.sandbox.models import (
     SandboxCapabilities,
     SandboxRequirements,
     SandboxSecurityProfile,
@@ -53,3 +53,4 @@ class DockerSandboxProvider(BaseSandboxProvider):
 
 
 SandboxRegistry.register_provider(DockerSandboxProvider())
+

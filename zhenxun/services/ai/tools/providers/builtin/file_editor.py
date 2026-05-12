@@ -4,11 +4,11 @@ from typing import Any, Literal, cast
 from pydantic import BaseModel
 
 from zhenxun.services.ai.llm.api import generate_structured
-from zhenxun.services.ai.tools.core.context import RunContext
-from zhenxun.services.ai.tools.core.decorators import toolkit_tool
+from zhenxun.services.ai.run import Inject, RunContext
+from zhenxun.services.ai.sandbox.models import SandboxSecurityProfile
+from zhenxun.services.ai.tools.core.decorators import tool
 from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
-from zhenxun.services.ai.types.sandbox import SandboxSecurityProfile
-from zhenxun.services.ai.types.tools import ToolErrorResult, ToolErrorType, ToolResult
+from zhenxun.services.ai.tools.models import ToolErrorResult, ToolErrorType, ToolResult
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_dump
 
@@ -116,9 +116,9 @@ class FileEditorToolkit(BaseToolkit):
         "## 智能文件编辑器\n"
         "你拥有高级的文件编辑权限。要求在修改文件时，**严禁**全量覆写。请遵循以下工作流：\n"
         "1. **预览**：使用 `view` 指令确认文件内容和准确行号。\n"
-        "2. **精准替换**：使用 `replace` 命令。`old_str` 必须与原始内容完全一致（包括缩进和空格）。\n"
+        "2. **精准替换**：使用 `replace` 命令。`old_str` 必须与原始内容完全一致（包括缩进和空格）。\n"  # noqa: E501
         "3. **行后插入**：使用 `insert` 命令在指定行号后新增内容。\n"
-        "4. **自愈与撤销**：新文件使用 `create`，若修改引发语法错误，系统会自动回滚，请根据报错修正。"
+        "4. **自愈与撤销**：新文件使用 `create`，若修改引发语法错误，系统会自动回滚，请根据报错修正。"  # noqa: E501
     )
 
     def __init__(self, profile: SandboxSecurityProfile | None = None, **kwargs: Any):
@@ -166,18 +166,19 @@ class FileEditorToolkit(BaseToolkit):
                 await fs_exec.write_raw_file(path, old_content)
             error_msg = check_res.stderr or check_res.stdout
             raise ValueError(
-                f"你提交的修改引入了致命的 Python 语法错误，系统已自动回滚了你的修改！\n请仔细阅读以下 Linter 错误信息，并在下一次工具调用中修正你的代码：\n{error_msg}"
+                f"你提交的修改引入了致命的 Python 语法错误，系统已自动回滚了你的修改！\n请仔细阅读以下 Linter 错误信息，并在下一次工具调用中修正你的代码：\n{error_msg}"  # noqa: E501
             )
 
-    @toolkit_tool(
+    @tool(
         name="edit_file",
-        description="高级文件编辑工具。支持 view(查看), create(创建), replace(精准替换), insert(按行号插入), undo(撤销)。",
+        description="高级文件编辑工具。支持 view(查看), create(创建), replace(精准替换), insert(按行号插入), undo(撤销)。",  # noqa: E501
     )
     async def edit_file(
         self,
         command: Literal["view", "create", "replace", "insert", "undo"],
         path: str,
         context: RunContext,
+        ui: Inject.UI,
         old_str: str = "",
         new_str: str = "",
         insert_line: int = -1,
@@ -194,7 +195,7 @@ class FileEditorToolkit(BaseToolkit):
             "end_line": end_line,
         }
 
-        await context.emit(f"📝 正在通过沙箱执行文件操作: {command} {path}...")
+        await ui.send_text(f"📝 正在通过沙箱执行文件操作: {command} {path}...")
         max_retries = 2
         for attempt in range(max_retries + 1):
             try:
@@ -206,10 +207,14 @@ class FileEditorToolkit(BaseToolkit):
                         message=str(ve),
                         is_retryable=True,
                     )
-                    return ToolResult(
-                        output=json.dumps(model_dump(err_result), ensure_ascii=False),
-                        display=f"❌ 编辑失败: {ve}",
-                        is_error=True,
+                    return (
+                        ToolResult(
+                            output=json.dumps(
+                                model_dump(err_result), ensure_ascii=False
+                            )
+                        )
+                        .show_to_user(f"❌ 编辑失败: {ve}")
+                        .as_error()
                     )
 
                 logger.info(f"📝 触发影子反思闭环 (第 {attempt + 1} 次重试): {ve}")
@@ -220,9 +225,9 @@ class FileEditorToolkit(BaseToolkit):
                     f"{json.dumps(current_args, ensure_ascii=False, indent=2)}\n\n"
                     f"【系统抛出的错误】\n"
                     f"{ve}\n\n"
-                    f"请深度反思这个错误。如果是 Linter 语法错误，请检查你的缩进、变量名和标点符号。\n"
-                    f"如果是 replace 匹配失败，请注意 `old_str` 必须与源文件一字不差。\n"
-                    f"⚠️ 警告：你必须且只能修正 `new_str` 等内容参数，你的 `command` 参数必须严格保持为 `{command}`，绝对不允许擅自改为 view 等其他指令！\n"
+                    f"请深度反思这个错误。如果是 Linter 语法错误，请检查你的缩进、变量名和标点符号。\n"  # noqa: E501
+                    f"如果是 replace 匹配失败，请注意 `old_str` 必须与源文件一字不差。\n"  # noqa: E501
+                    f"⚠️ 警告：你必须且只能修正 `new_str` 等内容参数，你的 `command` 参数必须严格保持为 `{command}`，绝对不允许擅自改为 view 等其他指令！\n"  # noqa: E501
                     f"请重新输出修正后的完整参数。"
                 )
 
@@ -233,9 +238,9 @@ class FileEditorToolkit(BaseToolkit):
                     current_args = model_dump(fixed_args)
                 except Exception as llm_e:
                     logger.error(f"影子反思 LLM 请求失败: {llm_e}")
-                    return ToolResult(output=str(ve), is_error=True)
+                    return ToolResult(output=str(ve)).as_error()
 
-        return ToolResult(output="未知错误", is_error=True)
+        return ToolResult(output="未知错误").as_error()
 
     async def _edit_file_impl(
         self,
@@ -272,9 +277,8 @@ class FileEditorToolkit(BaseToolkit):
 
         if command == "view":
             view_res = FileEditorEngine.view(content, start_line, end_line)
-            return ToolResult(
-                output=f"文件 {path} 的视图如下:\n{view_res}",
-                log_content=f"👀 查看文件 {path}",
+            return ToolResult(output=f"文件 {path} 的视图如下:\n{view_res}").with_log(
+                f"👀 查看文件 {path}"
             )
 
         elif command == "create":
@@ -283,7 +287,7 @@ class FileEditorToolkit(BaseToolkit):
                 check_res.startswith("Error: File") or check_res.startswith("Failed to")
             ):
                 raise ValueError(
-                    f"创建失败：文件 {path} 已存在。如果你想修改它，请使用 replace 或 insert。"
+                    f"创建失败：文件 {path} 已存在。如果你想修改它，请使用 replace 或 insert。"  # noqa: E501
                 )
 
             if not new_str:
@@ -294,9 +298,8 @@ class FileEditorToolkit(BaseToolkit):
 
             await self._lint_and_rollback_if_failed(executor, path, "", "create")
 
-            return ToolResult(
-                output=f"✅ 文件 {path} 创建成功！",
-                log_content=f"📝 创建文件 {path}",
+            return ToolResult(output=f"✅ 文件 {path} 创建成功！").with_log(
+                f"📝 创建文件 {path}"
             )
 
         elif command == "replace":
@@ -311,9 +314,8 @@ class FileEditorToolkit(BaseToolkit):
             await self._lint_and_rollback_if_failed(executor, path, content, "replace")
 
             return ToolResult(
-                output=f"✅ 文件 {path} 局部替换成功！你可以使用 view 命令检查修改后的结果。",
-                log_content=f"🔄 替换文件 {path} 内容",
-            )
+                output=f"✅ 文件 {path} 局部替换成功！你可以使用 view 命令检查修改后的结果。"
+            ).with_log(f"🔄 替换文件 {path} 内容")
 
         elif command == "insert":
             if insert_line < 0:
@@ -329,9 +331,8 @@ class FileEditorToolkit(BaseToolkit):
             await self._lint_and_rollback_if_failed(executor, path, content, "insert")
 
             return ToolResult(
-                output=f"✅ 成功在 {path} 的第 {insert_line} 行之后插入了代码！",
-                log_content=f"➕ 在 {path} 插入内容",
-            )
+                output=f"✅ 成功在 {path} 的第 {insert_line} 行之后插入了代码！"
+            ).with_log(f"➕ 在 {path} 插入内容")
 
         elif command == "undo":
             old_content = self._history.get(session_id, {}).get(path)
@@ -340,10 +341,8 @@ class FileEditorToolkit(BaseToolkit):
 
             await fs_executor.write_raw_file(path, old_content)
             return ToolResult(
-                output=f"✅ 文件 {path} 已成功回滚到上一次的状态！",
-                log_content=f"⏪ 撤销文件 {path} 的修改",
-            )
+                output=f"✅ 文件 {path} 已成功回滚到上一次的状态！"
+            ).with_log(f"⏪ 撤销文件 {path} 的修改")
 
         else:
             raise ValueError(f"未知指令: {command}")
-

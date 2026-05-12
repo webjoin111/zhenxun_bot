@@ -1,10 +1,10 @@
 from typing import Any
 
 from zhenxun.services.ai.memory.scope import MemoryScope
-from zhenxun.services.ai.tools.core.context import RunContext
-from zhenxun.services.ai.tools.core.decorators import silent, toolkit_tool
+from zhenxun.services.ai.run import Inject, RunContext
+from zhenxun.services.ai.tools.core.decorators import silent, tool
 from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
-from zhenxun.services.ai.types.tools import ToolResult
+from zhenxun.services.ai.tools.models import ToolResult
 from zhenxun.services.log import logger
 
 
@@ -27,7 +27,7 @@ class MemoryManagementToolkit(BaseToolkit):
         super().__init__(**kwargs)
         self.memory_scope = memory_scope
 
-    @toolkit_tool(
+    @tool(
         name="save_memory",
         description="保存关于用户的重要设定、偏好或事实到长期记忆中。",
     )
@@ -40,12 +40,11 @@ class MemoryManagementToolkit(BaseToolkit):
         logger.info(
             f"[Agentic Memory] AI 主动存入记忆: {content} (重要性: {importance})"
         )
-        return ToolResult(
-            output=f"记忆已成功保存。唯一ID: {record.id}",
-            log_content=f"🧠 主动保存记忆: {content}",
+        return ToolResult(output=f"记忆已成功保存。唯一ID: {record.id}").with_log(
+            f"🧠 主动保存记忆: {content}"
         )
 
-    @toolkit_tool(
+    @tool(
         name="search_memory",
         description="在长期记忆中主动检索关于用户的设定和事实。支持自然语言模糊搜索。可通过 filters 进行元数据的精确匹配（例如：{'source': 'web_reader'}）。",
     )
@@ -65,7 +64,7 @@ class MemoryManagementToolkit(BaseToolkit):
         ]
         return ToolResult(output="检索到的记忆如下：\n" + "\n".join(results))
 
-    @toolkit_tool(
+    @tool(
         name="delete_memory",
         description="根据记忆的唯一ID删除已经作废或过期的用户记忆。",
     )
@@ -76,30 +75,33 @@ class MemoryManagementToolkit(BaseToolkit):
             logger.info(f"[Agentic Memory] AI 主动删除记忆: {record_id}")
             return ToolResult(output=f"记忆 {record_id} 删除成功。")
         return ToolResult(
-            output=f"删除失败：未找到ID为 {record_id} 的记忆。", is_error=True
-        )
+            output=f"删除失败：未找到ID为 {record_id} 的记忆。"
+        ).as_error()
 
-    @toolkit_tool(
+    @tool(
         name="read_url_to_memory",
         description="读取指定的 URL 网页内容，并将其持久化存入长期记忆数据库中。存入后，你可以在后续任务中通过 search_memory 检索该网页的知识。",
     )
     @silent()
     async def read_url_to_memory(
-        self, url: str, context: RunContext, tags: dict[str, str] | None = None
+        self,
+        url: str,
+        context: RunContext,
+        ui: Inject.UI,
+        tags: dict[str, str] | None = None,
     ) -> ToolResult:
-        await context.emit(f"🌐 正在拉取网页以建立长期记忆: {url}...")
+        await ui.send_text(f"🌐 正在拉取网页以建立长期记忆: {url}...")
         from zhenxun.services.ai.knowledge.readers import get_reader_for_url
 
         reader = get_reader_for_url(url)
         if not reader:
-            return ToolResult(output="该 URL 格式暂不支持读取。", is_error=True)
+            return ToolResult(output="该 URL 格式暂不支持读取。").as_error()
 
         doc = await reader.read_async(url)
         if not doc:
             return ToolResult(
-                output="网页拉取或解析失败，目标网站可能设置了防爬虫机制或无法访问。",
-                is_error=True,
-            )
+                output="网页拉取或解析失败，目标网站可能设置了防爬虫机制或无法访问。"
+            ).as_error()
 
         meta = {"source": "web_reader", "url": url}
         if tags:
@@ -109,6 +111,5 @@ class MemoryManagementToolkit(BaseToolkit):
 
         logger.info(f"[Agentic Memory] AI 将网页存入记忆: {url}")
         return ToolResult(
-            output=f"网页阅读成功并已入库！提取了 {len(doc.content)} 个字符。记忆 ID: {record.id}",
-            log_content=f"🌐 已将网页存入长期记忆: {url}",
-        )
+            output=f"网页阅读成功并已入库！提取了 {len(doc.content)} 个字符。记忆 ID: {record.id}"
+        ).with_log(f"🌐 已将网页存入长期记忆: {url}")

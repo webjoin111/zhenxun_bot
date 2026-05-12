@@ -2,17 +2,18 @@ import asyncio
 from collections.abc import Callable
 import json
 import re
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
-from pydantic import AnyUrl, BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from zhenxun.configs.path_config import DATA_PATH
-from zhenxun.services.ai.protocols import ToolExecutable, ToolProvider
-from zhenxun.services.ai.tools.providers.context_resource import (
-    PromptProvider,
-    ResourceProvider,
-    context_resource_manager,
+from zhenxun.services.ai.protocols.tool import (
+    ToolExecutable,
+    ToolProvider,
+    ToolResolvable,
 )
+from zhenxun.services.ai.sandbox.models import EnvSetupConfig
+from zhenxun.services.ai.tools.models import ResolvedToolPayload
 from zhenxun.services.ai.tools.providers.mcp.toolkit import MCPToolkit
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_dump, model_validate
@@ -22,31 +23,44 @@ MCP_PATH = DATA_PATH / "ai" / "mcp.json"
 
 class MCPServerConfig(BaseModel):
     transport: Literal["stdio", "sse", "streamable-http", "sandbox_proxy"] = Field(
-        default="stdio", description="传输协议"
+        default="stdio"
     )
-    url: str | None = Field(default=None, description="SSE/HTTP URL")
-    timeout: int = Field(default=30, description="请求超时时间(秒)")
+    """传输协议类型：stdio / sse / streamable-http / sandbox_proxy"""
+    url: str | None = Field(default=None)
+    """远端地址（用于 sse 或 streamable-http）"""
+    timeout: int = Field(default=30)
+    """请求超时时间(秒)"""
     command: str | None = None
+    """启动命令（用于 stdio 或 sandbox_proxy）"""
     args: list[str] = Field(default_factory=list)
+    """命令参数列表"""
     env: dict[str, str] | None = None
-    cwd: str | None = Field(default=None, description="进程的工作目录")
-    install_command: str | None = Field(
-        default=None, description="首次运行前的安装/预热命令"
-    )
+    """启动子进程的环境变量（可选）"""
+    cwd: str | None = Field(default=None)
+    """进程的工作目录"""
+    install_command: str | None = Field(default=None)
+    """首次运行前的安装/预热命令"""
+    isolation: Literal["shared", "per_session"] = Field(default="shared")
+    """会话隔离级别"""
     description: str | None = None
-    trust: bool = Field(default=True, description="是否信任此服务器")
-    enabled: bool = Field(default=True, description="是否全局启用")
-    admin_level: int = Field(default=0, description="执行该服务器工具所需的群管等级")
-    tools_meta: dict[str, dict[str, Any]] = Field(
-        default_factory=dict, description="特定工具的细粒度权限与经济配置"
-    )
+    """服务描述信息（用于配置可读性与展示）"""
+    enabled: bool = Field(default=True)
+    """是否全局启用"""
+    admin_level: int = Field(default=0)
+    """执行该服务器工具所需的群管等级"""
+    tools_meta: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    """特定工具的细粒度权限与经济配置"""
+    forward_bot_context: bool = Field(default=False)
+    """是否将 Bot 会话的 User/Group/Platform 映射为 Header 穿透至服务端"""
+    sandbox_env_setup: EnvSetupConfig | None = Field(default=None)
+    """沙箱环境装配配置（用于 sandbox_proxy 自动处理依赖）"""
 
 
 class MCPToolsConfig(BaseModel):
     mcpServers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
 
-class GlobalMCPProvider(ToolProvider, PromptProvider, ResourceProvider):
+class GlobalMCPProvider(ToolProvider):
     def __init__(self):
         self._config: MCPToolsConfig | None = None
         self._toolkits: dict[str, MCPToolkit] = {}
@@ -93,7 +107,7 @@ class GlobalMCPProvider(ToolProvider, PromptProvider, ResourceProvider):
             self._save_config()
         if tk := self._toolkits.pop(name, None):
             await tk.close()
-        logger.info(f"🛑 MCP 代理 '{name}' 已注销并销毁所有连接")
+        logger.debug(f"🛑 MCP 代理 '{name}' 已注销并销毁所有连接")
 
     def _save_config(self) -> None:
         """将当前配置持久化到 JSON 文件"""
@@ -174,6 +188,8 @@ class GlobalMCPProvider(ToolProvider, PromptProvider, ResourceProvider):
 
     def _setup_toolkit(self, name: str, conf: MCPServerConfig) -> None:
         """辅助方法：装载单个 MCP Toolkit"""
+        clean_name = re.sub(r"[^a-zA-Z0-9]", "_", name)
+        prefix = f"mcp_{clean_name}_"
         metadata: dict[str, dict[str, Any]] = {}
         if conf.admin_level > 0:
             metadata["*"] = {"admin_level": conf.admin_level}
@@ -182,6 +198,7 @@ class GlobalMCPProvider(ToolProvider, PromptProvider, ResourceProvider):
                 metadata.setdefault(k, {}).update(v)
         self._toolkits[name] = MCPToolkit(
             server_name=name,
+            prefix=prefix,
             transport=conf.transport,
             command=conf.command,
             args=conf.args,
@@ -189,11 +206,13 @@ class GlobalMCPProvider(ToolProvider, PromptProvider, ResourceProvider):
             env=conf.env,
             cwd=conf.cwd,
             install_command=conf.install_command,
+            isolation=conf.isolation,
             timeout=conf.timeout,
-            trust=conf.trust,
             tool_metadata=metadata,
             header_provider=self.header_provider,
             env_provider=self.env_provider,
+            forward_bot_context=conf.forward_bot_context,
+            sandbox_env_setup=conf.sandbox_env_setup,
         )
 
     async def shutdown(self):
@@ -249,16 +268,17 @@ class GlobalMCPProvider(ToolProvider, PromptProvider, ResourceProvider):
             tasks = []
             for s_name in servers_to_query:
                 if tk := self._toolkits.get(s_name):
-                    clean_name = re.sub(r"[^a-zA-Z0-9]", "_", s_name)
-                    prefix = f"mcp_{clean_name}_"
-                    tasks.append(tk.prefixed(prefix).get_tools())
+                    tasks.append(tk.get_tools())
 
             if tasks:
                 import asyncio
 
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 for res in results:
-                    if isinstance(res, list):
+                    if isinstance(res, dict):
+                        for name, t in res.items():
+                            all_tools[name] = t
+                    elif isinstance(res, list):
                         for t in res:
                             all_tools[t.name] = t
                     elif isinstance(res, Exception):
@@ -274,82 +294,64 @@ class GlobalMCPProvider(ToolProvider, PromptProvider, ResourceProvider):
         _ = name, config
         return None
 
-    async def get_prompt(self, name: str, **kwargs: Any) -> str | None:
-        """通过 MCP 协议向所有启用的服务器请求 Prompt"""
-        if not self._config:
-            await self.initialize()
 
-        if not self._config:
-            return None
+class MCPSource(BaseModel):
+    """显式定义的 MCP 工具源 (动态解析器)"""
 
-        arguments = {k: str(v) for k, v in kwargs.items()} if kwargs else None
-        for s_name, config in self._config.mcpServers.items():
-            if not config.enabled:
-                continue
-            tk = self._toolkits.get(s_name)
-            if not tk:
-                continue
-            session = await tk.get_session()
-            if not session:
-                continue
-            try:
-                result = await session.get_prompt(name, arguments=arguments)
-                text_parts = []
-                if getattr(result, "description", None):
-                    text_parts.append(f"Description: {result.description}")
+    server_name: str | None = None
+    """目标 MCP 服务名（走全局注册表模式时使用）"""
+    namespace: str | None = None
+    """可选命名空间标识（用于上层路由或分组）"""
+    config: MCPServerConfig | None = None
+    """内联临时配置 (MCPServerConfig 实例)"""
 
-                for msg in getattr(result, "messages", []):
-                    role_val = getattr(msg, "role", "unknown")
-                    role = (
-                        getattr(role_val, "value", str(role_val))
-                        if not isinstance(role_val, str)
-                        else role_val
-                    )
-                    content = getattr(msg, "content", msg)
-                    text = getattr(content, "text", "")
-                    if isinstance(content, dict):
-                        text = content.get("text", text)
-                    if text:
-                        text_parts.append(f"[{role}]: {text}")
-                return "\n".join(text_parts)
-            except Exception:
-                pass
-        return None
+    def __hash__(self):
+        return hash((self.server_name, self.namespace))
 
-    async def read_resource(self, uri: str, **kwargs: Any) -> str | None:
-        """通过 MCP 协议向所有启用的服务器读取 Resource"""
-        if not self._config:
-            await self.initialize()
+    @model_validator(mode="after")
+    def validate_source(self) -> "MCPSource":
+        if not self.server_name and not self.config:
+            raise ValueError("MCPSource 必须提供 server_name 或 config 其中之一")
+        return self
 
-        if not self._config:
-            return None
+    async def resolve(self, context: Any | None = None) -> Any:
+        tools = []
+        if self.config:
+            import uuid
 
-        for s_name, config in self._config.mcpServers.items():
-            if not config.enabled:
-                continue
-            tk = self._toolkits.get(s_name)
-            if not tk:
-                continue
-            session = await tk.get_session()
-            if not session:
-                continue
-            try:
-                result = await session.read_resource(AnyUrl(uri))
-                text_parts = []
-                for content in getattr(result, "contents", []):
-                    text = getattr(content, "text", "")
-                    if isinstance(content, dict):
-                        text = content.get("text", text)
-                    if text:
-                        text_parts.append(text)
-                return "\n\n".join(text_parts)
-            except Exception:
-                pass
-        return None
+            temp_server_name = self.server_name or f"inline_mcp_{uuid.uuid4().hex[:8]}"
+            inline_toolkit = MCPToolkit(
+                server_name=temp_server_name,
+                transport=self.config.transport,
+                command=self.config.command,
+                args=self.config.args,
+                url=self.config.url,
+                env=self.config.env,
+                cwd=self.config.cwd,
+                install_command=self.config.install_command,
+                isolation=self.config.isolation,
+                timeout=self.config.timeout,
+                tool_metadata=self.config.tools_meta,
+                forward_bot_context=self.config.forward_bot_context,
+                sandbox_env_setup=self.config.sandbox_env_setup,
+            )
+            payload = await inline_toolkit.resolve(context)
+            payload.toolkits.insert(0, inline_toolkit)
+            return payload
+        else:
+            assert self.server_name is not None
+            server_tools = await mcp_provider.get_tools_for_server(self.server_name)
+            for t in server_tools.values():
+                if hasattr(t, "resolve"):
+                    p = await cast(ToolResolvable, t).resolve(context)
+                    if p:
+                        tools.extend(p.tools)
+                else:
+                    tools.append(t)
+
+            return ResolvedToolPayload(tools=tools)
 
 
 mcp_provider = GlobalMCPProvider()
-context_resource_manager.register_prompt_provider(mcp_provider)
-context_resource_manager.register_resource_provider(mcp_provider)
 
-__all__ = ["GlobalMCPProvider", "mcp_provider"]
+__all__ = ["GlobalMCPProvider", "MCPSource", "mcp_provider"]

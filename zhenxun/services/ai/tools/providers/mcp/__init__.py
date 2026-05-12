@@ -1,3 +1,3 @@
-from .provider import GlobalMCPProvider, mcp_provider
+from .provider import GlobalMCPProvider, MCPSource, mcp_provider
 
-__all__ = ["GlobalMCPProvider", "mcp_provider"]
+__all__ = ["GlobalMCPProvider", "MCPSource", "mcp_provider"]

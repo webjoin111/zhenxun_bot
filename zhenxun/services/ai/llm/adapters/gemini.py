@@ -4,41 +4,46 @@ Gemini API 适配器
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-from zhenxun.services.ai.types.configs import LLMEmbeddingConfig
-from zhenxun.services.ai.types.exceptions import LLMErrorCode, LLMException
-from zhenxun.services.ai.types.messages import LLMMessage, RerankResult, SystemMessage
-from zhenxun.services.ai.types.tools import BasePlatformTool, ToolChoice
-from zhenxun.services.log import logger
-
-from ..config.generation import ResponseFormat
-from .base import BaseAdapter, RequestData, ResponseData
-from .components.gemini import (
-    GeminiConfigMapper,
-    GeminiMessageConverter,
-    GeminiResponseParser,
-    GeminiToolSerializer,
+from .base import BaseAdapter
+from .handlers.gemini_handlers import (
+    GeminiAudioHandler,
+    GeminiEmbeddingHandler,
+    GeminiImageHandler,
+    GeminiTextHandler,
 )
 
 if TYPE_CHECKING:
-    from ..config.generation import LLMGenerationConfig
+    from zhenxun.services.ai.core.configs import GenerationConfig
+
     from ..service import LLMModel
 
 
 class GeminiAdapter(BaseAdapter):
     """Gemini API 适配器"""
 
+    def __init__(self):
+        """初始化 Gemini 适配器并挂载各模态处理器。"""
+        super().__init__()
+        self.text_handler = GeminiTextHandler()
+        self.image_handler = GeminiImageHandler()
+        self.embedding_handler = GeminiEmbeddingHandler()
+        self.audio_handler = GeminiAudioHandler()
+
     @property
     def log_sanitization_context(self) -> str:
+        """返回 Gemini 请求日志清洗上下文。"""
         return "gemini_request"
 
     @property
     def api_type(self) -> str:
+        """适配器主类型标识。"""
         return "gemini"
 
     @property
     def supported_api_types(self) -> list[str]:
+        """当前适配器支持的 API 类型列表。"""
         return ["gemini"]
 
     def get_base_headers(self, api_key: str) -> dict[str, str]:
@@ -51,311 +56,8 @@ class GeminiAdapter(BaseAdapter):
 
         return headers
 
-    async def prepare_advanced_request(
-        self,
-        model: LLMModel,
-        api_key: str,
-        messages: list[LLMMessage],
-        config: LLMGenerationConfig | None = None,
-        tools: list[Any] | None = None,
-        tool_choice: str | dict[str, Any] | ToolChoice | None = None,
-    ) -> RequestData:
-        """准备高级请求"""
-        effective_config = config if config is not None else model._generation_config
-
-        has_client_tool = False
-        has_server_tool = False
-        if tools:
-            for tool in tools:
-                if (
-                    isinstance(tool, BasePlatformTool)
-                    and tool.execution_side == "server"
-                ):
-                    has_server_tool = True
-                elif hasattr(tool, "get_definition"):
-                    has_client_tool = True
-
-        has_function_tools = False
-        if tools:
-            has_function_tools = any(hasattr(tool, "get_definition") for tool in tools)
-
-        is_structured = False
-        if effective_config and effective_config.output:
-            if (
-                effective_config.output.response_schema
-                or effective_config.output.response_format == ResponseFormat.JSON
-                or effective_config.output.response_mime_type == "application/json"
-            ):
-                is_structured = True
-
-        if (has_function_tools or is_structured) and effective_config:
-            if effective_config.reasoning is None:
-                from ..config.generation import ReasoningConfig
-
-                effective_config.reasoning = ReasoningConfig()
-
-            if (
-                effective_config.reasoning.budget_tokens is None
-                and effective_config.reasoning.effort is None
-            ):
-                reason_desc = "工具调用" if has_function_tools else "结构化输出"
-                logger.debug(
-                    f"检测到{reason_desc}，自动为模型 {model.model_name} 开启思维链增强"
-                )
-                effective_config.reasoning.budget_tokens = -1
-
-        endpoint = self._get_gemini_endpoint(model, effective_config)
-        url = self.get_api_url(model, endpoint)
-        headers = self.get_base_headers(api_key)
-
-        converter = GeminiMessageConverter()
-        system_instruction_parts: list[dict[str, Any]] | None = None
-        for msg in messages:
-            if isinstance(msg, SystemMessage):
-                if isinstance(msg.content, str):
-                    system_instruction_parts = [{"text": msg.content}]
-                elif isinstance(msg.content, list):
-                    system_instruction_parts = [
-                        await converter.convert_part(part) for part in msg.content
-                    ]
-                continue
-
-        gemini_contents = await converter.convert_messages_async(messages)
-
-        body: dict[str, Any] = {"contents": gemini_contents}
-
-        if system_instruction_parts:
-            body["systemInstruction"] = {"parts": system_instruction_parts}
-
-        all_tools_for_request = []
-        has_user_functions = False
-        if tools:
-            from zhenxun.services.ai.protocols import ToolExecutable
-
-            function_tools: list[ToolExecutable] = []
-            platform_tools_added = set()
-
-            for tool in tools:
-                if isinstance(tool, BasePlatformTool):
-                    declaration = tool.get_tool_declaration()
-                    if declaration:
-                        for key, value in declaration.items():
-                            if key == "url_context":
-                                continue
-                            if key not in platform_tools_added:
-                                all_tools_for_request.append({key: value})
-                                platform_tools_added.add(key)
-                elif hasattr(tool, "get_definition"):
-                    function_tools.append(tool)
-
-            if function_tools:
-                import asyncio
-
-                definition_tasks = [
-                    executable.get_definition() for executable in function_tools
-                ]
-                results = await asyncio.gather(*definition_tasks)
-                tool_definitions = [td for td in results if td is not None]
-
-                serializer = GeminiToolSerializer()
-                function_declarations = serializer.serialize_tools(tool_definitions)
-
-                if function_declarations:
-                    all_tools_for_request.append(
-                        {"functionDeclarations": function_declarations}
-                    )
-                    has_user_functions = True
-
-        if all_tools_for_request:
-            body["tools"] = all_tools_for_request
-
-        tool_config_updates: dict[str, Any] = {}
-        if (
-            effective_config
-            and effective_config.custom_params
-            and "user_location" in effective_config.custom_params
-        ):
-            tool_config_updates["retrievalConfig"] = {
-                "latLng": effective_config.custom_params["user_location"]
-            }
-
-        explicit_include = None
-        if effective_config and effective_config.tool_config:
-            explicit_include = (
-                effective_config.tool_config.includeServerSideToolInvocations
-            )
-
-        should_include = False
-        if explicit_include is not None:
-            should_include = explicit_include
-        elif has_client_tool and has_server_tool:
-            should_include = True
-            logger.info(
-                "检测到内置工具与本地工具混合调用，框架自动开启 includeServerSideToolInvocations"
-            )
-
-        if should_include:
-            tool_config_updates["includeServerSideToolInvocations"] = True
-
-        if tool_config_updates:
-            body.setdefault("toolConfig", {}).update(tool_config_updates)
-
-        converted_params: dict[str, Any] = {}
-        if effective_config:
-            converted_params = self.convert_generation_config(effective_config, model)
-
-        if converted_params:
-            if "toolConfig" in converted_params:
-                tool_config_payload = converted_params.pop("toolConfig")
-                fc_config = tool_config_payload.get("functionCallingConfig")
-                should_apply_fc = has_user_functions or (
-                    fc_config and fc_config.get("mode") == "NONE"
-                )
-                if should_apply_fc:
-                    body.setdefault("toolConfig", {}).update(tool_config_payload)
-                elif fc_config and fc_config.get("mode") != "AUTO":
-                    logger.debug(
-                        "Gemini: 忽略针对纯内置工具的 functionCallingConfig (API限制)"
-                    )
-
-            if "safetySettings" in converted_params:
-                body["safetySettings"] = converted_params.pop("safetySettings")
-
-            if converted_params:
-                body["generationConfig"] = converted_params
-
-        return RequestData(url=url, headers=headers, body=body)
-
-    def apply_config_override(
-        self,
-        model: LLMModel,
-        body: dict[str, Any],
-        config: LLMGenerationConfig | None = None,
-    ) -> dict[str, Any]:
-        """应用配置覆盖 - Gemini 不需要额外的配置覆盖"""
-        return body
-
     def _get_gemini_endpoint(
-        self, model: LLMModel, config: LLMGenerationConfig | None = None
+        self, model: LLMModel, config: GenerationConfig | None = None
     ) -> str:
         """返回Gemini generateContent 端点"""
         return f"/v1beta/models/{model.model_name}:generateContent"
-
-    def parse_response(
-        self,
-        model: LLMModel,
-        response_json: dict[str, Any],
-        is_advanced: bool = False,
-    ) -> ResponseData:
-        """解析 Gemini API 响应"""
-        _ = model, is_advanced
-        parser = GeminiResponseParser()
-        return parser.parse(response_json)
-
-    def prepare_embedding_request(
-        self,
-        model: LLMModel,
-        api_key: str,
-        texts: list[str],
-        config: LLMEmbeddingConfig,
-    ) -> RequestData:
-        """准备文本嵌入请求"""
-        api_model_name = model.model_name
-        if not api_model_name.startswith("models/"):
-            api_model_name = f"models/{api_model_name}"
-
-        if not model.api_base:
-            raise LLMException(
-                f"模型 {model.model_name} 的 api_base 未设置",
-                code=LLMErrorCode.CONFIGURATION_ERROR,
-            )
-
-        base_url = model.api_base.rstrip("/")
-        url = f"{base_url}/v1beta/{api_model_name}:batchEmbedContents"
-        headers = self.get_base_headers(api_key)
-
-        requests_payload = []
-        for text_content in texts:
-            safe_text = text_content if text_content else " "
-            request_item: dict[str, Any] = {
-                "model": api_model_name,
-                "content": {"parts": [{"text": safe_text}]},
-            }
-
-            if config.task_type:
-                request_item["task_type"] = str(config.task_type).upper()
-            if config.title:
-                request_item["title"] = config.title
-            if config.output_dimensionality:
-                request_item["output_dimensionality"] = config.output_dimensionality
-
-            requests_payload.append(request_item)
-
-        body = {"requests": requests_payload}
-        return RequestData(url=url, headers=headers, body=body)
-
-    def parse_embedding_response(
-        self, response_json: dict[str, Any]
-    ) -> list[list[float]]:
-        """解析文本嵌入响应"""
-        try:
-            embeddings_data = response_json["embeddings"]
-            return [item["values"] for item in embeddings_data]
-        except KeyError as e:
-            logger.error(f"解析Gemini嵌入响应时缺少键: {e}. 响应: {response_json}")
-            raise LLMException(
-                "Gemini嵌入响应格式错误",
-                code=LLMErrorCode.RESPONSE_PARSE_ERROR,
-                details={"error": str(e)},
-            )
-        except Exception as e:
-            logger.error(
-                f"解析Gemini嵌入响应时发生未知错误: {e}. 响应: {response_json}"
-            )
-            raise LLMException(
-                f"解析Gemini嵌入响应失败: {e}",
-                code=LLMErrorCode.RESPONSE_PARSE_ERROR,
-                cause=e,
-            )
-
-    def validate_embedding_response(self, response_json: dict[str, Any]) -> None:
-        """验证嵌入响应"""
-        super().validate_embedding_response(response_json)
-        if "embeddings" not in response_json or not isinstance(
-            response_json["embeddings"], list
-        ):
-            raise LLMException(
-                "Gemini嵌入响应缺少'embeddings'字段或格式不正确",
-                code=LLMErrorCode.RESPONSE_PARSE_ERROR,
-                details=response_json,
-            )
-        for item in response_json["embeddings"]:
-            if "values" not in item:
-                raise LLMException(
-                    "Gemini嵌入响应的条目中缺少'values'字段",
-                    code=LLMErrorCode.RESPONSE_PARSE_ERROR,
-                    details=response_json,
-                )
-
-    def prepare_rerank_request(
-        self,
-        model: LLMModel,
-        api_key: str,
-        query: str,
-        documents: list[str | dict[str, str]],
-        top_n: int,
-    ) -> RequestData:
-        """准备重排请求"""
-        raise NotImplementedError("Gemini API 暂不支持直接的 Rerank 调用")
-
-    def parse_rerank_response(
-        self, response_json: dict[str, Any]
-    ) -> list["RerankResult"]:
-        """解析重排响应"""
-        raise NotImplementedError("Gemini API 暂不支持直接的 Rerank 调用")
-
-    def convert_generation_config(
-        self, config: LLMGenerationConfig, model: LLMModel
-    ) -> dict[str, Any]:
-        mapper = GeminiConfigMapper()
-        return mapper.map_config(config, model.model_detail, model.capabilities)

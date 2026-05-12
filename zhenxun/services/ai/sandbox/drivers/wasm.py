@@ -9,7 +9,7 @@ import aiofiles
 
 from zhenxun.configs.config import Config
 from zhenxun.configs.path_config import DATA_PATH
-from zhenxun.services.ai.types.sandbox import (
+from zhenxun.services.ai.sandbox.models import (
     SandboxExecutionResult,
     SandboxSecurityProfile,
 )
@@ -287,3 +287,4 @@ class WasmDriver(BaseSandboxDriver, SupportsFileSystem):
     async def close(self) -> None:
         shutil.rmtree(self.workspace, ignore_errors=True)
         logger.info(f"[WasmDriver] 极速沙箱已销毁回收 (Session: {self.session_id})")
+

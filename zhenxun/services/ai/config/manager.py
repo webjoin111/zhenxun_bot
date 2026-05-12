@@ -13,39 +13,35 @@ PROVIDERS_CONFIG_KEY = "PROVIDERS"
 
 
 def get_ai_config():
-    """获取真寻配置管理器中的 AI 原始配置组"""
+    """获取 AI 配置组"""
     return Config.get(AI_CONFIG_GROUP)
 
 
 def get_default_providers() -> list[dict[str, Any]]:
-    """获取默认的提供商配置"""
+    """获取默认提供商配置列表。"""
     return [
         {
             "name": "DeepSeek",
-            "api_key": "YOUR_ARK_API_KEY",
+            "api_key": "YOUR_API_KEY",
             "api_base": "https://api.deepseek.com",
-            "api_type": "openai",
+            "api_type": "deepseek",
             "models": [
                 {
-                    "model_name": "deepseek-chat",
-                    "max_tokens": 4096,
-                    "temperature": 0.7,
+                    "model_name": "deepseek-v4-pro",
                 },
                 {
-                    "model_name": "deepseek-reasoner",
+                    "model_name": "deepseek-v4-flash",
                 },
             ],
         },
         {
-            "name": "ARK",
+            "name": "Doubao",
             "api_key": "YOUR_ARK_API_KEY",
-            "api_base": "https://ark.cn-beijing.volces.com",
-            "api_type": "ark",
+            "api_base": "https://ark.cn-beijing.volces.com/api",
+            "api_type": "doubao",
             "models": [
-                {"model_name": "deepseek-r1-250528"},
                 {"model_name": "doubao-seed-1-6-250615"},
                 {"model_name": "doubao-seed-1-6-flash-250615"},
-                {"model_name": "doubao-seed-1-6-thinking-250615"},
             ],
         },
         {
@@ -59,9 +55,9 @@ def get_default_providers() -> list[dict[str, Any]]:
         },
         {
             "name": "GLM",
-            "api_key": "YOUR_ARK_API_KEY",
+            "api_key": "YOUR_API_KEY",
             "api_base": "https://open.bigmodel.cn",
-            "api_type": "zhipu",
+            "api_type": "glm",
             "models": [
                 {"model_name": "glm-4-flash"},
                 {"model_name": "glm-4-plus"},
@@ -70,7 +66,6 @@ def get_default_providers() -> list[dict[str, Any]]:
         {
             "name": "Gemini",
             "api_key": [
-                "AIzaSy*****************************",
                 "AIzaSy*****************************",
                 "AIzaSy*****************************",
             ],
@@ -96,12 +91,111 @@ def get_default_providers() -> list[dict[str, Any]]:
     ]
 
 
+def register_llm_configs():
+    """注册 LLM 服务的配置项"""
+    logger.info("注册 LLM 服务的配置项")
+
+    llm_config = LLMConfig()
+
+    Config.add_plugin_config(
+        AI_CONFIG_GROUP,
+        "default_model_name",
+        llm_config.default_model_name,
+        help="LLM服务全局默认使用的模型名称 (格式: ProviderName/ModelName)",
+        type=str,
+    )
+    Config.add_plugin_config(
+        AI_CONFIG_GROUP,
+        "client_settings",
+        model_dump(llm_config.client_settings),
+        help=(
+            "LLM客户端高级设置。\n"
+            "包含: timeout(超时秒数), max_retries(重试次数), "
+            "retry_delay(重试延迟), structured_retries(结构化生成重试), proxy(代理)"
+        ),
+        type=dict,
+    )
+    Config.add_plugin_config(
+        AI_CONFIG_GROUP,
+        "debug_log",
+        {"show_tools": True, "show_schema": True, "show_safety": True},
+        help=(
+            "LLM日志详情开关。示例: {'show_tools': True, 'show_schema': False, "
+            "'show_safety': False}"
+        ),
+        type=dict,
+    )
+    Config.add_plugin_config(
+        AI_CONFIG_GROUP,
+        "gemini_safety_threshold",
+        "BLOCK_NONE",
+        help=(
+            "Gemini 安全过滤阈值 "
+            "(BLOCK_LOW_AND_ABOVE: 阻止低级别及以上, "
+            "BLOCK_MEDIUM_AND_ABOVE: 阻止中等级别及以上, "
+            "BLOCK_ONLY_HIGH: 只阻止高级别, "
+            "BLOCK_NONE: 不阻止)"
+        ),
+        type=str,
+    )
+
+    Config.add_plugin_config(
+        AI_CONFIG_GROUP,
+        "context_settings",
+        model_dump(llm_config.context_settings),
+        help=(
+            "智能上下文管理与压缩配置。\n"
+            "包含: enabled(总开关), enable_summarization(总结开关), use_structured_summarizer(结构化压缩), "
+            "summarization_model(总结模型), trigger_threshold(触发阈值比例)"
+        ),
+        type=dict,
+    )
+
+    Config.add_plugin_config(
+        AI_CONFIG_GROUP,
+        "MODEL_GROUPS",
+        {
+            "cheap_models": [
+                "Gemini/gemini-2.5-flash",
+                "Doubao/doubao-seed-1-6-250615",
+            ],
+        },
+        help=(
+            "虚拟模型路由组配置 (Virtual Router Groups)。\n"
+            "键为组名，值为模型名称或其它组名的列表。\n"
+            "使用 chat(model='cheap_models') 时系统将自动按列表顺序轮询和故障转移。"
+        ),
+        type=dict,
+    )
+
+    Config.add_plugin_config(
+        AI_CONFIG_GROUP,
+        PROVIDERS_CONFIG_KEY,
+        get_default_providers(),
+        help=(
+            "配置多个 AI 服务提供商及其模型信息。\n"
+            "注意：可以在特定模型配置下添加 'api_type' 以覆盖提供商的全局设置。\n"
+            "支持的 api_type 包括:\n"
+            "- 'openai': 标准 OpenAI 格式 (DeepSeek, SiliconFlow等)\n"
+            "- 'gemini': Google Gemini API\n"
+            "- 'glm': 智谱 AI (GLM)\n"
+            "- 'doubao': 字节跳动火山引擎 (Doubao)\n"
+            "- 'openrouter': OpenRouter 聚合平台\n"
+            "- 'openai_responses': 支持新版 responses 格式的 OpenAI 兼容接口\n"
+            "- 'smart': 智能路由模式 (主要用于第三方中转场景，自动根据模型名"
+            "分发请求到 openai 或 gemini)"
+        ),
+        default_value=[],
+        type=list[ProviderConfig],
+    )
+
+
 @lru_cache(maxsize=1)
 def get_llm_config() -> LLMConfig:
-    """获取 AI 配置单例对象"""
+    """获取 LLM 配置实例"""
     ai_config = get_ai_config()
-    raw_debug = ai_config.get("debug_log", False)
 
+    raw_debug = ai_config.get("debug_log", False)
     if isinstance(raw_debug, bool):
         debug_log_val = DebugLogOptions(
             show_tools=raw_debug, show_schema=raw_debug, show_safety=raw_debug
@@ -115,52 +209,85 @@ def get_llm_config() -> LLMConfig:
         "debug_log": debug_log_val,
         PROVIDERS_CONFIG_KEY: ai_config.get(PROVIDERS_CONFIG_KEY, []),
         "context_settings": ai_config.get("context_settings", {}),
+        "model_groups": ai_config.get("MODEL_GROUPS", {}),
     }
+
     return parse_as(LLMConfig, config_data)
 
 
-def register_ai_configs():
-    """向真寻系统注册 AI 模块的所有配置项"""
-    logger.info("注册 AI 模块全局配置项...")
-    default_conf = LLMConfig()
-
-    Config.add_plugin_config(AI_CONFIG_GROUP, "default_model_name", None, type=str)
-    Config.add_plugin_config(
-        AI_CONFIG_GROUP,
-        "client_settings",
-        model_dump(default_conf.client_settings),
-        type=dict,
-    )
-    Config.add_plugin_config(
-        AI_CONFIG_GROUP,
-        "debug_log",
-        model_dump(default_conf.debug_log),
-        type=dict,
-    )
-    Config.add_plugin_config(
-        AI_CONFIG_GROUP,
-        "context_settings",
-        model_dump(default_conf.context_settings),
-        type=dict,
-    )
-    Config.add_plugin_config(
-        AI_CONFIG_GROUP,
-        PROVIDERS_CONFIG_KEY,
-        get_default_providers(),
-        default_value=[],
-        type=list[ProviderConfig],
-    )
-
-
-def set_default_model(name: str | None) -> bool:
-    """设置全局默认模型"""
-    if name and not get_llm_config().validate_model_name(name):
-        return False
-    Config.set_config(AI_CONFIG_GROUP, "default_model_name", name, auto_save=True)
-    return True
-
-
 def get_gemini_safety_threshold() -> str:
-    """获取 Gemini 安全过滤阈值配置"""
+    """获取 Gemini 安全过滤阈值配置。"""
     ai_config = get_ai_config()
     return ai_config.get("gemini_safety_threshold", "BLOCK_MEDIUM_AND_ABOVE")
+
+
+def validate_llm_config() -> tuple[bool, list[str]]:
+    """验证 LLM 配置有效性并返回错误列表。"""
+    errors = []
+
+    try:
+        llm_config = get_llm_config()
+
+        if llm_config.client_settings.timeout <= 0:
+            errors.append("timeout 必须大于 0")
+
+        if llm_config.client_settings.max_retries < 0:
+            errors.append("max_retries 不能小于 0")
+
+        if llm_config.client_settings.retry_delay <= 0:
+            errors.append("retry_delay 必须大于 0")
+
+        if not llm_config.providers:
+            errors.append("至少需要配置一个 AI 服务提供商")
+        else:
+            provider_names = set()
+            for provider in llm_config.providers:
+                if provider.name in provider_names:
+                    errors.append(f"提供商名称重复: {provider.name}")
+                provider_names.add(provider.name)
+
+                if not provider.api_key:
+                    errors.append(f"提供商 {provider.name} 缺少 API Key")
+
+                if not provider.models:
+                    errors.append(f"提供商 {provider.name} 没有配置任何模型")
+                else:
+                    model_names = set()
+                    for model in provider.models:
+                        if model.model_name in model_names:
+                            errors.append(
+                                f"提供商 {provider.name} 中模型名称重复: "
+                                f"{model.model_name}"
+                            )
+                        model_names.add(model.model_name)
+
+        if llm_config.default_model_name:
+            if not llm_config.validate_model_name(llm_config.default_model_name):
+                errors.append(
+                    f"默认模型 {llm_config.default_model_name} 在配置中不存在"
+                )
+
+    except Exception as e:
+        errors.append(f"配置解析失败: {e!s}")
+
+    return len(errors) == 0, errors
+
+
+def set_default_model(provider_model_name: str | None) -> bool:
+    """设置默认模型名称"""
+    if provider_model_name:
+        llm_config = get_llm_config()
+        if not llm_config.validate_model_name(provider_model_name):
+            logger.error(f"模型 {provider_model_name} 在配置中不存在")
+            return False
+
+    Config.set_config(
+        AI_CONFIG_GROUP, "default_model_name", provider_model_name, auto_save=True
+    )
+
+    if provider_model_name:
+        logger.info(f"默认模型已设置为: {provider_model_name}")
+    else:
+        logger.info("默认模型已清除")
+
+    return True

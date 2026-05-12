@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 import re
 
-from zhenxun.services.ai.types.knowledge import Document
+from zhenxun.services.ai.knowledge.models import Document
 
 
 class ChunkingStrategy(ABC):
@@ -28,3 +28,4 @@ class ChunkingStrategy(ABC):
         meta_data["parent_id"] = original_doc.id
 
         return Document(name=original_doc.name, content=content, meta_data=meta_data)
+

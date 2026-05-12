@@ -2,9 +2,9 @@ import time
 from typing import Any
 import uuid
 
+from zhenxun.services.ai.memory.models import MemoryConfig, MemoryMatch, MemoryRecord
 from zhenxun.services.ai.memory.utils import compute_composite_score, join_scope_paths
 from zhenxun.services.ai.protocols.memory import StorageBackend
-from zhenxun.services.ai.types.memory import MemoryConfig, MemoryMatch, MemoryRecord
 from zhenxun.services.log import logger
 
 
@@ -88,7 +88,9 @@ class MemoryScope:
         if self.rerank_model and raw_results:
             from zhenxun.services.ai.llm.api import rerank
 
-            documents_to_rank: list[str | dict[str, str]] = [r.content for r, _ in raw_results]
+            documents_to_rank: list[str | dict[str, str]] = [
+                r.content for r, _ in raw_results
+            ]
             try:
                 reranked = await rerank(
                     query=query,

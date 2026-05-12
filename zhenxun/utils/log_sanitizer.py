@@ -122,8 +122,36 @@ def _sanitize_nonebot_message(message: Message) -> Message:
 
 def _sanitize_openai_response(response_json: dict) -> dict:
     """净化OpenAI兼容API的响应体。"""
+    from zhenxun.services.ai.config import (
+        DebugLogOptions,
+        get_llm_config,
+    )
+
+    debug_conf = get_llm_config().debug_log
+    if isinstance(debug_conf, bool):
+        debug_conf = DebugLogOptions(
+            show_tools=debug_conf, show_schema=debug_conf, show_safety=debug_conf
+        )
+
     try:
         sanitized_json = _recursive_sanitize_any(copy.deepcopy(response_json))
+
+        if "tools" in sanitized_json and not debug_conf.show_tools:
+            tools = sanitized_json["tools"]
+            if isinstance(tools, list):
+                tool_names = []
+                for t in tools:
+                    if isinstance(t, dict):
+                        name = None
+                        if "function" in t and isinstance(t["function"], dict):
+                            name = t["function"].get("name")
+                        if not name and "name" in t:
+                            name = t.get("name")
+                        tool_names.append(name or "unknown")
+                sanitized_json["tools"] = (
+                    f"<{len(tool_names)} tools hidden: {', '.join(tool_names)}>"
+                )
+
         if "choices" in sanitized_json and isinstance(sanitized_json["choices"], list):
             for choice in sanitized_json["choices"]:
                 if "message" in choice and isinstance(choice["message"], dict):
@@ -168,6 +196,12 @@ def _sanitize_openai_response(response_json: dict) -> dict:
                             image_url = part.get("image_url")
                             if isinstance(image_url, str):
                                 part["image_url"] = _truncate_base64_string(image_url)
+        if "output" in sanitized_json and isinstance(sanitized_json["output"], list):
+            for item in sanitized_json["output"]:
+                if isinstance(item, dict) and "encrypted_content" in item:
+                    content_val = item["encrypted_content"]
+                    if isinstance(content_val, str) and len(content_val) > 64:
+                        item["encrypted_content"] = f"[encrypted_content_omitted_len={len(content_val)}]"
         return sanitized_json
     except Exception:
         return response_json

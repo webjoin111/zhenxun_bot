@@ -5,8 +5,7 @@ LLM 核心基础设施模块
 """
 
 import asyncio
-from dataclasses import asdict, dataclass
-from enum import IntEnum
+from enum import Enum
 import json
 import os
 import time
@@ -15,11 +14,11 @@ from typing import Any
 import aiofiles
 import httpx
 import nonebot
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from zhenxun.configs.path_config import DATA_PATH
 from zhenxun.services.ai.config import ProviderConfig
-from zhenxun.services.ai.types.exceptions import LLMErrorCode, LLMException
+from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
 from zhenxun.services.log import logger
 from zhenxun.utils.user_agent import get_user_agent
 
@@ -36,7 +35,7 @@ class HttpClientConfig(BaseModel):
 
 
 class LLMHttpClient:
-    """LLM服务专用HTTP客户端"""
+    """[内部 API] LLM 服务专用异步 HTTP 客户端封装。"""
 
     def __init__(self, config: HttpClientConfig | None = None):
         self.config = config or HttpClientConfig()
@@ -95,15 +94,18 @@ class LLMHttpClient:
             )
         return self._client
 
-    async def post(self, url: str, **kwargs: Any) -> httpx.Response:
+    async def request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         client = await self._ensure_client_initialized()
         async with self._lock:
             self._active_requests += 1
         try:
-            return await client.post(url, **kwargs)
+            return await client.request(method, url, **kwargs)
         finally:
             async with self._lock:
                 self._active_requests -= 1
+
+    async def post(self, url: str, **kwargs: Any) -> httpx.Response:
+        return await self.request("POST", url, **kwargs)
 
     async def close(self):
         async with self._lock:
@@ -127,7 +129,7 @@ class LLMHttpClient:
 
 
 class LLMHttpClientManager:
-    """管理 LLMHttpClient 实例的工厂和池"""
+    """[内部 API] 负责管理与复用 LLMHttpClient 连接池。"""
 
     def __init__(self):
         self._clients: dict[tuple[int, str | None], LLMHttpClient] = {}
@@ -199,80 +201,47 @@ async def create_llm_http_client(
     return LLMHttpClient(config)
 
 
-class KeyStatus(IntEnum):
-    """用于排序和展示的密钥状态枚举"""
+class RouteHealthState(str, Enum):
+    """路由端点健康状态枚举 (L7)"""
 
-    DISABLED = 0
-    ERROR = 1
-    COOLDOWN = 2
-    WARNING = 3
-    HEALTHY = 4
-    UNUSED = 5
+    CLOSED = "CLOSED"
+    OPEN = "OPEN"
+    HALF_OPEN = "HALF_OPEN"
 
 
-@dataclass
-class KeyStats:
-    """单个API Key的详细状态和统计信息"""
+class KeyHealthStatus(BaseModel):
+    """单个 API Key 的详细状态信息 (L4)"""
 
+    status: str = "HEALTHY"
+    successes: int = 0
+    failures: int = 0
     cooldown_until: float = 0.0
-    success_count: int = 0
-    failure_count: int = 0
-    total_latency: float = 0.0
-    last_error_info: str | None = None
+    last_error: str | None = None
 
-    @property
-    def is_available(self) -> bool:
-        """检查Key当前是否可用"""
-        return time.time() >= self.cooldown_until
 
-    @property
-    def avg_latency(self) -> float:
-        """计算平均延迟"""
-        return (
-            self.total_latency / self.success_count if self.success_count > 0 else 0.0
-        )
+class RouteHealthStatus(BaseModel):
+    """单个模型路由端点的遥测状态信息 (L7)"""
 
-    @property
-    def success_rate(self) -> float:
-        """计算成功率"""
-        total = self.success_count + self.failure_count
-        return self.success_count / total * 100 if total > 0 else 100.0
+    state: RouteHealthState = RouteHealthState.CLOSED
+    cooldown_until: float = 0.0
+    success_rate: float = 100.0
+    successes: int = 0
+    failures: int = 0
+    latency_ema: float = 0.0
+    last_error: str | None = None
 
-    @property
-    def status(self) -> KeyStatus:
-        """根据当前统计数据动态计算状态"""
-        now = time.time()
-        cooldown_left = max(0, self.cooldown_until - now)
 
-        if cooldown_left > 31536000 - 60:
-            return KeyStatus.DISABLED
-        if cooldown_left > 0:
-            return KeyStatus.COOLDOWN
+class ProviderHealthStatus(BaseModel):
+    """单个提供商的健康状态 (L4)"""
 
-        total_calls = self.success_count + self.failure_count
-        if total_calls == 0:
-            return KeyStatus.UNUSED
+    api_keys: dict[str, KeyHealthStatus] = Field(default_factory=dict)
 
-        if self.success_rate < 70:
-            return KeyStatus.ERROR
 
-        if total_calls >= 5 and self.avg_latency > 15000:
-            return KeyStatus.WARNING
+class GlobalHealthState(BaseModel):
+    """全局 AI 遥测与健康状态基座"""
 
-        return KeyStatus.HEALTHY
-
-    @property
-    def suggested_action(self) -> str:
-        """根据状态给出建议操作"""
-        status_actions = {
-            KeyStatus.DISABLED: "更换Key",
-            KeyStatus.ERROR: "检查网络/重置",
-            KeyStatus.COOLDOWN: "等待/重置",
-            KeyStatus.WARNING: "观察",
-            KeyStatus.HEALTHY: "-",
-            KeyStatus.UNUSED: "-",
-        }
-        return status_actions.get(self.status, "未知")
+    providers: dict[str, ProviderHealthStatus] = Field(default_factory=dict)
+    routes: dict[str, RouteHealthStatus] = Field(default_factory=dict)
 
 
 class RetryConfig:
@@ -326,20 +295,20 @@ def _should_retry_llm_error(
     return False
 
 
-class KeyStatusStore:
-    """API Key 状态管理存储 - 支持持久化"""
+class HealthManager:
+    """全局 AI 健康与遥测管理器 (支持 L4 & L7 熔断)"""
 
     def __init__(self):
-        self._key_stats: dict[str, KeyStats] = {}
+        self.state = GlobalHealthState()
         self._provider_key_index: dict[str, int] = {}
         self._lock = asyncio.Lock()
-        self._file_path = DATA_PATH / "ai" / "key_status.json"
+        self._file_path = DATA_PATH / "ai" / "ai_health.json"
 
     async def initialize(self):
-        """从文件异步加载密钥状态，在应用启动时调用"""
+        """从文件异步加载遥测状态"""
         async with self._lock:
             if not self._file_path.exists():
-                logger.info("未找到密钥状态文件，将使用内存状态启动。")
+                logger.info("未找到遥测状态文件，将使用内存状态启动。")
                 return
 
             try:
@@ -347,26 +316,28 @@ class KeyStatusStore:
                 async with aiofiles.open(self._file_path, encoding="utf-8") as f:
                     content = await f.read()
                     if not content:
-                        logger.warning("密钥状态文件为空。")
                         return
-                    data = json.loads(content)
+                    from zhenxun.utils.pydantic_compat import parse_as
 
-                for key, stats_dict in data.items():
-                    self._key_stats[key] = KeyStats(**stats_dict)
-
-                logger.info(f"成功加载 {len(self._key_stats)} 个密钥的状态。")
+                    self.state = parse_as(GlobalHealthState, json.loads(content))
+                total_keys = sum(
+                    len(provider.api_keys) for provider in self.state.providers.values()
+                )
+                logger.info(f"成功加载 {total_keys} 个密钥的状态。")
 
             except json.JSONDecodeError:
-                logger.error(f"密钥状态文件 {self._file_path} 格式错误，无法解析。")
+                logger.error(f"遥测状态文件 {self._file_path} 格式错误，无法解析。")
             except Exception as e:
-                logger.error(f"加载密钥状态文件时发生错误: {e}", e=e)
+                logger.error(f"加载遥测状态文件时发生错误: {e}", e=e)
 
     async def _save_to_file_internal(self):
         """
         [内部方法] 将当前密钥状态安全地写入JSON文件。
         假定调用方已持有锁。
         """
-        data_to_save = {key: asdict(stats) for key, stats in self._key_stats.items()}
+        from zhenxun.utils.pydantic_compat import model_dump
+
+        data_to_save = model_dump(self.state)
 
         try:
             self._file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -386,24 +357,17 @@ class KeyStatusStore:
         """在应用关闭时安全地保存状态"""
         async with self._lock:
             await self._save_to_file_internal()
-        logger.info("KeyStatusStore 已在关闭前保存状态。")
+        logger.info("HealthManager 已在关闭前保存遥测状态。")
 
     async def get_next_available_key(
         self,
         provider_name: str,
         api_keys: list[str],
         exclude_keys: set[str] | None = None,
+        strict_mode: bool = False,
     ) -> str | None:
         """
         获取下一个可用的API密钥（轮询策略）
-
-        参数:
-            provider_name: 提供商名称。
-            api_keys: API密钥列表。
-            exclude_keys: 要排除的密钥集合。
-
-        返回:
-            str | None: 可用的API密钥，如果没有可用密钥则返回None。
         """
         if not api_keys:
             return None
@@ -411,60 +375,146 @@ class KeyStatusStore:
         exclude_keys = exclude_keys or set()
 
         async with self._lock:
+            provider_state = self.state.providers.setdefault(
+                provider_name, ProviderHealthStatus()
+            )
             for key in api_keys:
-                if key not in self._key_stats:
-                    self._key_stats[key] = KeyStats()
+                if key not in provider_state.api_keys:
+                    provider_state.api_keys[key] = KeyHealthStatus()
 
+            now = time.time()
             available_keys = [
                 key
                 for key in api_keys
-                if key not in exclude_keys and self._key_stats[key].is_available
+                if key not in exclude_keys
+                and provider_state.api_keys[key].cooldown_until <= now
             ]
 
             if not available_keys:
+                if strict_mode:
+                    return None
                 return api_keys[0]
 
             current_index = self._provider_key_index.get(provider_name, 0)
             selected_key = available_keys[current_index % len(available_keys)]
             self._provider_key_index[provider_name] = current_index + 1
 
-            total_usage = (
-                self._key_stats[selected_key].success_count
-                + self._key_stats[selected_key].failure_count
-            )
+            stats = provider_state.api_keys[selected_key]
+            total_usage = stats.successes + stats.failures
             logger.debug(
                 f"轮询选择API密钥: {self._get_key_id(selected_key)} "
                 f"(使用次数: {total_usage})"
             )
             return selected_key
 
-    async def record_success(self, api_key: str, latency: float):
-        """记录成功使用，并持久化"""
+    def is_route_healthy(self, route_name: str) -> bool:
+        """
+        [L7 熔断查询] 检查指定模型路由当前是否健康。
+        负责触发 OPEN -> HALF_OPEN 的状态流转。
+        """
+        stats = self.state.routes.get(route_name)
+        if not stats:
+            return True
+
+        if stats.state == RouteHealthState.CLOSED:
+            return True
+
+        if stats.state == RouteHealthState.OPEN:
+            if time.time() >= stats.cooldown_until:
+                stats.state = RouteHealthState.HALF_OPEN
+                logger.info(
+                    f"🔄 [L7 Router] 节点 '{route_name}' 冷却期结束，进入 HALF_OPEN 半开试探状态。"
+                )
+                return True
+            return False
+
+        if stats.state == RouteHealthState.HALF_OPEN:
+            return False
+
+        return True
+
+    async def record_route_success(self, route_name: str, latency: float):
+        """记录路由成功，恢复健康状态并更新 EMA 延迟"""
         async with self._lock:
-            stats = self._key_stats.setdefault(api_key, KeyStats())
-            stats.cooldown_until = 0.0
-            stats.success_count += 1
-            stats.total_latency += latency
-            stats.last_error_info = None
+            stats = self.state.routes.setdefault(route_name, RouteHealthStatus())
+            stats.successes += 1
+            total = stats.successes + stats.failures
+            stats.success_rate = (stats.successes / total) * 100
+
+            if stats.latency_ema == 0.0:
+                stats.latency_ema = latency
+            else:
+                stats.latency_ema = 0.2 * latency + 0.8 * stats.latency_ema
+
+            if stats.state != RouteHealthState.CLOSED:
+                logger.info(
+                    f"✅ [L7 Router] 节点 '{route_name}' 试探成功！已完全恢复健康状态 (CLOSED)。"
+                )
+                stats.state = RouteHealthState.CLOSED
+                stats.cooldown_until = 0.0
+
+            stats.last_error = None
             await self._save_to_file_internal()
-        logger.debug(
-            f"记录API密钥成功使用: {self._get_key_id(api_key)}, 延迟: {latency:.2f}ms"
+
+    async def record_route_failure(self, route_name: str, error_msg: str):
+        """记录服务端致命错误，熔断该模型节点"""
+        now = time.time()
+        cooldown_duration = 180
+
+        async with self._lock:
+            stats = self.state.routes.setdefault(route_name, RouteHealthStatus())
+            stats.failures += 1
+            total = stats.successes + stats.failures
+            stats.success_rate = (stats.successes / total) * 100
+
+            stats.state = RouteHealthState.OPEN
+            stats.cooldown_until = now + cooldown_duration
+            stats.last_error = error_msg[:256]
+            await self._save_to_file_internal()
+
+        logger.warning(
+            f"🚨 [L7 Router] 节点 '{route_name}' 发生服务端故障，已触发熔断 (OPEN)，冷却 {cooldown_duration} 秒。错误: {error_msg}"
         )
 
-    async def record_failure(
-        self, api_key: str, status_code: int | None, error_message: str
+    def get_best_fallback_route(self, route_names: list[str]) -> str:
+        """
+        [全死保底机制] 当组内所有节点全部宕机时，挑出一个最有可能恢复的节点强制探活。
+        策略：优先选择剩余冷却时间最短的节点。
+        """
+
+        def get_cooldown(name: str) -> float:
+            stats = self.state.routes.get(name)
+            return stats.cooldown_until if stats else 0.0
+
+        return sorted(route_names, key=get_cooldown)[0]
+
+    async def record_key_success(self, provider_name: str, api_key: str):
+        """记录 L4 Key 级成功使用，解除冷却"""
+        async with self._lock:
+            provider_state = self.state.providers.setdefault(
+                provider_name, ProviderHealthStatus()
+            )
+            stats = provider_state.api_keys.setdefault(api_key, KeyHealthStatus())
+            stats.cooldown_until = 0.0
+            stats.successes += 1
+            stats.status = "HEALTHY"
+            stats.last_error = None
+            await self._save_to_file_internal()
+        logger.debug(f"记录API密钥成功使用: {self._get_key_id(api_key)}")
+
+    async def record_key_failure(
+        self,
+        provider_name: str,
+        api_key: str,
+        status_code: int | None,
+        error_message: str,
     ):
         """
-        记录失败使用，并设置冷却时间
-
-        参数:
-            api_key: API密钥。
-            status_code: HTTP状态码。
-            error_message: 错误信息。
+        记录 L4 Key 级失败。仅对强相关的限流、鉴权错误进行冷却。
         """
         key_id = self._get_key_id(api_key)
         now = time.time()
-        cooldown_duration = 300
+        cooldown_duration = 0
 
         location_not_supported = error_message and (
             "USER_LOCATION_NOT_SUPPORTED" in error_message
@@ -476,9 +526,12 @@ class KeyStatusStore:
                 " 这通常是代理节点问题，Key 本身可能是正常的。跳过冷却。"
             )
             async with self._lock:
-                stats = self._key_stats.setdefault(api_key, KeyStats())
-                stats.failure_count += 1
-                stats.last_error_info = error_message[:256]
+                provider_state = self.state.providers.setdefault(
+                    provider_name, ProviderHealthStatus()
+                )
+                stats = provider_state.api_keys.setdefault(api_key, KeyHealthStatus())
+                stats.failures += 1
+                stats.last_error = error_message[:256]
                 await self._save_to_file_internal()
             return
 
@@ -506,79 +559,43 @@ class KeyStatusStore:
             cooldown_duration = 3600
             log_level = "warning"
             log_message = f"API密钥权限不足或地区不支持(403)，冷却1小时: {key_id}"
-        elif status_code == 404:
-            log_level = "error"
-            log_message = "API请求返回 404 (未找到)，可能是模型名称错误或接口地址"
-            f"错误，不冷却密钥: {key_id}"
-        elif status_code == 422:
-            cooldown_duration = 0
-            log_level = "warning"
-            log_message = f"API请求无法处理(422)，可能是生成故障，不冷却密钥: {key_id}"
         elif status_code == 429:
             cooldown_duration = 60
             log_level = "warning"
             log_message = f"API密钥被限流，冷却60秒: {key_id}"
-        elif error_message and (
-            "ConnectError" in error_message
-            or "NetworkError" in error_message
-            or "Connection refused" in error_message
-            or "RemoteProtocolError" in error_message
-            or "ProxyError" in error_message
-        ):
-            cooldown_duration = 0
-            log_level = "warning"
-            log_message = f"网络连接层异常(代理/DNS)，不冷却密钥: {key_id}"
         else:
-            log_level = "warning"
-            log_message = f"API密钥遇到临时性错误，冷却{cooldown_duration}秒: {key_id}"
+            log_level = "debug"
+            log_message = (
+                "API请求发生服务异常，已交由L7路由接管熔断，不冷却密钥本身: "
+                f"{key_id}"
+            )
 
         async with self._lock:
-            stats = self._key_stats.setdefault(api_key, KeyStats())
-            stats.cooldown_until = now + cooldown_duration
-            stats.failure_count += 1
-            stats.last_error_info = error_message[:256]
+            provider_state = self.state.providers.setdefault(
+                provider_name, ProviderHealthStatus()
+            )
+            stats = provider_state.api_keys.setdefault(api_key, KeyHealthStatus())
+            if cooldown_duration > 0:
+                stats.cooldown_until = now + cooldown_duration
+                stats.status = "COOLDOWN" if cooldown_duration < 31536000 else "DISABLED"
+            stats.failures += 1
+            stats.last_error = error_message[:256]
             await self._save_to_file_internal()
 
         getattr(logger, log_level)(log_message)
 
-    async def reset_key_status(self, api_key: str):
+    async def reset_key_status(self, provider_name: str, api_key: str):
         """重置密钥状态，并持久化"""
         async with self._lock:
-            stats = self._key_stats.setdefault(api_key, KeyStats())
+            provider_state = self.state.providers.setdefault(
+                provider_name, ProviderHealthStatus()
+            )
+            stats = provider_state.api_keys.setdefault(api_key, KeyHealthStatus())
             stats.cooldown_until = 0.0
-            stats.last_error_info = None
+            stats.last_error = None
+            stats.status = "HEALTHY"
             await self._save_to_file_internal()
         logger.info(f"重置API密钥状态: {self._get_key_id(api_key)}")
-
-    async def get_key_stats(self, api_keys: list[str]) -> dict[str, dict]:
-        """
-        获取密钥使用统计，并计算出用于展示的派生数据。
-
-        参数:
-            api_keys: API密钥列表。
-
-        返回:
-            dict[str, dict]: 包含丰富状态和统计信息的密钥字典。
-        """
-        stats_dict = {}
-        now = time.time()
-        async with self._lock:
-            for key in api_keys:
-                key_id = self._get_key_id(key)
-                stats = self._key_stats.get(key, KeyStats())
-
-                stats_dict[key_id] = {
-                    "status_enum": stats.status,
-                    "cooldown_seconds_left": max(0, stats.cooldown_until - now),
-                    "total_calls": stats.success_count + stats.failure_count,
-                    "success_count": stats.success_count,
-                    "failure_count": stats.failure_count,
-                    "success_rate": stats.success_rate,
-                    "avg_latency": stats.avg_latency,
-                    "last_error": stats.last_error_info,
-                    "suggested_action": stats.suggested_action,
-                }
-        return stats_dict
 
     def _get_key_id(self, api_key: str) -> str:
         """获取API密钥的标识符（用于日志）"""
@@ -587,9 +604,9 @@ class KeyStatusStore:
         return f"{api_key[:4]}...{api_key[-4:]}"
 
 
-key_store = KeyStatusStore()
+health_manager = HealthManager()
 
 
 @driver.on_shutdown
-async def _shutdown_key_store():
-    await key_store.shutdown()
+async def _shutdown_health_manager():
+    await health_manager.shutdown()

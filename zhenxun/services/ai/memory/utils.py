@@ -3,7 +3,7 @@ import time
 
 import numpy as np
 
-from zhenxun.services.ai.types.memory import MemoryConfig, MemoryRecord
+from zhenxun.services.ai.memory.models import MemoryConfig, MemoryRecord
 
 
 def normalize_scope_path(path: str) -> str:
@@ -67,3 +67,4 @@ def compute_composite_score(
         reasons.append("importance")
 
     return composite, reasons
+

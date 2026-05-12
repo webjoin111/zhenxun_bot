@@ -20,17 +20,14 @@ require("nonebot_plugin_waiter")
 
 from .ai.chat_session import ChatSession
 from .ai.llm import (
-    CommonOverrides,
+    IntentBuilder,
     LLMException,
-    LLMGenerationConfig,
     LLMMessage,
     chat,
-    code,
     create_multimodal_message,
     embed,
     generate,
     generate_structured,
-    search,
 )
 from .ai.llm.manager import (
     clear_model_cache,
@@ -55,10 +52,9 @@ from .scheduler import (
 
 __all__ = [
     "ChatSession",
-    "CommonOverrides",
     "ExecutionPolicy",
+    "IntentBuilder",
     "LLMException",
-    "LLMGenerationConfig",
     "LLMMessage",
     "Model",
     "PluginInit",
@@ -68,7 +64,6 @@ __all__ = [
     "avatar_service",
     "chat",
     "clear_model_cache",
-    "code",
     "create_multimodal_message",
     "disconnect",
     "embed",
@@ -82,7 +77,6 @@ __all__ = [
     "logger",
     "renderer_service",
     "scheduler_manager",
-    "search",
     "set_global_default_model_name",
     "with_db_timeout",
 ]

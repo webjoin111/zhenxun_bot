@@ -5,22 +5,22 @@ import time
 from typing import TYPE_CHECKING, cast
 
 import httpx
-from nonebot.utils import is_coroutine_callable
 
-from zhenxun.services.ai.llm.adapters.base import process_image_data
-from zhenxun.services.ai.llm.config.generation import (
-    LLMGenerationConfig,
+from zhenxun.services.ai.core.configs import (
+    GenerationConfig,
+    LLMEmbeddingConfig,
+    TTSConfig,
 )
+from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
+from zhenxun.services.ai.core.messages import LLMResponse
+from zhenxun.services.ai.llm.adapters.base import process_image_data
 from zhenxun.services.ai.llm.core import (
-    KeyStatusStore,
+    HealthManager,
     RetryConfig,
     _should_retry_llm_error,
 )
-from zhenxun.services.ai.llm.utils import DEFAULT_IVR_TEMPLATE, parse_and_validate_json
-from zhenxun.services.ai.protocols import BaseLLMMiddleware, LLMContext, NextCall
-from zhenxun.services.ai.types.configs import LLMEmbeddingConfig
-from zhenxun.services.ai.types.exceptions import LLMErrorCode, LLMException
-from zhenxun.services.ai.types.messages import LLMMessage, LLMResponse
+from zhenxun.services.ai.protocols import LLMContext
+from zhenxun.services.ai.protocols.middleware import BaseLLMMiddleware, NextCall
 from zhenxun.services.log import logger
 from zhenxun.utils.http_utils import AsyncHttpx
 from zhenxun.utils.log_sanitizer import sanitize_for_logging
@@ -31,118 +31,20 @@ if TYPE_CHECKING:
     from zhenxun.services.ai.llm.service import LLMModel
 
 
-class StructuredOutputMiddleware(BaseLLMMiddleware):
-    """
-    结构化输出中间件：接管 IVR 循环，执行 JSON 解析与自动修复
-    """
-
-    async def __call__(self, context: LLMContext, next_call: NextCall) -> LLMResponse:
-        response_model = context.extra.get("response_model")
-        if not response_model:
-            return await next_call(context)
-
-        max_retries = context.extra.get("max_validation_retries", 3)
-        error_template = (
-            context.extra.get("error_prompt_template") or DEFAULT_IVR_TEMPLATE
-        )
-        validation_callback = context.extra.get("validation_callback")
-        is_auto_thinking = context.extra.get("is_auto_thinking", False)
-
-        ivr_messages = list(context.messages)
-        last_exception: Exception | None = None
-
-        for attempt in range(max_retries + 1):
-            context.messages = list(ivr_messages)
-            current_response_text: str = ""
-
-            try:
-                response = await next_call(context)
-                current_response_text = response.text
-
-                if response.tool_calls:
-                    return response
-
-                parsed_obj = parse_and_validate_json(
-                    current_response_text, response_model
-                )
-                final_obj = parsed_obj
-
-                if is_auto_thinking:
-                    final_obj = getattr(parsed_obj, "result")
-
-                if validation_callback:
-                    if is_coroutine_callable(validation_callback):
-                        await validation_callback(final_obj)
-                    else:
-                        validation_callback(final_obj)
-
-                response.parsed_obj = final_obj
-                return response
-
-            except Exception as e:
-                is_llm_error = isinstance(e, LLMException)
-                llm_error: LLMException | None = (
-                    cast(LLMException, e) if is_llm_error else None
-                )
-                last_exception = e
-
-                if llm_error and llm_error.code not in (
-                    LLMErrorCode.RESPONSE_PARSE_ERROR,
-                    LLMErrorCode.API_RESPONSE_INVALID,
-                ):
-                    raise e
-
-                if attempt < max_retries:
-                    error_msg = (
-                        llm_error.details.get("validation_error", str(e))
-                        if llm_error
-                        else str(e)
-                    )
-                    raw_response = current_response_text or (
-                        llm_error.details.get("raw_response", "") if llm_error else ""
-                    )
-
-                    logger.warning(
-                        f"结构化校验失败 (尝试 {attempt + 1}/{max_retries + 1})。"
-                        f"正在尝试 IVR 修复... 错误: {error_msg}"
-                    )
-
-                    if raw_response:
-                        ivr_messages.append(
-                            LLMMessage.assistant_text_response(raw_response)
-                        )
-                    else:
-                        logger.warning(
-                            "IVR 警告: 无法获取上一轮生成的原始文本，"
-                            "模型将在无上下文情况下尝试修复。"
-                        )
-
-                    feedback_prompt = error_template.format(error_msg=error_msg)
-                    ivr_messages.append(LLMMessage.user(feedback_prompt))
-                    continue
-
-                if llm_error and not getattr(llm_error, "recoverable", True):
-                    raise llm_error
-
-        if last_exception:
-            raise last_exception
-        raise LLMException(
-            "IVR 循环异常结束，未能生成有效结果。", code=LLMErrorCode.GENERATION_FAILED
-        )
-
-
 class RetryMiddleware(BaseLLMMiddleware):
     """
     重试中间件：处理异常捕获与重试循环
     """
 
-    def __init__(self, retry_config: RetryConfig, key_store: KeyStatusStore):
+    def __init__(self, retry_config: RetryConfig, health_manager: HealthManager):
         self.retry_config = retry_config
-        self.key_store = key_store
+        self.health_manager = health_manager
 
     async def __call__(self, context: LLMContext, next_call: NextCall) -> LLMResponse:
         last_exception: Exception | None = None
-        total_attempts = self.retry_config.max_retries + 1
+        is_routed = context.extra.get("_is_routed_call", False)
+        max_retries = 0 if is_routed else self.retry_config.max_retries
+        total_attempts = max_retries + 1
 
         for attempt in range(total_attempts):
             try:
@@ -152,15 +54,19 @@ class RetryMiddleware(BaseLLMMiddleware):
             except LLMException as e:
                 last_exception = e
                 api_key = context.runtime_state.get("api_key")
+                provider_name = context.runtime_state.get("provider_name")
 
-                if api_key:
+                if api_key and provider_name:
                     status_code = e.details.get("status_code")
                     error_msg = f"({e.code.name}) {e.message}"
-                    await self.key_store.record_failure(api_key, status_code, error_msg)
+                    await self.health_manager.record_key_failure(
+                        provider_name, api_key, status_code, error_msg
+                    )
 
-                if not _should_retry_llm_error(
-                    e, attempt, self.retry_config.max_retries
-                ):
+                if not getattr(e, "recoverable", True):
+                    raise e
+
+                if not _should_retry_llm_error(e, attempt, max_retries):
                     raise e
 
                 if attempt == total_attempts - 1:
@@ -191,16 +97,20 @@ class KeySelectionMiddleware(BaseLLMMiddleware):
     """
 
     def __init__(
-        self, key_store: KeyStatusStore, provider_name: str, api_keys: list[str]
+        self, health_manager: HealthManager, provider_name: str, api_keys: list[str]
     ):
-        self.key_store = key_store
+        self.health_manager = health_manager
         self.provider_name = provider_name
         self.api_keys = api_keys
         self._failed_keys: set[str] = set()
 
     async def __call__(self, context: LLMContext, next_call: NextCall) -> LLMResponse:
-        selected_key = await self.key_store.get_next_available_key(
-            self.provider_name, self.api_keys, exclude_keys=self._failed_keys
+        is_routed = context.extra.get("_is_routed_call", False)
+        selected_key = await self.health_manager.get_next_available_key(
+            self.provider_name,
+            self.api_keys,
+            exclude_keys=self._failed_keys,
+            strict_mode=is_routed,
         )
 
         if not selected_key:
@@ -210,6 +120,7 @@ class KeySelectionMiddleware(BaseLLMMiddleware):
             )
 
         context.runtime_state["api_key"] = selected_key
+        context.runtime_state["provider_name"] = self.provider_name
 
         try:
             response = await next_call(context)
@@ -263,14 +174,17 @@ class EngineExecutionMiddleware(BaseLLMMiddleware):
     def __init__(self, model_instance: "LLMModel", adapter: "BaseAdapter"):
         self.model = model_instance
         self.adapter = adapter
-        self.key_store = model_instance.key_store
+        self.health_manager = model_instance.health_manager
 
     async def __call__(self, context: LLMContext, next_call: NextCall) -> LLMResponse:
         api_key = context.runtime_state["api_key"]
+        provider_name = self.model.provider_name
 
         request_data: "RequestData"
-        gen_config: LLMGenerationConfig | None = None
+        gen_config: GenerationConfig | None = None
         embed_config: LLMEmbeddingConfig | None = None
+
+        route_id = f"{self.model.provider_name}/{self.model.model_name}"
 
         if context.request_type == "embedding":
             embed_config = cast(LLMEmbeddingConfig, context.config)
@@ -292,8 +206,30 @@ class EngineExecutionMiddleware(BaseLLMMiddleware):
                 documents=documents,
                 top_n=top_n,
             )
+        elif context.request_type == "image_generation":
+            gen_config = cast(GenerationConfig, context.config)
+            prompt = context.extra.get("prompt", "")
+            images = context.extra.get("images", None)
+            request_data = self.adapter.prepare_image_request(
+                model=self.model,
+                api_key=api_key,
+                prompt=prompt,
+                images=images,
+                config=gen_config,
+            )
+        elif context.request_type == "speech_generation":
+            tts_config = cast(TTSConfig, context.config)
+            input_text = context.extra.get("input_text", "")
+            voice = context.extra.get("voice", "")
+            request_data = self.adapter.prepare_speech_request(
+                model=self.model,
+                api_key=api_key,
+                input_text=input_text,
+                voice=voice,
+                config=tts_config,
+            )
         else:
-            gen_config = cast(LLMGenerationConfig, context.config)
+            gen_config = cast(GenerationConfig, context.config)
             request_data = await self.adapter.prepare_advanced_request(
                 model=self.model,
                 api_key=api_key,
@@ -358,13 +294,37 @@ class EngineExecutionMiddleware(BaseLLMMiddleware):
                         "utf-8", errors="ignore"
                     )
                     logger.debug(f"💥 完整错误响应: {error_text}")
-                    await self.key_store.record_failure(
-                        api_key, raw_engine_output.status_code, error_text
+                    await self.health_manager.record_key_failure(
+                        provider_name,
+                        api_key,
+                        raw_engine_output.status_code,
+                        error_text,
                     )
                     raise exception
+                if context.request_type == "speech_generation":
+                    latency = (time.monotonic() - start_time) * 1000
+                    await self.health_manager.record_key_success(provider_name, api_key)
+                    await self.health_manager.record_route_success(route_id, latency)
+                    audio_resp = await self.adapter.parse_speech_response(
+                        self.model, raw_engine_output
+                    )
+                    return LLMResponse(parsed_obj=audio_resp)
+
                 response_bytes = await raw_engine_output.aread()
                 logger.debug(f"📦 响应体已完整读取 ({len(response_bytes)} bytes)")
-                response_json = json.loads(response_bytes)
+                try:
+                    response_json = json.loads(response_bytes)
+                except json.JSONDecodeError:
+                    raise LLMException(
+                        "API 返回了非 JSON 格式的内容，可能是 URL "
+                        "路径错误或中转站配置异常。",
+                        code=LLMErrorCode.API_RESPONSE_INVALID,
+                        details={
+                            "raw_response": response_bytes.decode(
+                                "utf-8", errors="ignore"
+                            )[:500]
+                        },
+                    )
             else:
                 response_json = raw_engine_output
 
@@ -386,22 +346,36 @@ class EngineExecutionMiddleware(BaseLLMMiddleware):
                 self.adapter.validate_embedding_response(response_json)
                 embeddings = self.adapter.parse_embedding_response(response_json)
                 latency = (time.monotonic() - start_time) * 1000
-                await self.key_store.record_success(api_key, latency)
+                await self.health_manager.record_key_success(provider_name, api_key)
+                await self.health_manager.record_route_success(route_id, latency)
 
                 return LLMResponse(
                     content_parts=[],
                     raw_response=response_json,
                     cache_info={"embeddings": embeddings},
+                    usage_info=response_json.get("usage")
+                    or response_json.get("usageMetadata"),
                 )
 
             if context.request_type == "rerank":
                 rerank_results = self.adapter.parse_rerank_response(response_json)
                 latency = (time.monotonic() - start_time) * 1000
-                await self.key_store.record_success(api_key, latency)
+                await self.health_manager.record_key_success(provider_name, api_key)
+                await self.health_manager.record_route_success(route_id, latency)
                 return LLMResponse(
                     content_parts=[],
                     raw_response=response_json,
                     cache_info={"rerank_results": rerank_results},
+                )
+
+            if context.request_type == "image_generation":
+                response_data = self.adapter.parse_image_response(response_json)
+                latency = (time.monotonic() - start_time) * 1000
+                await self.health_manager.record_key_success(provider_name, api_key)
+                await self.health_manager.record_route_success(route_id, latency)
+                return LLMResponse(
+                    content_parts=response_data.content_parts,
+                    raw_response=response_json,
                 )
 
             response_data = self.adapter.parse_response(
@@ -447,7 +421,8 @@ class EngineExecutionMiddleware(BaseLLMMiddleware):
                     response_data.text = response_data.text.strip()
 
             latency = (time.monotonic() - start_time) * 1000
-            await self.key_store.record_success(api_key, latency)
+            await self.health_manager.record_key_success(provider_name, api_key)
+            await self.health_manager.record_route_success(route_id, latency)
 
             final_response = LLMResponse(
                 content_parts=response_data.content_parts,
@@ -515,13 +490,25 @@ class EngineExecutionMiddleware(BaseLLMMiddleware):
             logger.warning(f"网络请求已被取消: {request_data.url}")
             raise
         except Exception as e:
+            is_route_failure = isinstance(
+                e, (httpx.TimeoutException, httpx.NetworkError)
+            )
+            if isinstance(e, LLMException):
+                status_code = e.details.get("status_code", 0)
+                if status_code and status_code >= 500:
+                    is_route_failure = True
+            if is_route_failure:
+                await self.health_manager.record_route_failure(route_id, str(e))
+
             if isinstance(e, LLMException):
                 raise e
 
             logger.error(f"解析响应失败或发生未知错误: {e}")
 
             if not isinstance(e, httpx.NetworkError | httpx.TimeoutException):
-                await self.key_store.record_failure(api_key, None, str(e))
+                await self.health_manager.record_key_failure(
+                    provider_name, api_key, None, str(e)
+                )
 
             raise LLMException(
                 f"网络请求异常: {type(e).__name__} - {e}",

@@ -1,60 +1,23 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel
+from zhenxun.services.ai.core.configs import (
+    GenerationConfig,
+    LLMEmbeddingConfig,
+    TTSConfig,
+)
+from zhenxun.services.ai.core.messages import (
+    AudioResponse,
+    EmbeddingResponse,
+    LLMMessage,
+    LLMResponse,
+)
 
-from zhenxun.services.ai.types.configs import LLMEmbeddingConfig, LLMGenerationConfig
-from zhenxun.services.ai.types.messages import LLMContentPart, LLMMessage, LLMResponse
-from zhenxun.services.ai.types.models import ModelName
-from zhenxun.services.ai.types.tools import ToolChoice
+if TYPE_CHECKING:
+    from zhenxun.services.ai.tools.models import ToolChoice
 
-T = TypeVar("T", bound=BaseModel)
-
-
-class LLMInterface(Protocol):
-    """
-    一个协议，定义了工具或智能体在执行期间可以安全调用的 LLM 能力防腐层。
-    这是对完整 LLM 服务的一个受限、安全的子集。
-    """
-
-    async def chat(
-        self,
-        message: str | LLMMessage | list[LLMContentPart],
-        *,
-        model: ModelName = None,
-        tools: list[dict[str, Any] | str] | None = None,
-    ) -> LLMResponse:
-        """执行一次无状态的、一次性的聊天调用。"""
-        ...
-
-    async def generate_structured(
-        self,
-        message: str | LLMMessage | list[LLMContentPart],
-        response_model: type[T],
-        *,
-        model: ModelName = None,
-        tools: list[dict[str, Any] | str] | None = None,
-        tool_choice: str | dict[str, Any] | ToolChoice | None = None,
-        instruction: str | None = None,
-    ) -> T:
-        """执行一次无状态的、一次性的结构化内容生成。"""
-        ...
-
-    async def generate_internal(
-        self,
-        messages: list[LLMMessage],
-        *,
-        model: ModelName = None,
-        config: Any | None = None,
-        tools: list[Any] | None = None,
-        tool_choice: str | dict[str, Any] | ToolChoice | None = None,
-        timeout: float | None = None,
-        model_instance: Any = None,
-        extra: dict[str, Any] | None = None,
-        cancellation_token: Any = None,
-    ) -> LLMResponse:
-        """[内部] 执行生成任务（供执行引擎调用）。"""
-        ...
 
 
 class LLMModelBase(ABC):
@@ -64,7 +27,7 @@ class LLMModelBase(ABC):
     async def generate_response(
         self,
         messages: list[LLMMessage],
-        config: LLMGenerationConfig | None = None,
+        config: GenerationConfig | None = None,
         tools: list[Any] | None = None,
         tool_choice: str | dict[str, Any] | ToolChoice | None = None,
         timeout: float | None = None,
@@ -75,10 +38,21 @@ class LLMModelBase(ABC):
         pass
 
     @abstractmethod
+    async def generate_speech(
+        self,
+        input_text: str,
+        voice: str,
+        config: TTSConfig | None = None,
+    ) -> AudioResponse:
+        """生成语音"""
+        pass
+
+    @abstractmethod
     async def generate_embeddings(
         self,
         texts: list[str],
-        config: LLMEmbeddingConfig,
-    ) -> list[list[float]]:
+        config: LLMEmbeddingConfig | None = None,
+    ) -> EmbeddingResponse:
         """生成文本嵌入向量"""
         pass
+

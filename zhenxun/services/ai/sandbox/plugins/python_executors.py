@@ -1,8 +1,11 @@
+import asyncio
 import time
 import typing
 
-from zhenxun.services.ai.events import EventCenter
-from zhenxun.services.ai.events.event_types import (
+import aiohttp
+
+from zhenxun.services.ai.core.events import EventCenter
+from zhenxun.services.ai.core.events.event_types import (
     SandboxExecutionCompletedEvent,
     SandboxExecutionStartedEvent,
 )
@@ -12,9 +15,8 @@ from zhenxun.services.ai.sandbox.extension import (
     SupportsFileSystem,
     SupportsPortMapping,
 )
+from zhenxun.services.ai.sandbox.models import SandboxExecutionResult
 from zhenxun.services.ai.sandbox.utils import JupyterKernelClient
-from zhenxun.services.ai.types.sandbox import SandboxExecutionResult
-from zhenxun.services.log import logger
 
 
 class UniversalPythonPlugin(BaseSandboxPlugin):
@@ -26,8 +28,6 @@ class UniversalPythonPlugin(BaseSandboxPlugin):
 
     @property
     def supports_state(self) -> bool:
-        if hasattr(self.channel, "sandbox"):
-            return True
         if getattr(self, "_use_jupyter", False):
             return True
         return False
@@ -57,9 +57,6 @@ class UniversalPythonPlugin(BaseSandboxPlugin):
                     "command -v jupyter-server"
                 )
                 if probe.exit_code == 0:
-                    import aiohttp
-                    import asyncio
-
                     self._http_session = aiohttp.ClientSession()
                     for _ in range(15):
                         try:
@@ -97,9 +94,7 @@ class UniversalPythonPlugin(BaseSandboxPlugin):
             SandboxExecutionStartedEvent(session_id=session_id, code=code)
         )
 
-        if hasattr(self.channel, "sandbox"):
-            result = await self._execute_e2b(code, timeout)
-        elif hasattr(self.channel, "workspace"):
+        if hasattr(self.channel, "workspace"):
             result = await self._execute_wasm(code, timeout)
         elif getattr(self, "_use_jupyter", False):
             result = await self._execute_jupyter(code, timeout)
@@ -121,44 +116,19 @@ class UniversalPythonPlugin(BaseSandboxPlugin):
         )
         return result
 
-    async def _execute_basic(
-        self, code: str, timeout: int
-    ) -> SandboxExecutionResult:
+    async def _execute_basic(self, code: str, timeout: int) -> SandboxExecutionResult:
         script_path = "/tmp/basic_exec_script.py"
-        await self.channel.write_raw_file(script_path, code)
-        return await self.channel.execute_raw_command(
+        fs_channel = typing.cast(SupportsFileSystem, self.channel)
+        cmd_channel = typing.cast(SupportsCommandExecution, self.channel)
+        await fs_channel.write_raw_file(script_path, code)
+        return await cmd_channel.execute_raw_command(
             f"python3 {script_path}", timeout=timeout
         )
 
-    async def _execute_jupyter(
-        self, code: str, timeout: int
-    ) -> SandboxExecutionResult:
+    async def _execute_jupyter(self, code: str, timeout: int) -> SandboxExecutionResult:
         if not self.jupyter_client:
             raise RuntimeError("JupyterClient 尚未就绪。")
         return await self.jupyter_client.execute(code, timeout)
-
-    async def _execute_e2b(self, code: str, timeout: int) -> SandboxExecutionResult:
-        from zhenxun.services.ai.sandbox.drivers.cloud import E2BCloudDriver
-
-        driver = typing.cast(E2BCloudDriver, self.channel)
-        try:
-            execution = await driver.sandbox.run_code(code, timeout=timeout)
-            return SandboxExecutionResult(
-                stdout="\n".join(execution.logs.stdout),
-                stderr="\n".join(execution.logs.stderr),
-                exit_code=1 if execution.error else 0,
-                error=getattr(execution.error, "value", str(execution.error))
-                if execution.error
-                else None,
-                images=[
-                    res.png or res.jpeg
-                    for res in execution.results
-                    if res.png or res.jpeg
-                ],
-            )
-        except Exception as e:
-            logger.error(f"[E2BCloudDriver] 云端执行异常: {e}")
-            return SandboxExecutionResult(exit_code=-1, error=str(e))
 
     async def _execute_wasm(self, code: str, timeout: int) -> SandboxExecutionResult:
         from zhenxun.services.ai.sandbox.drivers.wasm import (

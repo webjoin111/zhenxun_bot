@@ -1,11 +1,12 @@
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from zhenxun.services.log import logger
 from zhenxun.services.ai.sandbox.extension import SupportsCommandExecution
+from zhenxun.services.log import logger
 
 if TYPE_CHECKING:
     from zhenxun.services.ai.sandbox.drivers.base import BaseSandboxDriver
+    from zhenxun.services.ai.sandbox.models import EnvSetupConfig
 
 
 class BaseProvisioner(ABC):
@@ -14,12 +15,12 @@ class BaseProvisioner(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
-        """配置器名称，例如 'python_pip', 'node_npm'"""
+        """配置器名称"""
         pass
 
     @abstractmethod
-    async def install(self, driver: "BaseSandboxDriver", packages: list[str]) -> bool:
-        """执行安装逻辑，成功返回 True，失败返回 False"""
+    async def install(self, driver: "BaseSandboxDriver", payload: Any) -> bool:
+        """执行安装逻辑，成功返回 True"""
         pass
 
     @abstractmethod
@@ -53,25 +54,82 @@ class ProvisionerRegistry:
         return cls._provisioners.copy()
 
 
-class PipProvisioner(BaseProvisioner):
+class UnifiedManifestProvisioner(BaseProvisioner):
+    """
+    统一环境清单装配器。
+    单向执行：系统依赖(apt) -> Python依赖(uv) -> 二进制检查(bins) -> 自定义脚本。
+    """
+
     @property
     def name(self) -> str:
-        return "python_pip"
+        return "unified_manifest"
 
-    async def install(self, driver, packages: list[str]) -> bool:
-        pkg_str = " ".join(packages)
-        logger.info(
-            f"[Sandbox] 正在为 Session '{driver.session_id}' 热安装 Python 依赖: {pkg_str}"
-        )
+    async def install(self, driver: "BaseSandboxDriver", payload: Any) -> bool:
+        from zhenxun.services.ai.sandbox.models import EnvSetupConfig
+        env_setup = cast(EnvSetupConfig, payload)
         cmd_driver = cast(SupportsCommandExecution, driver)
-        res = await cmd_driver.execute_raw_command(
-            f"python3 -m pip install -q --disable-pip-version-check --no-warn-script-location {pkg_str} || true",
-            timeout=60,
-        )
-        if res.stderr and "ERROR:" in res.stderr:
-            logger.debug(
-                f"[Sandbox] 依赖安装可能部分失败 (通常是本地模块引起的假阳性): {res.stderr.strip()}"
+
+        # 0. 检查环境 Hash 缓存，实现极速跳过
+        target_hash = env_setup.calculate_hash()
+        hash_check = await cmd_driver.execute_raw_command("cat /workspace/.zx_env_hash")
+        if hash_check.exit_code == 0 and hash_check.stdout.strip() == target_hash:
+            logger.info(f"[Sandbox] ⚡ 环境指纹 ({target_hash[:8]}) 匹配成功，跳过所有依赖安装环节！")
+            return True
+
+        if env_setup.system_packages:
+            pkg_str = " ".join(env_setup.system_packages)
+            logger.info(
+                f"[Sandbox] 正在为 '{driver.session_id}' 安装系统级依赖: {pkg_str}"
             )
+            await cmd_driver.execute_raw_command(
+                f"sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq {pkg_str}",
+                timeout=300,
+            )
+
+        if env_setup.python_packages:
+            pkg_str = " ".join(env_setup.python_packages)
+
+            check_uv = await cmd_driver.execute_raw_command("command -v uv")
+            if check_uv.exit_code != 0:
+                logger.info(
+                    f"[Sandbox] '{driver.session_id}' 未检测到 uv，正在极速下载 uv..."
+                )
+                await cmd_driver.execute_raw_command(
+                    "pip install uv --disable-pip-version-check -q", timeout=60
+                )
+
+            logger.info(
+                f"[Sandbox] 正在为 '{driver.session_id}' 极速安装 Python 依赖: {pkg_str}"
+            )
+            res = await cmd_driver.execute_raw_command(
+                f"uv pip install --system {pkg_str}", timeout=120
+            )
+
+            if res.exit_code != 0:
+                logger.warning(
+                    f"[Sandbox] uv 安装报错，可能遇到不兼容的原生包，尝试降级使用 pip: {res.stderr}"
+                )
+                await cmd_driver.execute_raw_command(
+                    f"pip install {pkg_str} -q", timeout=180
+                )
+
+        if env_setup.bins:
+            for binary in env_setup.bins:
+                res = await cmd_driver.execute_raw_command(f"command -v {binary}")
+                if res.exit_code != 0:
+                    logger.warning(
+                        f"⚠️ [Sandbox] 警告：沙箱 '{driver.session_id}' 缺失声明的前置命令: {binary}"
+                    )
+
+        if env_setup.install_scripts:
+            for script in env_setup.install_scripts:
+                logger.info(f"[Sandbox] 正在执行自定义装配脚本: {script}")
+                await cmd_driver.execute_raw_command(script, timeout=300)
+
+        # 5. 写入最新环境指纹
+        await cmd_driver.execute_raw_command(f"echo '{target_hash}' > /workspace/.zx_env_hash")
+        logger.debug(f"[Sandbox] 环境装配完毕，已写入指纹快照: {target_hash[:8]}")
+
         return True
 
     async def scan_and_setup_workspace(
@@ -81,89 +139,30 @@ class PipProvisioner(BaseProvisioner):
             return False
         cmd_driver = cast(SupportsCommandExecution, driver)
 
-        check = await cmd_driver.execute_raw_command(f"test -f {workspace_dir}/requirements.txt")
+        check = await cmd_driver.execute_raw_command(
+            f"test -f {workspace_dir}/requirements.txt"
+        )
         if check.exit_code == 0:
-            logger.info(
-                f"[PipProvisioner] 发现 requirements.txt，正在为 Session '{driver.session_id}' 安装依赖..."
+            check_uv = await cmd_driver.execute_raw_command("command -v uv")
+            if check_uv.exit_code == 0:
+                await cmd_driver.execute_raw_command(
+                    "uv pip install --system -r requirements.txt",
+                    cwd=workspace_dir,
+                    timeout=300,
+                )
+            else:
+                await cmd_driver.execute_raw_command(
+                    "pip install -q -r requirements.txt", cwd=workspace_dir, timeout=300
+                )
+        
+        # 统一接管原 NpmProvisioner 的工作区逻辑
+        check_npm = await cmd_driver.execute_raw_command(f"test -f {workspace_dir}/package.json")
+        if check_npm.exit_code == 0:
+            logger.info(f"[UnifiedProvisioner] 发现 package.json，正在安装 npm 依赖...")
+            await cmd_driver.execute_raw_command(
+                "npm install --no-fund --no-audit --loglevel=error", cwd=workspace_dir, timeout=300
             )
-            res = await cmd_driver.execute_raw_command(
-                "pip install -q --disable-pip-version-check --no-warn-script-location -r requirements.txt || true",
-                cwd=workspace_dir,
-                timeout=300,
-            )
-            if res.exit_code == 0:
-                logger.info("[PipProvisioner] 已自动完成原生 pip install -r")
         return True
 
 
-class NpmProvisioner(BaseProvisioner):
-    @property
-    def name(self) -> str:
-        return "node_npm"
-
-    async def install(self, driver, packages: list[str]) -> bool:
-        pkg_str = " ".join(packages)
-        logger.info(
-            f"[Sandbox] 正在为 Session '{driver.session_id}' 热安装 Node 依赖: {pkg_str}"
-        )
-        cmd_driver = cast(SupportsCommandExecution, driver)
-        res = await cmd_driver.execute_raw_command(
-            f"npm install --no-fund --no-audit --loglevel=error {pkg_str}",
-            timeout=180,
-        )
-        if res.exit_code != 0:
-            logger.error(f"[Sandbox] Node 依赖安装失败: {res.stderr or res.stdout}")
-            return False
-        return True
-
-    async def scan_and_setup_workspace(
-        self, driver: "BaseSandboxDriver", workspace_dir: str
-    ) -> bool:
-        if not isinstance(driver, SupportsCommandExecution):
-            return False
-        cmd_driver = cast(SupportsCommandExecution, driver)
-            
-        check = await cmd_driver.execute_raw_command(f"test -f {workspace_dir}/package.json")
-        if check.exit_code == 0:
-            logger.info(
-                f"[NpmProvisioner] 发现 package.json，正在为 Session '{driver.session_id}' 安装依赖..."
-            )
-            res = await cmd_driver.execute_raw_command(
-                "npm install --no-fund --no-audit --loglevel=error",
-                cwd=workspace_dir,
-                timeout=300,
-            )
-            if res.exit_code == 0:
-                logger.info("[NpmProvisioner] 已自动完成原生 npm install")
-        return True
-
-
-class AptProvisioner(BaseProvisioner):
-    @property
-    def name(self) -> str:
-        return "system_apt"
-
-    async def install(self, driver, packages: list[str]) -> bool:
-        pkg_str = " ".join(packages)
-        logger.info(
-            f"[Sandbox] 正在为 Session '{driver.session_id}' 热安装系统依赖: {pkg_str}"
-        )
-        cmd_driver = cast(SupportsCommandExecution, driver)
-        res = await cmd_driver.execute_raw_command(
-            f"sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq {pkg_str}",
-            timeout=300,
-        )
-        if res.exit_code != 0:
-            logger.error(f"[Sandbox] 系统依赖安装失败: {res.stderr or res.stdout}")
-            return False
-        return True
-
-    async def scan_and_setup_workspace(
-        self, driver: "BaseSandboxDriver", workspace_dir: str
-    ) -> bool:
-        return True
-
-
-ProvisionerRegistry.register(PipProvisioner())
-ProvisionerRegistry.register(NpmProvisioner())
-ProvisionerRegistry.register(AptProvisioner())
+ProvisionerRegistry.register(UnifiedManifestProvisioner())

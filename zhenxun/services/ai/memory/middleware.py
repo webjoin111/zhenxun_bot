@@ -10,7 +10,7 @@ from zhenxun.services.ai.protocols.middleware import (
     LLMContext,
     NextCall,
 )
-from zhenxun.services.ai.types.messages import LLMMessage, LLMResponse
+from zhenxun.services.ai.core.messages import LLMMessage, LLMResponse
 from zhenxun.services.log import logger
 
 
@@ -69,3 +69,4 @@ class MemoryMiddleware(BaseLLMMiddleware):
             await self.wm.add_messages(self.session_meta, msgs_to_save)
 
         return response
+

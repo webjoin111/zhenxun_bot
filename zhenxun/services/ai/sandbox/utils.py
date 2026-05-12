@@ -6,7 +6,7 @@ import uuid
 
 import aiohttp
 
-from zhenxun.services.ai.types.sandbox import SandboxRequirements, SandboxTier
+from zhenxun.services.ai.sandbox.models import SandboxRequirements, SandboxTier
 from zhenxun.services.log import logger
 
 STDLIB_MODULES = getattr(
@@ -58,96 +58,6 @@ PACKAGE_ALIAS_MAP = {
     "Crypto": "pycryptodome",
     "jwt": "pyjwt",
 }
-
-SAFE_LIGHTWEIGHT_MODULES = {
-    "math",
-    "datetime",
-    "time",
-    "re",
-    "json",
-    "random",
-    "collections",
-    "itertools",
-    "functools",
-    "hashlib",
-    "uuid",
-    "typing",
-    "io",
-    "copy",
-}
-
-STANDARD_DATA_MODULES = {"numpy", "pandas", "matplotlib", "scipy", "seaborn"}
-
-
-class ASTAnalyzer:
-    @classmethod
-    def analyze_code_requirements(cls, code: str) -> SandboxRequirements:
-        deps = cls.extract_dependencies(code)
-        if deps:
-            reqs = SandboxRequirements(
-                tier=SandboxTier.HEAVY, dependencies={"python_pip": deps}
-            )
-            if any(
-                d
-                in {
-                    "requests",
-                    "aiohttp",
-                    "urllib",
-                    "httpx",
-                    "bs4",
-                    "beautifulsoup4",
-                    "selenium",
-                    "playwright",
-                }
-                for d in deps
-            ):
-                return reqs
-            elif all(d in STANDARD_DATA_MODULES for d in deps):
-                reqs.tier = SandboxTier.STANDARD
-                return reqs
-            else:
-                return reqs
-
-        try:
-            tree = ast.parse(code)
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    for alias in node.names:
-                        mod = alias.name.split(".")[0]
-                        if mod not in SAFE_LIGHTWEIGHT_MODULES:
-                            return SandboxRequirements(tier=SandboxTier.STANDARD)
-                elif isinstance(node, ast.ImportFrom):
-                    if node.module:
-                        mod = node.module.split(".")[0]
-                        if mod not in SAFE_LIGHTWEIGHT_MODULES:
-                            return SandboxRequirements(tier=SandboxTier.STANDARD)
-        except SyntaxError:
-            pass
-
-        return SandboxRequirements(tier=SandboxTier.LIGHTWEIGHT)
-
-    @classmethod
-    def extract_dependencies(cls, code: str) -> list[str]:
-        deps = set()
-        try:
-            tree = ast.parse(code)
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    for alias in node.names:
-                        deps.add(alias.name.split(".")[0])
-                elif isinstance(node, ast.ImportFrom):
-                    if node.module:
-                        deps.add(node.module.split(".")[0])
-        except SyntaxError:
-            return []
-
-        filtered_deps = set()
-        for dep in deps:
-            if dep in STDLIB_MODULES or dep.startswith("_"):
-                continue
-            filtered_deps.add(PACKAGE_ALIAS_MAP.get(dep, dep))
-        return list(filtered_deps)
-
 
 def parse_shebang(script_path: str | Path) -> str | None:
     path = Path(script_path)
@@ -229,7 +139,7 @@ class JupyterKernelClient:
             logger.warning(f"[JupyterClient] 中断 Kernel 失败: {e}")
 
     async def execute(self, code: str, timeout: int = 30):
-        from zhenxun.services.ai.types.sandbox import SandboxExecutionResult
+        from zhenxun.services.ai.sandbox.models import SandboxExecutionResult
 
         try:
             await self._connect_ws()
@@ -348,3 +258,4 @@ class JupyterKernelClient:
         if self.ws and not self.ws.closed:
             await self.ws.close()
             self.ws = None
+

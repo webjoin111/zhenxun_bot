@@ -2,7 +2,7 @@ from typing import Any
 
 from zhenxun.services.ai.memory.utils import cosine_similarity
 from zhenxun.services.ai.protocols.memory import StorageBackend
-from zhenxun.services.ai.types.memory import MemoryRecord
+from zhenxun.services.ai.memory.models import MemoryRecord
 
 
 class DictStorageBackend(StorageBackend):
@@ -62,3 +62,4 @@ class DictStorageBackend(StorageBackend):
             del self._records[r_id]
 
         return len(to_delete)
+

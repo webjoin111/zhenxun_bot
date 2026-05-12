@@ -2,23 +2,15 @@
 AI 服务协议统一导出
 """
 
-from .hooks import AfterLLMCallHook, BeforeLLMCallHook
-from .llm import LLMInterface, LLMModelBase
-from .middleware import BaseLLMMiddleware, LLMContext, LLMMiddleware, NextCall
-from .resource import PromptProvider, ResourceProvider
+from .capabilities import AbstractCapability
+from .llm import LLMModelBase
+from .middleware import LLMContext
 from .tool import ToolExecutable, ToolProvider, ToolResolvable
 
 __all__ = [
-    "AfterLLMCallHook",
-    "BaseLLMMiddleware",
-    "BeforeLLMCallHook",
+    "AbstractCapability",
     "LLMContext",
-    "LLMInterface",
-    "LLMMiddleware",
     "LLMModelBase",
-    "NextCall",
-    "PromptProvider",
-    "ResourceProvider",
     "ToolExecutable",
     "ToolProvider",
     "ToolResolvable",

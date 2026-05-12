@@ -3,7 +3,7 @@ import csv
 from pathlib import Path
 from urllib.parse import urlparse
 
-from zhenxun.services.ai.types.knowledge import Document
+from zhenxun.services.ai.knowledge.models import Document
 from zhenxun.services.log import logger
 from zhenxun.utils.http_utils import AsyncHttpx
 from zhenxun.utils.user_agent import get_user_agent
@@ -124,3 +124,4 @@ def get_reader_for_url(url: str) -> WebReader | None:
     if url.startswith(("http://", "https://")):
         return WebReader()
     return None
+

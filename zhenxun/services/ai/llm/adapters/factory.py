@@ -7,21 +7,21 @@ from __future__ import annotations
 import fnmatch
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from zhenxun.services.ai.types.configs import LLMEmbeddingConfig
-from zhenxun.services.ai.types.exceptions import LLMErrorCode, LLMException
-from zhenxun.services.ai.types.tools import ToolChoice
+from zhenxun.services.ai.core.configs import LLMEmbeddingConfig
+from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
+from zhenxun.services.ai.tools.models import ToolChoice
 
 from .base import BaseAdapter, RequestData, ResponseData
 
 if TYPE_CHECKING:
-    from zhenxun.services.ai.types.messages import LLMMessage
+    from zhenxun.services.ai.core.configs import GenerationConfig
+    from zhenxun.services.ai.core.messages import LLMMessage
 
-    from ..config.generation import LLMGenerationConfig
     from ..service import LLMModel
 
 
 class LLMAdapterFactory:
-    """LLM适配器工厂类"""
+    """适配器注册与按 API 类型分发的统一入口。"""
 
     _adapters: ClassVar[dict[str, BaseAdapter]] = {}
     _api_type_mapping: ClassVar[dict[str, str]] = {}
@@ -32,14 +32,20 @@ class LLMAdapterFactory:
         if cls._adapters:
             return
 
+        from .deepseek import DeepSeekAdapter
+        from .doubao import DoubaoAdapter
         from .gemini import GeminiAdapter
-        from .openai import DeepSeekAdapter, OpenAIAdapter, OpenAIImageAdapter
+        from .glm import GLMAdapter
+        from .minimax import MiniMaxAdapter
+        from .openai import OpenAIAdapter
 
         cls.register_adapter(OpenAIAdapter())
         cls.register_adapter(DeepSeekAdapter())
         cls.register_adapter(GeminiAdapter())
+        cls.register_adapter(GLMAdapter())
         cls.register_adapter(SmartAdapter())
-        cls.register_adapter(OpenAIImageAdapter())
+        cls.register_adapter(MiniMaxAdapter())
+        cls.register_adapter(DoubaoAdapter())
 
     @classmethod
     def register_adapter(cls, adapter: BaseAdapter) -> None:
@@ -82,12 +88,12 @@ class LLMAdapterFactory:
 
 
 def get_adapter_for_api_type(api_type: str) -> BaseAdapter:
-    """获取指定API类型的适配器"""
+    """按 API 类型获取适配器实例。"""
     return LLMAdapterFactory.get_adapter(api_type)
 
 
 def register_adapter(adapter: BaseAdapter) -> None:
-    """注册新的适配器"""
+    """向工厂注册新的适配器实例。"""
     LLMAdapterFactory.register_adapter(adapter)
 
 
@@ -99,23 +105,29 @@ class SmartAdapter(BaseAdapter):
 
     @property
     def log_sanitization_context(self) -> str:
+        """返回智能路由适配器的默认日志清洗上下文。"""
         return "openai_request"
 
     _ROUTING_RULES: ClassVar[list[tuple[str, str]]] = [
         ("*nano-banana*", "gemini"),
         ("*gemini*", "gemini"),
+        ("*deepseek*", "deepseek"),
+        ("*minimax*", "minimax"),
     ]
     _DEFAULT_API_TYPE: ClassVar[str] = "openai"
 
     def __init__(self):
+        """初始化模型名到目标适配器的路由缓存。"""
         self._adapter_cache: dict[str, BaseAdapter] = {}
 
     @property
     def api_type(self) -> str:
+        """适配器主类型标识。"""
         return "smart"
 
     @property
     def supported_api_types(self) -> list[str]:
+        """当前适配器支持的 API 类型列表。"""
         return ["smart"]
 
     def _get_delegate_adapter(self, model: LLMModel) -> BaseAdapter:
@@ -146,10 +158,11 @@ class SmartAdapter(BaseAdapter):
         model: LLMModel,
         api_key: str,
         messages: list[LLMMessage],
-        config: LLMGenerationConfig | None = None,
+        config: GenerationConfig | None = None,
         tools: list[Any] | None = None,
         tool_choice: str | dict[str, Any] | ToolChoice | None = None,
     ) -> RequestData:
+        """按模型路由到目标适配器并准备高级对话请求。"""
         adapter = self._get_delegate_adapter(model)
         return await adapter.prepare_advanced_request(
             model, api_key, messages, config, tools, tool_choice
@@ -161,6 +174,7 @@ class SmartAdapter(BaseAdapter):
         response_json: dict[str, Any],
         is_advanced: bool = False,
     ) -> ResponseData:
+        """按模型路由并解析文本响应。"""
         adapter = self._get_delegate_adapter(model)
         return adapter.parse_response(model, response_json, is_advanced)
 
@@ -171,21 +185,37 @@ class SmartAdapter(BaseAdapter):
         texts: list[str],
         config: LLMEmbeddingConfig,
     ) -> RequestData:
+        """按模型路由并准备嵌入请求。"""
         adapter = self._get_delegate_adapter(model)
         return adapter.prepare_embedding_request(model, api_key, texts, config)
 
     def parse_embedding_response(
         self, response_json: dict[str, Any]
     ) -> list[list[float]]:
+        """使用默认 OpenAI 兼容逻辑解析嵌入响应。"""
         return get_adapter_for_api_type("openai").parse_embedding_response(
             response_json
         )
 
-    def convert_generation_config(
-        self, config: LLMGenerationConfig, model: LLMModel
-    ) -> dict[str, Any]:
+    def prepare_image_request(
+        self,
+        model: LLMModel,
+        api_key: str,
+        prompt: str,
+        images: list[Any] | None = None,
+        config: GenerationConfig | None = None,
+    ) -> RequestData:
+        """按模型路由并准备图像请求。"""
         adapter = self._get_delegate_adapter(model)
-        return adapter.convert_generation_config(config, model)
+        return adapter.prepare_image_request(model, api_key, prompt, images, config)
+
+    def parse_image_response(self, response_json: dict[str, Any]) -> ResponseData:
+        """按响应结构选择 Gemini 或 OpenAI 的图像解析器。"""
+        if "candidates" in response_json or "image_generation" in response_json:
+            return get_adapter_for_api_type("gemini").parse_image_response(
+                response_json
+            )
+        return get_adapter_for_api_type("openai").parse_image_response(response_json)
 
     def prepare_rerank_request(
         self,
@@ -195,9 +225,10 @@ class SmartAdapter(BaseAdapter):
         documents: list[str | dict[str, str]],
         top_n: int,
     ) -> RequestData:
+        """按模型路由并准备重排请求。"""
         adapter = self._get_delegate_adapter(model)
         return adapter.prepare_rerank_request(model, api_key, query, documents, top_n)
 
     def parse_rerank_response(self, response_json: dict[str, Any]) -> list[Any]:
+        """使用默认 OpenAI 兼容逻辑解析重排响应。"""
         return get_adapter_for_api_type("openai").parse_rerank_response(response_json)
-

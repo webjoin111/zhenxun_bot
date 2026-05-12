@@ -28,10 +28,7 @@ class UniversalMcpPlugin(BaseMcpProxyPlugin):
     async def connect_mcp(
         self, command: str, args: list[str], env: dict[str, str] | None = None
     ) -> AsyncGenerator[tuple[Any, Any], None]:
-        if hasattr(self.channel, "sandbox"):
-            async with self._connect_e2b(command, args, env) as streams:
-                yield streams
-        elif isinstance(self.channel, SupportsPortMapping) and isinstance(
+        if isinstance(self.channel, SupportsPortMapping) and isinstance(
             self.channel, SupportsCommandExecution
         ):
             async with self._connect_docker(command, args, env) as streams:
@@ -98,76 +95,3 @@ class UniversalMcpPlugin(BaseMcpProxyPlugin):
                 tg.start_soon(tcp_reader)
                 tg.start_soon(tcp_writer)
                 yield read_cons, write_prod
-
-    @asynccontextmanager
-    async def _connect_e2b(
-        self, command: str, args: list[str], env: dict[str, str] | None = None
-    ):
-        from zhenxun.services.ai.sandbox.drivers.cloud import E2BCloudDriver
-
-        driver = cast(E2BCloudDriver, self.channel)
-        if not driver.sandbox:
-            raise RuntimeError("Sandbox not started")
-        logger.info(
-            f"[UniversalMcpPlugin] 正在云端内部署 MCP 网桥: {command} {' '.join(args)}"
-        )
-
-        if command == "uvx":
-            await driver.execute_raw_command("pip install uv", timeout=60)
-        await driver.execute_raw_command(
-            "curl -fsSL -o /tmp/websocat https://github.com/vi/websocat/releases/download/v1.13.0/websocat.x86_64-unknown-linux-musl && chmod +x /tmp/websocat",
-            timeout=30,
-        )
-
-        port = 8080
-        full_cmd = f"{command} {' '.join(args)}"
-        bg_execution = await driver.sandbox.commands.run(
-            f"/tmp/websocat -t ws-l:0.0.0.0:{port} sh-c:'{full_cmd}'",
-            background=True,
-            envs=env or {},
-        )
-        await asyncio.sleep(2)
-
-        host = driver.sandbox.get_host(port)
-        ws_url = f"wss://{host}"
-        token = driver.get_meta("traffic_access_token")
-        auth_headers = {"e2b-traffic-access-token": token} if token else {}
-
-        async with websockets.connect(ws_url, additional_headers=auth_headers) as ws:
-            read_prod, read_cons = anyio.create_memory_object_stream(10)
-            write_prod, write_cons = anyio.create_memory_object_stream(10)
-
-            async def ws_reader():
-                try:
-                    async for msg in ws:
-                        for line in str(msg).splitlines():
-                            if not line.strip():
-                                continue
-                            parsed = model_validate(JSONRPCMessage, json.loads(line))
-                            await read_prod.send(SessionMessage(message=parsed))
-                except Exception:
-                    pass
-                finally:
-                    await read_prod.aclose()
-
-            async def ws_writer():
-                try:
-                    async for msg in write_cons:
-                        data = model_dump_json(
-                            msg.message, by_alias=True, exclude_none=True
-                        )
-                        await ws.send(data + "\n")
-                except Exception:
-                    pass
-                finally:
-                    await ws.close()
-
-            async with anyio.create_task_group() as tg:
-                tg.start_soon(ws_reader)
-                tg.start_soon(ws_writer)
-                yield read_cons, write_prod
-
-        try:
-            await bg_execution.kill()
-        except Exception:
-            pass

@@ -1,18 +1,27 @@
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 import uuid
 
 from nonebot.adapters import Bot, Event
 from pydantic import BaseModel
 
-from zhenxun.services.ai.engine.pipeline import DialoguePipeline
-from zhenxun.services.ai.engine.token_estimator import (
+from zhenxun.services.ai.core.configs import GenerationConfig
+from zhenxun.services.ai.core.exceptions import LLMException
+from zhenxun.services.ai.core.messages import (
+    AssistantMessage,
+    LLMContentPart,
+    LLMMessage,
+    LLMResponse,
+)
+from zhenxun.services.ai.core.models import ModelName
+from zhenxun.services.ai.core.engine.pipeline import DialoguePipeline
+from zhenxun.services.ai.core.engine.token_estimator import (
     global_estimator,
     parse_usage_info,
 )
 from zhenxun.services.ai.llm.api import generate, generate_structured
-from zhenxun.services.ai.llm.config import GenConfigBuilder, LLMGenerationConfig
+from zhenxun.services.ai.llm.config import IntentBuilder
 from zhenxun.services.ai.llm.manager import get_global_default_model_name
-from zhenxun.services.ai.llm.utils import render_prompt_template
+from zhenxun.services.ai.core.templates import PromptTemplate
 from zhenxun.services.ai.memory.scope import MemoryScope
 from zhenxun.services.ai.memory.working_memory import _get_default_memory
 from zhenxun.services.ai.message_builder import MessageBuilder
@@ -23,16 +32,6 @@ from zhenxun.services.ai.protocols.memory import (
     SessionMetadata,
     generate_session_meta,
 )
-from zhenxun.services.ai.types.exceptions import LLMException
-from zhenxun.services.ai.types.messages import (
-    AssistantMessage,
-    LLMContentPart,
-    LLMMessage,
-    LLMResponse,
-    TextPart,
-)
-from zhenxun.services.ai.types.models import ModelName
-from zhenxun.services.ai.types.tools import ToolChoice
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_dump
 
@@ -51,7 +50,7 @@ class ChatSession:
         self,
         session_id: str | None = None,
         model: str | None = None,
-        default_generation_config: LLMGenerationConfig | None = None,
+        default_generation_config: GenerationConfig | None = None,
         memory_reducers: list[str | BaseMemoryReducer] | None = None,
         context_threshold: float | None = None,
         max_history_turns: int | None = None,
@@ -67,9 +66,7 @@ class ChatSession:
             self.session_metadata = SessionMetadata(session_id=self.session_id)
 
         self.model = model
-        self.default_generation_config = (
-            default_generation_config or LLMGenerationConfig()
-        )
+        self.default_generation_config = default_generation_config or GenerationConfig()
         self.memory_reducers = memory_reducers
         self.context_threshold = context_threshold
         self.max_history_turns = max_history_turns
@@ -107,9 +104,7 @@ class ChatSession:
         instruction: str | None = None,
         template_vars: dict[str, Any] | None = None,
         preserve_media_in_history: bool | None = None,
-        tools: list[Any] | None = None,
-        tool_choice: str | dict[str, Any] | ToolChoice | None = None,
-        config: LLMGenerationConfig | GenConfigBuilder | None = None,
+        config: GenerationConfig | IntentBuilder | None = None,
         long_term_memory: MemoryScope | None = None,
         use_buffer: bool = False,
         timeout: float | None = None,
@@ -119,7 +114,9 @@ class ChatSession:
 
         final_instruction = instruction
         if final_instruction and template_vars:
-            final_instruction = render_prompt_template(final_instruction, template_vars)
+            final_instruction = PromptTemplate(final_instruction).render(
+                **template_vars
+            )
 
         user_msg = None
         if message:
@@ -150,7 +147,7 @@ class ChatSession:
             self.message_buffer.clear()
 
         final_config = self.default_generation_config
-        if isinstance(config, GenConfigBuilder):
+        if isinstance(config, IntentBuilder):
             config = config.build()
         if config:
             final_config = final_config.merge_with(config)
@@ -159,8 +156,6 @@ class ChatSession:
             response = await generate(
                 messages=messages_for_run,
                 model=resolved_model_name,
-                tools=tools,
-                tool_choice=tool_choice,
                 config=final_config,
                 timeout=timeout,
             )
@@ -183,7 +178,7 @@ class ChatSession:
                 else False
             )
 
-            msgs_to_save = []
+            msgs_to_save: list[LLMMessage] = []
             if user_msg:
                 save_msg = (
                     user_msg
@@ -193,7 +188,11 @@ class ChatSession:
                 msgs_to_save.append(save_msg)
 
             if response.content_parts:
-                ast_msg = AssistantMessage(content=response.content_parts)  # type: ignore
+                from zhenxun.services.ai.core.messages import AssistantContentUnion
+
+                ast_msg = AssistantMessage(
+                    content=cast(list[AssistantContentUnion], response.content_parts)
+                )
                 msgs_to_save.append(ast_msg)
 
             if msgs_to_save:
@@ -237,16 +236,14 @@ class ChatSession:
 
         if message:
             user_msg = (await MessageBuilder.normalize_to_llm_messages(message))[-1]
-            msgs_to_save = [DialoguePipeline.sanitize_message_for_history(user_msg)]
+            msgs_to_save: list[LLMMessage] = [
+                DialoguePipeline.sanitize_message_for_history(user_msg)
+            ]
             import json
 
             msgs_to_save.append(
                 LLMMessage.assistant_text_response(
-                    content=[
-                        TextPart(
-                            text=json.dumps(model_dump(result), ensure_ascii=False)
-                        )
-                    ],
+                    content=json.dumps(model_dump(result), ensure_ascii=False)
                 )
             )
             await self.working_memory.add_messages(self.session_metadata, msgs_to_save)

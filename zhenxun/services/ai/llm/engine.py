@@ -44,17 +44,20 @@ class HttpEngine(BaseEngine):
         if not isinstance(payload, RequestData):
             raise ValueError("HttpEngine 仅支持 RequestData 类型的 Payload")
 
+        method = getattr(payload, "method", "POST").upper()
+        req_kwargs = {"headers": payload.headers, "timeout": context.timeout}
+
+        if method in ("POST", "PUT", "PATCH"):
+            if payload.files:
+                req_kwargs["data"] = payload.body
+                req_kwargs["files"] = payload.files
+            else:
+                req_kwargs["content"] = json.dumps(payload.body, ensure_ascii=False)
+        elif method == "GET" and payload.body:
+            req_kwargs["params"] = payload.body
+
         post_task = asyncio.create_task(
-            self.client.post(
-                payload.url,
-                headers=payload.headers,
-                content=json.dumps(payload.body, ensure_ascii=False)
-                if not payload.files
-                else None,
-                data=payload.body if payload.files else None,
-                files=payload.files,
-                timeout=context.timeout,
-            )
+            self.client.request(method, payload.url, **req_kwargs)
         )
 
         if context.cancellation_token:

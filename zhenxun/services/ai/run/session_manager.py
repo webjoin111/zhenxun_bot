@@ -1,0 +1,77 @@
+import asyncio
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
+import time
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+from zhenxun.services.ai.memory.working_memory import _get_default_memory
+from zhenxun.services.ai.protocols.memory import SessionMetadata
+
+
+class SessionInfo(BaseModel):
+    """会话信息的元数据视图。"""
+
+    session_id: str
+    state: dict[str, Any] = Field(
+        default_factory=dict, description="业务流转的强类型载荷"
+    )
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class AgentSessionManager:
+    """
+    Agent 会话状态管理器。
+    彻底拥抱无状态：只维护业务强类型载荷 (state payload) 以及并发锁，不干涉 LLM 历史。
+    """
+
+    def __init__(self):
+        self._sessions: dict[str, SessionInfo] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    def _get_lock(self, session_id: str) -> asyncio.Lock:
+        if session_id not in self._locks:
+            self._locks[session_id] = asyncio.Lock()
+        return self._locks[session_id]
+
+    async def get_or_create(self, session_id: str) -> SessionInfo:
+        async with self._get_lock(session_id):
+            if session_id not in self._sessions:
+                self._sessions[session_id] = SessionInfo(session_id=session_id)
+            return self._sessions[session_id]
+
+    async def get(self, session_id: str) -> SessionInfo | None:
+        async with self._get_lock(session_id):
+            return self._sessions.get(session_id)
+
+    async def update_state(self, session_id: str, new_state: dict[str, Any]):
+        async with self._get_lock(session_id):
+            if session_id in self._sessions:
+                self._sessions[session_id].state.update(new_state)
+                self._sessions[session_id].updated_at = time.time()
+
+    async def delete(self, session_id: str):
+        async with self._get_lock(session_id):
+            self._sessions.pop(session_id, None)
+            await _get_default_memory().clear_history(
+                SessionMetadata(session_id=session_id)
+            )
+
+
+session_manager = AgentSessionManager()
+active_session_id: ContextVar[str | None] = ContextVar(
+    "active_session_id", default=None
+)
+
+
+@asynccontextmanager
+async def agent_session_scope(session_id: str):
+    """声明式上下文包装器。进入此作用域后的 Agent 都会自动吸附到指定的 SessionID 上。"""
+    await session_manager.get_or_create(session_id)
+    token = active_session_id.set(session_id)
+    try:
+        yield session_id
+    finally:
+        active_session_id.reset(token)

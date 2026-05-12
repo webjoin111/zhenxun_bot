@@ -9,25 +9,44 @@ from typing import Any, Protocol, runtime_checkable
 from nonebot.adapters import Bot, Event
 from pydantic import BaseModel, Field
 
-from zhenxun.services.ai.types.memory import MemoryRecord
-from zhenxun.services.ai.types.messages import LLMMessage
+from zhenxun.services.ai.core.messages import LLMMessage
+from zhenxun.services.ai.memory.models import MemoryRecord
 
 
 class MemoryIsolationLevel(str, Enum):
     """记忆上下文的隔离级别"""
 
-    GLOBAL_USER = "global_user"
-    GROUP_USER = "group_user"
+    GLOBAL = "global"
+    """全局共享：所有用户、所有群聊、所有插件看同一个记忆（极少使用）"""
     GROUP_SHARED = "group_shared"
+    """群组共享：单群内所有人共享，跨群不共享 ( /p_xx/g_xx )"""
+    USER_GLOBAL = "user_global"
+    """用户全局：单用户跨群、跨插件共享 ( /p_xx/u_xx )"""
+    GROUP_USER = "group_user"
+    """群组用户：单群内的单用户共享 ( /p_xx/g_xx/u_xx )"""
+    PLUGIN_USER = "plugin_user"
+    """插件级用户隔离：该插件内所有 Agent 共享该用户的记忆 ( /p_xx/g_xx/u_xx/ns_xx )"""
+    AGENT_USER = "agent_user"
+    """Agent级用户隔离：最高级别隔离，各 Agent 间绝对物理隔离 ( /p_xx/g_xx/u_xx/ns_xx/ag_xx )"""
 
 
 class SessionMetadata(BaseModel):
     """结构化会话元数据"""
 
-    session_id: str = Field(description="核心会话标识符")
-    platform: str | None = Field(default=None, description="平台标识")
-    group_id: str | None = Field(default=None, description="群组/频道 ID")
-    user_id: str | None = Field(default=None, description="用户 ID")
+    session_id: str = Field(...)
+    """核心会话标识符。"""
+    platform: str | None = Field(default=None)
+    """平台标识。"""
+    group_id: str | None = Field(default=None)
+    """群组/频道 ID。"""
+    user_id: str | None = Field(default=None)
+    """用户 ID。"""
+    namespace: str | None = Field(default=None)
+    """插件/命名空间标识。"""
+    agent_name: str | None = Field(default=None)
+    """具体智能体标识。"""
+    isolation_level: MemoryIsolationLevel | None = Field(default=None)
+    """生成此会话时的隔离级别。"""
 
     def __str__(self) -> str:
         return self.session_id
@@ -36,8 +55,10 @@ class SessionMetadata(BaseModel):
 def generate_session_meta(
     bot: Bot,
     event: Event,
-    isolation_level: MemoryIsolationLevel = MemoryIsolationLevel.GROUP_USER,
+    isolation_level: MemoryIsolationLevel = MemoryIsolationLevel.AGENT_USER,
     prefix: str = "",
+    namespace: str | None = None,
+    agent_name: str | None = None,
 ) -> SessionMetadata:
     """根据事件和隔离级别，自动提取生成基于路径作用域 (Scope Path) 的 SessionMetadata"""
     from nonebot_plugin_session import extract_session
@@ -56,13 +77,31 @@ def generate_session_meta(
     if platform:
         parts.append(f"p_{platform}")
 
-    if isolation_level == MemoryIsolationLevel.GROUP_SHARED and group_id:
+    use_group = False
+    use_user = False
+
+    if isolation_level == MemoryIsolationLevel.GROUP_SHARED:
+        use_group = True
+    elif isolation_level == MemoryIsolationLevel.USER_GLOBAL:
+        use_user = True
+    elif isolation_level in (
+        MemoryIsolationLevel.GROUP_USER,
+        MemoryIsolationLevel.PLUGIN_USER,
+        MemoryIsolationLevel.AGENT_USER,
+    ):
+        use_group = True if group_id else False
+        use_user = True
+
+    if use_group and group_id:
         parts.append(f"g_{group_id}")
-    elif isolation_level == MemoryIsolationLevel.GROUP_USER and group_id:
-        parts.append(f"g_{group_id}")
+    if use_user and user_id:
         parts.append(f"u_{user_id}")
-    else:
-        parts.append(f"u_{user_id}")
+
+    if isolation_level in (MemoryIsolationLevel.PLUGIN_USER, MemoryIsolationLevel.AGENT_USER):
+        parts.append(f"ns_{namespace or 'unknown'}")
+
+    if isolation_level == MemoryIsolationLevel.AGENT_USER:
+        parts.append(f"ag_{agent_name or 'unknown'}")
 
     session_id = "/" + "/".join(parts)
 
@@ -71,6 +110,9 @@ def generate_session_meta(
         platform=platform,
         group_id=group_id,
         user_id=user_id,
+        namespace=namespace,
+        agent_name=agent_name,
+        isolation_level=isolation_level,
     )
 
 
@@ -122,7 +164,8 @@ class BaseWorkingMemory(ABC):
 @runtime_checkable
 class StorageBackend(Protocol):
     """向量与事实存储后端协议。
-    允许第三方插件自由决定将记忆存入 SQLite(基于内存降级检索) 还是专业的 Milvus/ChromaDB。
+    允许第三方插件自由决定将记忆存入 SQLite(基于内存降级检索)
+    还是专业的 Milvus/ChromaDB。
     """
 
     async def save(self, records: list[MemoryRecord]) -> None:

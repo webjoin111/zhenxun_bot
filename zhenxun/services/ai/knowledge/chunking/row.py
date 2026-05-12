@@ -1,4 +1,4 @@
-from zhenxun.services.ai.types.knowledge import Document
+from zhenxun.services.ai.knowledge.models import Document
 
 from .strategy import ChunkingStrategy
 
@@ -36,3 +36,4 @@ class RowChunking(ChunkingStrategy):
             chunk_index += 1
 
         return chunks
+

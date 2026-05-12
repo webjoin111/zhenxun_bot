@@ -1,21 +1,21 @@
 from collections.abc import Callable
 import time
-from typing import Any
+from typing import Any, cast
 
 from nonebot.utils import is_coroutine_callable
 from pydantic import TypeAdapter
 from tortoise import fields
 
-from zhenxun.services.ai.memory.working_memory import ChatWorkingMemory
-from zhenxun.services.ai.protocols.memory import BaseMessageStore, SessionMetadata
-from zhenxun.services.ai.types.messages import (
-    LLMContentPart, 
+from zhenxun.services.ai.core.messages import (
+    AssistantMessage,
+    LLMContentPart,
     LLMMessage,
     SystemMessage,
-    UserMessage,
-    AssistantMessage,
     ToolMessage,
+    UserMessage,
 )
+from zhenxun.services.ai.memory.working_memory import ChatWorkingMemory
+from zhenxun.services.ai.protocols.memory import BaseMessageStore, SessionMetadata
 from zhenxun.services.db_context import Model
 from zhenxun.utils.pydantic_compat import model_dump
 
@@ -69,23 +69,14 @@ class TortoiseMessageStore(BaseMessageStore):
         """将 ORM 记录转换为标准的 LLMMessage"""
         content_raw = row.content
 
-        api_context_raw = row.api_context
-        api_context: dict[str, Any] = (
-            api_context_raw if isinstance(api_context_raw, dict) else {}
-        )
+        from zhenxun.services.ai.core.messages import TextPart
 
-        global_thought_sig = api_context.get("thought_signature")
-
-        from zhenxun.services.ai.types.messages import TextPart
         content_parts: list[LLMContentPart] = []
         if isinstance(content_raw, list):
             adapter = TypeAdapter(LLMContentPart)
             for p in content_raw:
                 if not isinstance(p, dict):
                     continue
-                if global_thought_sig:
-                    p.setdefault("metadata", {})
-                    p["metadata"]["thought_signature"] = global_thought_sig
                 content_parts.append(adapter.validate_python(p))
         elif isinstance(content_raw, str):
             content_parts.append(TextPart(text=content_raw))
@@ -99,7 +90,7 @@ class TortoiseMessageStore(BaseMessageStore):
             "metadata": metadata,
             "created_at": row.created_at.timestamp() if row.created_at else time.time(),
         }
-        
+
         role = row.role
         if role == "system":
             msg = SystemMessage(**kwargs)
@@ -111,9 +102,7 @@ class TortoiseMessageStore(BaseMessageStore):
             msg = ToolMessage(**kwargs)
         else:
             msg = LLMMessage(role=role, **kwargs)
-        if api_context.get("thought_signature"):
-            msg.thought_signature = api_context.get("thought_signature")
-        return msg
+        return cast(LLMMessage, msg)
 
     async def get_messages(self, session: SessionMetadata) -> list[LLMMessage]:
         rows = (
@@ -150,31 +139,17 @@ class TortoiseMessageStore(BaseMessageStore):
                 content_payload = [{"type": "text", "text": content_payload}]
             elif isinstance(content_payload, list):
                 processed_content = []
-                from zhenxun.services.ai.types.messages import ThoughtPart
+                from zhenxun.services.ai.core.messages import ThoughtPart
+
                 for p in content_payload:
                     if isinstance(p, ThoughtPart):
                         continue
-                        
+
                     p_dump = (
                         model_dump(p, exclude_none=True)
                         if hasattr(p, "model_dump")
                         else (p.copy() if isinstance(p, dict) else p)
                     )
-
-                    if isinstance(p_dump, dict):
-                        if "metadata" in p_dump and isinstance(
-                            p_dump["metadata"], dict
-                        ):
-                            allowed_types = (
-                                "server_tool_call",
-                                "server_tool_response",
-                                "executable_code",
-                                "execution_result",
-                            )
-                            if p_dump.get("type") not in allowed_types:
-                                p_dump["metadata"].pop("thought_signature", None)
-                                if not p_dump["metadata"]:
-                                    p_dump.pop("metadata")
 
                     processed_content.append(p_dump)
 
@@ -189,15 +164,11 @@ class TortoiseMessageStore(BaseMessageStore):
                     ]
                 )
 
-            api_context = {}
-            if msg.thought_signature:
-                api_context["thought_signature"] = msg.thought_signature
-
             orm_obj = self.model_class(
                 session_id=session.session_id,
                 role=msg.role,
                 content=content_payload,
-                api_context=api_context if api_context else None,
+                api_context=None,
                 metadata=msg.metadata,
             )
 

@@ -6,7 +6,7 @@ from zhenxun.services.ai.sandbox.extension import (
     BaseSandboxPlugin,
     SandboxChannel,
 )
-from zhenxun.services.ai.types.sandbox import (
+from zhenxun.services.ai.sandbox.models import (
     SandboxRequirements,
     SandboxSecurityProfile,
 )
@@ -71,28 +71,13 @@ class BaseSandboxDriver(SandboxChannel):
         self.touch()
         success = True
 
-        for prov_name, pkgs in requirements.dependencies.items():
-            if not pkgs:
-                continue
-
-            provisioner = ProvisionerRegistry.get(prov_name)
-            if not provisioner:
-                logger.warning(
-                    f"[Sandbox] 未找到名为 '{prov_name}' 的环境配置器，跳过安装: {pkgs}"
-                )
-                continue
-
-            pkgs_to_install = [
-                p for p in pkgs if f"{prov_name}:{p}" not in self.installed_packages
-            ]
-            if not pkgs_to_install:
-                continue
-
-            res = await provisioner.install(self, pkgs_to_install)
+        # 采用统一清单装配器接管所有的依赖安装
+        provisioner = ProvisionerRegistry.get("unified_manifest")
+        if provisioner:
+            res = await provisioner.install(self, requirements.env_setup)
             if res:
-                self.installed_packages.update(
-                    f"{prov_name}:{p}" for p in pkgs_to_install
-                )
+                # 标记安装完成，避免重复调用。具体的深层缓存交由第三阶段解决
+                self.installed_packages.add("unified_env_installed")
             else:
                 success = False
 
@@ -109,3 +94,4 @@ class BaseSandboxDriver(SandboxChannel):
     async def close(self) -> None:
         """异步清理并销毁沙箱环境"""
         pass
+

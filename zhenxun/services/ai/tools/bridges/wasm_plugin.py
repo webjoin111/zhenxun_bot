@@ -2,9 +2,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from zhenxun.services.ai.tools.core.context import RunContext
+from zhenxun.services.ai.run import RunContext
 from zhenxun.services.ai.tools.core.tool import BaseTool
-from zhenxun.services.ai.types.tools import ToolDefinition, ToolResult
+from zhenxun.services.ai.tools.models import ToolResult
 from zhenxun.services.log import logger
 
 
@@ -14,7 +14,6 @@ class WasmPluginTool(BaseTool):
     标准通信协议：参数经 JSON 序列化输入 Wasm 模块的 stdin；
     Wasm 模块的 stdout 输出 JSON 字符串作为执行结果。
     """
-    _dynamic_def: Any = None
 
     def __init__(
         self,
@@ -26,25 +25,8 @@ class WasmPluginTool(BaseTool):
     ):
         super().__init__(name=name, description=description)
         self.wasm_path = wasm_path
-        self.parameters_schema = parameters_schema
+        self._base_schema = parameters_schema
         self.plugin_args = plugin_args or []
-
-    async def get_definition(self, context: RunContext | None = None) -> ToolDefinition | None:
-        if hasattr(self, "_dynamic_def") and self._dynamic_def is not None:
-            return self._dynamic_def
-        tool_def = ToolDefinition(
-            name=self.name,
-            description=self.description,
-            parameters=self.parameters_schema,
-            metadata=self.metadata or {},
-        )
-        if context and self.settings.prepare:
-            from nonebot.utils import is_coroutine_callable
-            if is_coroutine_callable(self.settings.prepare):
-                tool_def = await self.settings.prepare(context, tool_def)
-            else:
-                tool_def = self.settings.prepare(context, tool_def)
-        return tool_def
 
     async def execute(
         self, context: RunContext | None = None, **kwargs: Any
@@ -62,8 +44,8 @@ class WasmPluginTool(BaseTool):
 
         if res["exit_code"] != 0:
             return ToolResult(
-                output=f"Plugin Execution Failed: {res['stderr']}", is_error=True
-            )
+                output=f"Plugin Execution Failed: {res['stderr']}"
+            ).as_error()
 
         try:
             parsed_out = json.loads(res["stdout"])

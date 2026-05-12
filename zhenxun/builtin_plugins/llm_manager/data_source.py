@@ -1,8 +1,8 @@
 import time
 from typing import Any
 
+from zhenxun.services.ai.core.messages import LLMMessage
 from zhenxun.services.ai.llm import LLMException
-from zhenxun.services.ai.llm.core import KeyStatus
 from zhenxun.services.ai.llm.manager import (
     get_global_default_model_name,
     get_model_instance,
@@ -10,7 +10,6 @@ from zhenxun.services.ai.llm.manager import (
     reset_key_status,
     set_global_default_model_name,
 )
-from zhenxun.services.ai.types.messages import LLMMessage
 
 
 class DataSource:
@@ -91,11 +90,30 @@ class DataSource:
         ]
 
         def sort_key(item: dict[str, Any]):
-            status_priority = item.get("status_enum", KeyStatus.UNUSED).value
+            status_map = {
+                "DISABLED": 0,
+                "ERROR": 1,
+                "COOLDOWN": 2,
+                "WARNING": 3,
+                "HEALTHY": 4,
+                "UNUSED": 5,
+            }
+            status_str = item.get("status", "HEALTHY")
+            if (
+                item.get("successes", 0) == 0
+                and item.get("failures", 0) == 0
+                and status_str == "HEALTHY"
+            ):
+                status_str = "UNUSED"
+            status_priority = status_map.get(status_str, 5)
+            total = item.get("successes", 0) + item.get("failures", 0)
+            success_rate = (
+                (item.get("successes", 0) / total * 100) if total > 0 else 100.0
+            )
             return (
                 status_priority,
-                100 - item.get("success_rate", 100.0),
-                -item.get("total_calls", 0),
+                100 - success_rate,
+                -total,
             )
 
         sorted_stats_list = sorted(stats_list, key=sort_key)

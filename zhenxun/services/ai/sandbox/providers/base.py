@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 
-from zhenxun.services.ai.types.sandbox import (
+from zhenxun.services.ai.sandbox.models import (
     SandboxCapabilities,
     SandboxRequirements,
     SandboxSecurityProfile,
@@ -38,3 +38,4 @@ class BaseSandboxProvider(ABC):
     def create_driver(self, session_id: str) -> BaseSandboxDriver:
         """实例化并返回沙箱执行环境的底层驱动"""
         pass
+

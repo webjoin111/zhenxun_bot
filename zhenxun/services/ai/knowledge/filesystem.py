@@ -3,8 +3,8 @@ from pathlib import Path
 import re
 from typing import Any
 
-from zhenxun.services.ai.tools.core.decorators import toolkit_tool
-from zhenxun.services.ai.types.tools import ToolResult
+from zhenxun.services.ai.tools.core.decorators import tool
+from zhenxun.services.ai.tools.models import ToolResult
 from zhenxun.services.log import logger
 
 from .base import BaseKnowledge
@@ -39,7 +39,7 @@ class FileSystemKnowledge(BaseKnowledge):
         except Exception:
             return False
 
-    @toolkit_tool(
+    @tool(
         name="search_knowledge_files",
         description="在知识库中搜索包含指定关键词的文件内容和上下文。",
     )
@@ -49,7 +49,7 @@ class FileSystemKnowledge(BaseKnowledge):
         try:
             pattern = re.compile(re.escape(keyword), re.IGNORECASE)
         except Exception:
-            return ToolResult(output=f"无效的搜索关键词: {keyword}", is_error=True)
+            return ToolResult(output=f"无效的搜索关键词: {keyword}").as_error()
 
         for root, _, files in os.walk(self.base_dir):
             for file in files:
@@ -80,9 +80,9 @@ class FileSystemKnowledge(BaseKnowledge):
             return ToolResult(output=f"未找到包含 '{keyword}' 的内容。尝试更换关键词。")
 
         final_output = "\n\n======\n\n".join(results[:10])
-        return ToolResult(output=final_output, log_content=f"搜索到关键词 '{keyword}'")
+        return ToolResult(output=final_output).with_log(f"搜索到关键词 '{keyword}'")
 
-    @toolkit_tool(
+    @tool(
         name="list_knowledge_files", description="列出知识库中所有可用的文档路径。"
     )
     async def list_knowledge_files(self) -> ToolResult:
@@ -97,15 +97,16 @@ class FileSystemKnowledge(BaseKnowledge):
             return ToolResult(output="知识库当前为空。")
         return ToolResult(output="可用文件列表:\n" + "\n".join(files))
 
-    @toolkit_tool(
+    @tool(
         name="read_knowledge_file", description="读取知识库中指定文件的完整文本内容。"
     )
     async def read_knowledge_file(self, file_path: str) -> ToolResult:
         target = (self.base_dir / file_path).resolve()
         if not self._is_safe_path(target):
-            return ToolResult(output="❌ 安全拦截：越权访问", is_error=True)
+            return ToolResult(output="❌ 安全拦截：越权访问").as_error()
         if not target.is_file():
-            return ToolResult(output=f"❌ 文件不存在: {file_path}", is_error=True)
+            return ToolResult(output=f"❌ 文件不存在: {file_path}").as_error()
 
         content = target.read_text(encoding="utf-8", errors="ignore")
-        return ToolResult(output=content, log_content=f"读取文件: {file_path}")
+        return ToolResult(output=content).with_log(f"读取文件: {file_path}")
+

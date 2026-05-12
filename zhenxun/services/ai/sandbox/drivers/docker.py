@@ -19,7 +19,10 @@ from zhenxun.services.ai.sandbox.extension import (
     SupportsInteractivePTY,
     SupportsPortMapping,
 )
-from zhenxun.services.ai.types.sandbox import SandboxExecutionResult, SandboxSecurityProfile
+from zhenxun.services.ai.sandbox.models import (
+    SandboxExecutionResult,
+    SandboxSecurityProfile,
+)
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_dump, model_validate
 
@@ -43,6 +46,7 @@ from .ipc_models import (
 
 try:
     import aiodocker as _aiodocker
+
     aiodocker: Any = _aiodocker
     DOCKER_AVAILABLE = True
 except ImportError:
@@ -149,7 +153,7 @@ class DockerDriver(
             or self._ipc_client is None
             or self._ipc_client.is_closed
         ):
-            self._ipc_client = httpx.AsyncClient(timeout=30)
+            self._ipc_client = httpx.AsyncClient(timeout=60)
 
         headers = kwargs.pop("headers", {})
         headers["Authorization"] = f"Bearer {self._os_server_token}"
@@ -174,7 +178,7 @@ class DockerDriver(
                 or self._ipc_client is None
                 or self._ipc_client.is_closed
             ):
-                self._ipc_client = httpx.AsyncClient(timeout=30)
+                self._ipc_client = httpx.AsyncClient(timeout=60)
             new_url = f"http://127.0.0.1:{self._os_server_port}{path}"
             return await self._ipc_client.request(
                 method, new_url, headers=headers, **kwargs

@@ -9,16 +9,19 @@ import time
 from typing import Any
 
 from zhenxun.configs.config import Config
-from zhenxun.services.ai.config import LLMConfig, ProviderConfig, get_llm_config
-from zhenxun.services.ai.types.exceptions import LLMErrorCode, LLMException
+from zhenxun.services.ai.config import ProviderConfig, get_llm_config
+from zhenxun.services.ai.core.configs import GenerationConfig
+from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
+from zhenxun.services.ai.core.messages import EmbeddingResponse, LLMResponse
+from zhenxun.services.ai.core.models import ModelDetail, ModelModality
 from zhenxun.services.ai.llm.capabilities import get_model_capabilities
-from zhenxun.services.ai.types.models import ModelDetail
+from zhenxun.services.ai.protocols.llm import LLMModelBase
 from zhenxun.services.log import logger
-from zhenxun.utils.pydantic_compat import dump_json_safely, model_dump
+from zhenxun.utils.manager.priority_manager import PriorityLifecycle
+from zhenxun.utils.pydantic_compat import dump_json_safely, model_copy, model_dump
 
 from .config import validate_override_params
-from .config.generation import LLMGenerationConfig
-from .core import http_client_manager, key_store
+from .core import health_manager, http_client_manager
 from .engine import HttpEngine
 from .service import LLMModel
 
@@ -29,6 +32,170 @@ DEFAULT_MODEL_NAME_KEY = "default_model_name"
 _model_cache: dict[str, tuple[LLMModel, float]] = {}
 _cache_ttl = 3600
 _max_cache_size = 10
+
+
+class RoutedLLMModel(LLMModelBase):
+    """
+    [代理模式 Proxy] 虚拟模型路由代理类。
+    实现模型的故障转移 (Fallback) 与负载轮询。向外部伪装成一个普通的单一模型。
+    """
+
+    def __init__(
+        self, group_name: str, model_names: list[str], override_config: Any = None
+    ):
+        self.group_name = group_name
+        self.model_names = model_names
+        self.override_config = override_config
+        self.model_name = group_name
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+    async def generate_response(
+        self,
+        messages: list[Any],
+        config: Any = None,
+        tools: list[Any] | None = None,
+        tool_choice: Any = None,
+        timeout: float | None = None,
+        extra: dict[str, Any] | None = None,
+        cancellation_token: Any | None = None,
+    ) -> LLMResponse:
+        from zhenxun.services.ai.llm.core import health_manager
+
+        errors = []
+        if extra is None:
+            extra = {}
+        extra["_is_routed_call"] = True
+
+        start_idx = extra.get("_working_route_index", 0)
+        indices_to_try = list(range(start_idx, len(self.model_names))) + list(
+            range(0, start_idx)
+        )
+
+        all_nodes_bypassed = True
+
+        for idx in indices_to_try:
+            m_name = self.model_names[idx]
+
+            if not health_manager.is_route_healthy(m_name):
+                logger.debug(f"👉 [Router] 节点 '{m_name}' 熔断中，已跳过")
+                errors.append(f"{m_name}(熔断中)")
+                continue
+
+            all_nodes_bypassed = False
+            try:
+                if idx == start_idx:
+                    logger.debug(
+                        f"👉 [Router] 路由组 '{self.group_name}' 正在请求节点模型 '{m_name}'..."
+                    )
+                else:
+                    logger.debug(
+                        f"🔄 [Router] 故障转移，路由切换至备用节点: '{m_name}'..."
+                    )
+
+                async with await get_model_instance(
+                    m_name, self.override_config
+                ) as instance:
+                    response = await instance.generate_response(
+                        messages=messages,
+                        config=config,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                        timeout=timeout,
+                        extra=extra,
+                        cancellation_token=cancellation_token,
+                    )
+                    extra["_working_route_index"] = idx
+                    return response
+            except LLMException as e:
+                if e.code in [
+                    LLMErrorCode.INVALID_PARAMETER,
+                    LLMErrorCode.CONTENT_FILTERED,
+                ] or not getattr(e, "recoverable", True):
+                    logger.warning(
+                        f"🚫 [Router] 节点 '{m_name}' 返回不可恢复的业务错误 ({e.code.name})，停止故障转移。"
+                    )
+                    raise e
+                logger.warning(
+                    f"⚠️ [Router] 节点 '{m_name}' 发生错误 ({e.code.name})，触发故障转移(Fallback)..."
+                )
+                errors.append(f"{m_name}({e.code.name})")
+            except Exception as e:
+                logger.warning(
+                    f"⚠️ [Router] 节点 '{m_name}' 发生未知异常，触发故障转移: {e}"
+                )
+                errors.append(f"{m_name}(Error)")
+
+        if all_nodes_bypassed:
+            fallback_model = health_manager.get_best_fallback_route(self.model_names)
+            logger.warning(
+                f"⚠️ [Router] 组 '{self.group_name}' 内所有节点均已宕机并处于冷却期！触发全死保底机制，强制放行 '{fallback_model}' 探活..."
+            )
+            try:
+                async with await get_model_instance(
+                    fallback_model, self.override_config
+                ) as instance:
+                    response = await instance.generate_response(
+                        messages=messages,
+                        config=config,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                        timeout=timeout,
+                        extra=extra,
+                        cancellation_token=cancellation_token,
+                    )
+                    return response
+            except Exception as e:
+                errors.append(f"{fallback_model}(保底探活彻底失败:{e})")
+
+        raise LLMException(
+            f"路由组 '{self.group_name}' 中的所有模型节点均请求失败。错误链路: {' -> '.join(errors)}",
+            code=LLMErrorCode.GENERATION_FAILED,
+        )
+
+    async def generate_embeddings(
+        self, texts: list[str], config: Any = None
+    ) -> EmbeddingResponse:
+        errors = []
+        from zhenxun.services.ai.llm.core import health_manager
+
+        for m_name in self.model_names:
+            if not health_manager.is_route_healthy(m_name):
+                continue
+            try:
+                async with await get_model_instance(
+                    m_name, self.override_config
+                ) as instance:
+                    return await instance.generate_embeddings(texts, config)
+            except Exception:
+                errors.append(f"{m_name}(Error)")
+        raise LLMException(f"路由组 '{self.group_name}' Embeddings 均失败: {errors}")
+
+    async def rerank(
+        self,
+        query: str,
+        documents: list[Any],
+        top_n: int = 3,
+        timeout: float | None = None,
+    ) -> list[Any]:
+        errors = []
+        from zhenxun.services.ai.llm.core import health_manager
+
+        for m_name in self.model_names:
+            if not health_manager.is_route_healthy(m_name):
+                continue
+            try:
+                async with await get_model_instance(
+                    m_name, self.override_config
+                ) as instance:
+                    return await instance.rerank(query, documents, top_n, timeout)
+            except Exception:
+                errors.append(f"{m_name}(Error)")
+        raise LLMException(f"路由组 '{self.group_name}' Rerank 均失败: {errors}")
 
 
 def get_ai_config():
@@ -46,9 +213,17 @@ def parse_provider_model_string(name_str: str | None) -> tuple[str | None, str |
     return None, None
 
 
+def _get_group_name(name_str: str) -> str | None:
+    """判断名称是否是组名，如果是则提取并返回组名，否则返回 None"""
+    name_str = name_str.strip()
+    if "/" not in name_str:
+        return name_str
+    return None
+
+
 def _make_cache_key(
     provider_model_name: str | None,
-    override_config: dict | LLMGenerationConfig | None,
+    override_config: dict | GenerationConfig | None,
 ) -> str:
     """生成缓存键"""
     config_str = (
@@ -95,23 +270,14 @@ def _cache_model(cache_key: str, model: LLMModel):
 
 
 def clear_model_cache():
-    """
-    清空模型缓存，释放所有缓存的模型实例。
-
-    用于在内存不足或需要强制重新加载模型配置时清理缓存。
-    """
+    """清空模型缓存并释放已缓存的模型实例。"""
     global _model_cache
     _model_cache.clear()
     logger.info("已清空模型缓存")
 
 
 def get_cache_stats() -> dict[str, Any]:
-    """
-    获取模型缓存的统计信息。
-
-    返回:
-        dict[str, Any]: 包含缓存大小、最大容量、TTL和已缓存模型列表的统计信息。
-    """
+    """获取模型缓存统计信息。"""
     return {
         "cache_size": len(_model_cache),
         "max_cache_size": _max_cache_size,
@@ -124,8 +290,9 @@ def get_default_api_base_for_type(api_type: str) -> str | None:
     """根据API类型获取默认的API基础地址"""
     default_api_bases = {
         "openai": "https://api.openai.com",
-        "deepseek": "https://api.deepseek.com/beta",
-        "zhipu": "https://open.bigmodel.cn",
+        "doubao": "https://ark.cn-beijing.volces.com/api",
+        "deepseek": "https://api.deepseek.com",
+        "glm": "https://open.bigmodel.cn",
         "gemini": "https://generativelanguage.googleapis.com",
         "openrouter": "https://openrouter.ai/api",
         "smart": None,
@@ -167,16 +334,7 @@ def get_configured_providers() -> list[ProviderConfig]:
 def find_model_config(
     provider_name: str, model_name: str
 ) -> tuple[ProviderConfig, ModelDetail] | None:
-    """
-    在配置中查找指定的 Provider 和 ModelDetail
-
-    参数:
-        provider_name: 提供商名称
-        model_name: 模型名称
-
-    返回:
-        tuple[ProviderConfig, ModelDetail] | None: 找到的配置元组，未找到则返回 None
-    """
+    """在配置中查找指定 Provider 与 ModelDetail。"""
     providers = get_configured_providers()
 
     for provider in providers:
@@ -188,18 +346,52 @@ def find_model_config(
     return None
 
 
-def list_available_models() -> list[dict[str, Any]]:
+def _resolve_model_group(group_name: str, visited: set | None = None) -> list[str]:
     """
-    列出所有配置的可用模型及其详细信息。
+    递归解析模型组，展开为扁平的真实模型列表，并防止循环嵌套。
+    """
+    if visited is None:
+        visited = set()
 
-    返回:
-        list[dict[str, Any]]: 模型信息列表，每个字典包含提供商名称、模型名称、
-                             能力信息、是否为嵌入模型等详细信息。
-    """
+    if group_name in visited:
+        logger.warning(f"检测到模型路由组嵌套死循环: {group_name}，已安全跳过该分支。")
+        return []
+
+    visited.add(group_name)
+    llm_config = get_llm_config()
+    if group_name not in llm_config.model_groups:
+        logger.warning(f"模型路由组 '{group_name}' 不存在于配置中。")
+        return []
+
+    resolved_models = []
+    for item in llm_config.model_groups[group_name]:
+        item = item.strip()
+        sub_group = _get_group_name(item)
+        if sub_group:
+            resolved_models.extend(_resolve_model_group(sub_group, visited.copy()))
+        else:
+            prov_mod = parse_provider_model_string(item)
+            if prov_mod[0] and prov_mod[1]:
+                if find_model_config(prov_mod[0], prov_mod[1]):
+                    if item not in resolved_models:
+                        resolved_models.append(item)
+                else:
+                    logger.warning(
+                        f"⚠️ [Router] 路由组 '{group_name}' 中的模型 '{item}' 未在 PROVIDERS 中配置，已被自动剔除！"  # noqa: E501
+                    )
+            else:
+                logger.warning(f"路由组 '{group_name}' 包含无效格式的项目 '{item}'。")
+
+    return resolved_models
+
+
+def list_available_models() -> list[dict[str, Any]]:
+    """列出所有已配置的可用模型及其信息。"""
     providers = get_configured_providers()
     model_list = []
     for provider in providers:
         for model_detail in provider.models:
+            caps = get_model_capabilities(model_detail.model_name)
             model_info = {
                 "provider_name": provider.name,
                 "model_name": model_detail.model_name,
@@ -207,7 +399,7 @@ def list_available_models() -> list[dict[str, Any]]:
                 "api_type": provider.api_type or "auto-detect",
                 "api_base": provider.api_base,
                 "is_available": model_detail.is_available,
-                "is_embedding_model": model_detail.is_embedding_model,
+                "is_embedding_model": caps.is_embedding_model,
                 "available_identifiers": _get_model_identifiers(
                     provider.name, model_detail
                 ),
@@ -222,12 +414,7 @@ def _get_model_identifiers(provider_name: str, model_detail: ModelDetail) -> lis
 
 
 def list_model_identifiers() -> dict[str, list[str]]:
-    """
-    列出所有模型的可用标识符
-
-    返回:
-        dict[str, list[str]]: 字典，键为模型的完整名称，值为该模型的所有可用标识符列表
-    """
+    """列出所有模型的可用标识符映射。"""
     providers = get_configured_providers()
     result = {}
 
@@ -241,31 +428,16 @@ def list_model_identifiers() -> dict[str, list[str]]:
 
 
 def list_embedding_models() -> list[dict[str, Any]]:
-    """
-    列出所有配置的嵌入模型。
-
-    返回:
-        list[dict[str, Any]]: 嵌入模型信息列表，从所有可用模型中筛选出
-                             支持嵌入功能的模型。
-    """
+    """列出所有支持嵌入能力的模型。"""
     all_models = list_available_models()
     return [model for model in all_models if model.get("is_embedding_model", False)]
 
 
 async def get_model_instance(
     provider_model_name: str | None = None,
-    override_config: dict[str, Any] | LLMGenerationConfig | None = None,
+    override_config: dict[str, Any] | GenerationConfig | None = None,
 ) -> LLMModel:
-    """
-    根据 'ProviderName/ModelName' 字符串获取并实例化 LLMModel (异步版本)
-
-    参数:
-        provider_model_name: 模型名称，格式为 'ProviderName/ModelName'。
-        override_config: 覆盖配置字典。
-
-    返回:
-        LLMModel: 模型实例。
-    """
+    """[内部 API] 获取底层 LLMModel 状态机实例。"""
     cache_key = _make_cache_key(provider_model_name, override_config)
     cached_model = _get_cached_model(cache_key)
     if cached_model:
@@ -291,6 +463,16 @@ async def get_model_instance(
             resolved_model_name_str = available_models_list[0]["full_name"]
             logger.warning(f"未指定模型，使用第一个可用模型: {resolved_model_name_str}")
 
+    group_name = _get_group_name(resolved_model_name_str)
+    if group_name is not None:
+        resolved_models = _resolve_model_group(group_name)
+        if not resolved_models:
+            raise LLMException(
+                f"模型路由组 '{group_name}' 解析失败或为空，请检查配置。",
+                code=LLMErrorCode.CONFIGURATION_ERROR,
+            )
+        return RoutedLLMModel(group_name, resolved_models, override_config)  # type: ignore
+
     prov_name_str, mod_name_str = parse_provider_model_string(resolved_model_name_str)
     if not prov_name_str or not mod_name_str:
         raise LLMException(
@@ -311,7 +493,11 @@ async def get_model_instance(
 
     capabilities = get_model_capabilities(model_detail_found.model_name)
 
-    model_detail_found.is_embedding_model = capabilities.is_embedding_model
+    capabilities = model_copy(capabilities, deep=True)
+
+    if model_detail_found.task_type == "image_generation":
+        capabilities.output_modalities.add(ModelModality.IMAGE)
+        capabilities.supports_tool_calling = False
 
     llm_config = get_llm_config()
     client_settings = llm_config.client_settings
@@ -331,7 +517,7 @@ async def get_model_instance(
         api_type=provider_config_found.api_type,
         openai_compat=provider_config_found.openai_compat,
         temperature=provider_config_found.temperature,
-        max_tokens=provider_config_found.max_tokens,
+        generation_max_tokens=provider_config_found.generation_max_tokens,
     )
 
     shared_http_client = await http_client_manager.get_client(config_for_http_client)
@@ -341,7 +527,7 @@ async def get_model_instance(
         model_instance = LLMModel(
             provider_config=config_for_http_client,
             model_detail=model_detail_found,
-            key_store=key_store,
+            health_manager=health_manager,
             engine=engine,
             capabilities=capabilities,
         )
@@ -379,22 +565,24 @@ def get_global_default_model_name() -> str | None:
 
 
 def set_global_default_model_name(provider_model_name: str | None) -> bool:
-    """
-    设置全局默认模型名称
-
-    参数:
-        provider_model_name: 模型名称，格式为 'ProviderName/ModelName'。
-
-    返回:
-        bool: 设置是否成功。
-    """
+    """设置全局默认模型名称。"""
     if provider_model_name:
-        prov_name, mod_name = parse_provider_model_string(provider_model_name)
-        if not prov_name or not mod_name or not find_model_config(prov_name, mod_name):
-            logger.error(
-                f"尝试设置的全局默认模型 '{provider_model_name}' 无效或未配置。"
-            )
-            return False
+        group_name = _get_group_name(provider_model_name)
+        if group_name is not None:
+            if group_name not in get_llm_config().model_groups:
+                logger.error(f"尝试设置的全局默认模型路由组 '{group_name}' 不存在。")
+                return False
+        else:
+            prov_name, mod_name = parse_provider_model_string(provider_model_name)
+            if (
+                not prov_name
+                or not mod_name
+                or not find_model_config(prov_name, mod_name)
+            ):
+                logger.error(
+                    f"尝试设置的全局默认模型 '{provider_model_name}' 无效或未配置。"
+                )
+                return False
 
     Config.set_config(
         AI_CONFIG_GROUP, DEFAULT_MODEL_NAME_KEY, provider_model_name, auto_save=True
@@ -407,21 +595,25 @@ def set_global_default_model_name(provider_model_name: str | None) -> bool:
 
 
 async def get_key_usage_stats() -> dict[str, Any]:
-    """
-    获取所有Provider的Key使用统计
-
-    返回:
-        dict[str, Any]: 包含所有Provider的Key使用统计信息。
-    """
+    """获取所有 Provider 的 Key 使用统计。"""
     providers = get_configured_providers()
     stats = {}
 
     for provider in providers:
-        provider_stats = await key_store.get_key_stats(
+        keys = (
             [provider.api_key]
             if isinstance(provider.api_key, str)
             else provider.api_key
         )
+        provider_stats = {}
+        provider_state = health_manager.state.providers.get(provider.name)
+        if provider_state:
+            for k in keys:
+                stat_data = provider_state.api_keys.get(k)
+                if stat_data:
+                    provider_stats[health_manager._get_key_id(k)] = model_dump(
+                        stat_data
+                    )
         stats[provider.name] = {
             "total_keys": len(
                 [provider.api_key]
@@ -435,16 +627,7 @@ async def get_key_usage_stats() -> dict[str, Any]:
 
 
 async def reset_key_status(provider_name: str, api_key: str | None = None) -> bool:
-    """
-    重置指定Provider的Key状态
-
-    参数:
-        provider_name: 提供商名称。
-        api_key: 要重置的特定API密钥，如果为None则重置所有密钥。
-
-    返回:
-        bool: 重置是否成功。
-    """
+    """重置指定 Provider 的 Key 状态。"""
     providers = get_configured_providers()
     target_provider = None
 
@@ -465,7 +648,7 @@ async def reset_key_status(provider_name: str, api_key: str | None = None) -> bo
 
     if api_key:
         if api_key in provider_keys:
-            await key_store.reset_key_status(api_key)
+            await health_manager.reset_key_status(target_provider.name, api_key)
             logger.info(f"已重置Provider '{provider_name}' 的指定Key状态")
             return True
         else:
@@ -473,7 +656,25 @@ async def reset_key_status(provider_name: str, api_key: str | None = None) -> bo
             return False
     else:
         for key in provider_keys:
-            await key_store.reset_key_status(key)
+            await health_manager.reset_key_status(target_provider.name, key)
         logger.info(f"已重置Provider '{provider_name}' 的所有Key状态")
         return True
 
+
+@PriorityLifecycle.on_startup(priority=10)
+async def _init_llm_config_on_startup():
+    """启动时初始化 LLM 配置、密钥状态并预热工具提供者管理器。"""
+    logger.info("正在初始化 LLM 配置并加载遥测状态...")
+    try:
+        get_llm_config()
+        await health_manager.initialize()
+        logger.debug("LLM 配置和遥测状态初始化完成。")
+
+        from zhenxun.services.ai.tools.engine.registry import tool_provider_manager
+
+        logger.debug("正在预热 LLM 工具提供者管理器...")
+        await tool_provider_manager.initialize()
+        logger.debug("LLM 工具提供者管理器预热完成。")
+
+    except Exception as e:
+        logger.error(f"LLM 配置或遥测状态初始化时发生错误: {e}", e=e)

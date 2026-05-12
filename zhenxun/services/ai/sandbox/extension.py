@@ -3,7 +3,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from zhenxun.services.ai.types.sandbox import SandboxExecutionResult
+from zhenxun.services.ai.sandbox.models import SandboxExecutionResult
 from zhenxun.services.log import logger
 
 if TYPE_CHECKING:
@@ -140,3 +140,4 @@ class SandboxRegistry:
     @classmethod
     def get_plugin_cls(cls, name: str) -> type[BaseSandboxPlugin] | None:
         return cls._plugins.get(name)
+

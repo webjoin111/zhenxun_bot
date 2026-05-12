@@ -6,13 +6,13 @@ from zhenxun.services.ai.knowledge.base import BaseKnowledge
 from zhenxun.services.ai.knowledge.chunking.document import DocumentChunking
 from zhenxun.services.ai.knowledge.chunking.row import RowChunking
 from zhenxun.services.ai.knowledge.chunking.strategy import ChunkingStrategy
+from zhenxun.services.ai.knowledge.models import Document
 from zhenxun.services.ai.knowledge.readers import get_reader_for_file
-from zhenxun.services.ai.llm.api import embed_query
+from zhenxun.services.ai.llm.api import embed
+from zhenxun.services.ai.memory.models import MemoryRecord
 from zhenxun.services.ai.protocols.memory import StorageBackend
-from zhenxun.services.ai.tools.core.decorators import toolkit_tool
-from zhenxun.services.ai.types.knowledge import Document
-from zhenxun.services.ai.types.memory import MemoryRecord
-from zhenxun.services.ai.types.tools import ToolResult
+from zhenxun.services.ai.tools.core.decorators import tool
+from zhenxun.services.ai.tools.models import ToolResult
 from zhenxun.services.log import logger
 
 
@@ -59,7 +59,17 @@ class VectorKnowledge(BaseKnowledge):
 
         async def process_chunk(chunk: Document):
             if self.embedding_model:
-                await chunk.async_embed(self.embedding_model)
+                from zhenxun.services.ai.llm.api import embed
+
+                if chunk.content.strip():
+                    try:
+                        res = await embed(
+                            chunk.content, task="document", model=self.embedding_model
+                        )
+                        if res.vector:
+                            chunk.embedding = res.vector
+                    except Exception as e:
+                        logger.error(f"文档向量化失败 (ID: {chunk.id}): {e}")
             return chunk
 
         embedded_chunks = await asyncio.gather(*[process_chunk(c) for c in chunks])
@@ -118,7 +128,7 @@ class VectorKnowledge(BaseKnowledge):
                 total_chunks += await self.add_file(p)
         return total_chunks
 
-    @toolkit_tool(
+    @tool(
         name="search_knowledge",
         description="在语义知识库中搜索与输入问题最相关的内容片段。",
     )
@@ -127,12 +137,12 @@ class VectorKnowledge(BaseKnowledge):
             query_vector = []
         else:
             try:
-                query_vector = await embed_query(query, model=self.embedding_model)
+                query_vector = (
+                    await embed(query, task="query", model=self.embedding_model)
+                ).vector
             except Exception as e:
                 logger.error(f"[VectorKnowledge] 检索词向量化失败: {e}")
-                return ToolResult(
-                    output="检索词向量化失败，请稍后再试。", is_error=True
-                )
+                return ToolResult(output="检索词向量化失败，请稍后再试。").as_error()
 
         results = await self.storage.search(
             query_embedding=query_vector, scope_prefix=self.scope_prefix, limit=limit
@@ -149,7 +159,6 @@ class VectorKnowledge(BaseKnowledge):
             )
 
         final_text = "\n\n======\n\n".join(formatted_results)
-        return ToolResult(
-            output=final_text,
-            log_content=f"语义检索 '{query}' 成功召回 {len(results)} 条记录。",
+        return ToolResult(output=final_text).with_log(
+            f"语义检索 '{query}' 成功召回 {len(results)} 条记录。"
         )

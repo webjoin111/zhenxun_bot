@@ -14,9 +14,11 @@ import httpx
 from pydantic import BaseModel, Field
 
 from zhenxun.configs.path_config import TEMP_PATH
-from zhenxun.services.ai.types.configs import LLMEmbeddingConfig
-from zhenxun.services.ai.types.exceptions import LLMErrorCode, LLMException
-from zhenxun.services.ai.types.messages import (
+from zhenxun.services.ai.core.configs import LLMEmbeddingConfig
+from zhenxun.services.ai.core.configs import TTSConfig
+from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
+from zhenxun.services.ai.core.messages import (
+    AudioResponse,
     ImagePart,
     LLMContentPart,
     RerankResult,
@@ -26,16 +28,17 @@ from zhenxun.services.ai.types.messages import (
 from zhenxun.services.log import logger
 
 if TYPE_CHECKING:
-    from zhenxun.services.ai.types.messages import LLMMessage
-    from zhenxun.services.ai.types.tools import ToolChoice
+    from zhenxun.services.ai.core.configs import GenerationConfig
+    from zhenxun.services.ai.core.messages import LLMMessage
+    from zhenxun.services.ai.tools.models import ToolChoice
 
-    from ..config.generation import LLMGenerationConfig
     from ..service import LLMModel
 
 
 class RequestData(BaseModel):
-    """请求数据封装"""
+    """标准化的请求载体，用于向上层 HTTP 客户端传递请求参数。"""
 
+    method: str = "POST"
     url: str
     headers: dict[str, str]
     body: dict[str, Any]
@@ -43,7 +46,7 @@ class RequestData(BaseModel):
 
 
 class ResponseData(BaseModel):
-    """响应数据封装 - 支持所有高级功能"""
+    """标准化的响应载体，统一承接文本、多模态与附加元数据。"""
 
     content_parts: list[LLMContentPart] = Field(default_factory=list)
     usage_info: dict[str, Any] | None = None
@@ -53,12 +56,14 @@ class ResponseData(BaseModel):
 
     @property
     def text(self) -> str:
+        """提取并拼接所有 `TextPart` 文本内容。"""
         return "".join(
             p.text for p in self.content_parts if isinstance(p, TextPart)
         ).strip()
 
     @text.setter
     def text(self, value: str):
+        """设置首个 `TextPart`，不存在则追加新的 `TextPart`。"""
         for p in self.content_parts:
             if isinstance(p, TextPart):
                 p.text = value
@@ -67,6 +72,7 @@ class ResponseData(BaseModel):
 
     @property
     def thought_text(self) -> str | None:
+        """提取并拼接所有思维片段文本，未命中则返回 `None`。"""
         thoughts = [
             p.thought_text for p in self.content_parts if isinstance(p, ThoughtPart)
         ]
@@ -74,6 +80,7 @@ class ResponseData(BaseModel):
 
     @property
     def thought_signature(self) -> str | None:
+        """从末尾向前查找思维签名，用于后续连续推理场景。"""
         for p in reversed(self.content_parts):
             if (
                 hasattr(p, "metadata")
@@ -85,20 +92,23 @@ class ResponseData(BaseModel):
 
     @property
     def images(self) -> list[bytes | Path | str]:
+        """收集图片内容，按 URL / 原始字节 / 本地路径顺序返回。"""
         imgs = []
         for p in self.content_parts:
             if isinstance(p, ImagePart):
-                if p.url: imgs.append(p.url)
-                elif p.raw: imgs.append(p.raw)
-                elif p.path: imgs.append(p.path)
+                if p.url:
+                    imgs.append(p.url)
+                elif p.raw:
+                    imgs.append(p.raw)
+                elif p.path:
+                    imgs.append(p.path)
         return imgs
 
     @images.setter
     def images(self, value: list[bytes | Path | str]):
+        """覆盖图片片段并按输入类型重建 `ImagePart` 列表。"""
         self.content_parts = [
-            p
-            for p in self.content_parts
-            if not isinstance(p, ImagePart)
+            p for p in self.content_parts if not isinstance(p, ImagePart)
         ]
         for img in value:
             if isinstance(img, str) and img.startswith(("http://", "https://")):
@@ -116,9 +126,7 @@ class ResponseData(BaseModel):
 
 
 def process_image_data(image_data: bytes) -> bytes | Path:
-    """
-    处理图片数据：若超过 2MB 则保存到临时目录，避免占用内存。
-    """
+    """处理图片二进制数据：超过 2MB 时落盘并返回文件路径。"""
     max_inline_size = 2 * 1024 * 1024
     if len(image_data) > max_inline_size:
         save_dir = TEMP_PATH / "llm"
@@ -135,7 +143,17 @@ def process_image_data(image_data: bytes) -> bytes | Path:
 
 
 class BaseAdapter(ABC):
-    """LLM API适配器基类"""
+    """
+    LLM API适配器基类 (门面模式 Facade)。
+    负责维护厂商级别的通用配置(如 URL 拼接、请求头构建、通用错误拦截)，
+    而将具体的模态序列化与反序列化逻辑委派给各路 Handler。
+    """
+
+    text_handler: Any = None
+    image_handler: Any = None
+    embedding_handler: Any = None
+    rerank_handler: Any = None
+    audio_handler: Any = None
 
     @property
     def log_sanitization_context(self) -> str:
@@ -166,14 +184,14 @@ class BaseAdapter(ABC):
         默认实现：将简单请求转换为高级请求格式
         子类可以重写此方法以提供特定的优化实现
         """
-        from zhenxun.services.ai.types.messages import (
+        from zhenxun.services.ai.core.messages import (
             AssistantMessage,
             SystemMessage,
             TextPart,
             UserMessage,
         )
 
-        messages: list[LLMMessage] = []
+        messages: list[Any] = []
 
         if history:
             for msg in history:
@@ -199,30 +217,46 @@ class BaseAdapter(ABC):
             tool_choice=None,
         )
 
-    @abstractmethod
     async def prepare_advanced_request(
         self,
         model: LLMModel,
         api_key: str,
         messages: list[LLMMessage],
-        config: LLMGenerationConfig | None = None,
+        config: GenerationConfig | None = None,
         tools: list[Any] | None = None,
         tool_choice: str | dict[str, Any] | ToolChoice | None = None,
     ) -> RequestData:
-        """准备高级请求"""
-        pass
+        """准备高级对话请求并委派给 `text_handler` 完成序列化。"""
+        if self.text_handler:
+            return await self.text_handler.prepare_text_request(
+                adapter=self,
+                model=model,
+                api_key=api_key,
+                messages=messages,
+                config=config,
+                tools=tools,
+                tool_choice=tool_choice,
+            )
+        raise NotImplementedError(
+            f"API 类型 '{self.api_type}' 未装配 TextHandler，暂不支持文本对话能力。"
+        )
 
-    @abstractmethod
     def parse_response(
         self,
         model: LLMModel,
         response_json: dict[str, Any],
         is_advanced: bool = False,
     ) -> ResponseData:
-        """解析API响应"""
-        pass
+        """解析文本响应并委派给 `text_handler`。"""
+        if self.text_handler:
+            return self.text_handler.parse_text_response(
+                adapter=self,
+                model=model,
+                response_json=response_json,
+                is_advanced=is_advanced,
+            )
+        raise NotImplementedError(f"API 类型 '{self.api_type}' 未装配 TextHandler。")
 
-    @abstractmethod
     def prepare_embedding_request(
         self,
         model: LLMModel,
@@ -230,17 +264,27 @@ class BaseAdapter(ABC):
         texts: list[str],
         config: LLMEmbeddingConfig,
     ) -> RequestData:
-        """准备文本嵌入请求"""
-        pass
+        """准备文本嵌入请求并委派给 `embedding_handler`。"""
+        if self.embedding_handler:
+            return self.embedding_handler.prepare_embedding_request(
+                adapter=self, model=model, api_key=api_key, texts=texts, config=config
+            )
+        raise NotImplementedError(
+            f"API 类型 '{self.api_type}' 未装配 EmbeddingHandler，暂不支持向量嵌入。"
+        )
 
-    @abstractmethod
     def parse_embedding_response(
         self, response_json: dict[str, Any]
     ) -> list[list[float]]:
-        """解析文本嵌入响应"""
-        pass
+        """解析文本嵌入响应并委派给 `embedding_handler`。"""
+        if self.embedding_handler:
+            return self.embedding_handler.parse_embedding_response(
+                adapter=self, response_json=response_json
+            )
+        raise NotImplementedError(
+            f"API 类型 '{self.api_type}' 未装配 EmbeddingHandler。"
+        )
 
-    @abstractmethod
     def prepare_rerank_request(
         self,
         model: LLMModel,
@@ -249,25 +293,94 @@ class BaseAdapter(ABC):
         documents: list[str | dict[str, str]],
         top_n: int,
     ) -> RequestData:
-        """准备重排请求"""
-        pass
+        """准备重排请求并委派给 `rerank_handler`。"""
+        if self.rerank_handler:
+            return self.rerank_handler.prepare_rerank_request(
+                adapter=self,
+                model=model,
+                api_key=api_key,
+                query=query,
+                documents=documents,
+                top_n=top_n,
+            )
+        raise NotImplementedError(
+            f"API 类型 '{self.api_type}' 未装配 RerankHandler，暂不支持文本重排。"
+        )
 
-    @abstractmethod
     def parse_rerank_response(
         self, response_json: dict[str, Any]
     ) -> list["RerankResult"]:
-        """解析重排响应"""
-        pass
+        """解析重排响应并委派给 `rerank_handler`。"""
+        if self.rerank_handler:
+            return self.rerank_handler.parse_rerank_response(
+                adapter=self, response_json=response_json
+            )
+        raise NotImplementedError(f"API 类型 '{self.api_type}' 未装配 RerankHandler。")
 
-    @abstractmethod
-    def convert_generation_config(
-        self, config: LLMGenerationConfig, model: LLMModel
-    ) -> dict[str, Any]:
-        """将通用生成配置转换为特定API的参数字典"""
-        pass
+    def prepare_image_request(
+        self,
+        model: "LLMModel",
+        api_key: str,
+        prompt: str,
+        images: list[Any] | None = None,
+        config: "GenerationConfig | None" = None,
+    ) -> RequestData:
+        """准备图像请求并委派给 `image_handler`。"""
+        if self.image_handler:
+            return self.image_handler.prepare_image_request(
+                adapter=self,
+                model=model,
+                api_key=api_key,
+                prompt=prompt,
+                images=images,
+                config=config,
+            )
+        raise NotImplementedError(
+            f"API 类型 '{self.api_type}' 未装配 ImageHandler，暂不支持图像生成。"
+        )
+
+    def parse_image_response(self, response_json: dict[str, Any]) -> ResponseData:
+        """解析图像响应并委派给 `image_handler`。"""
+        if self.image_handler:
+            return self.image_handler.parse_image_response(
+                adapter=self, response_json=response_json
+            )
+        raise NotImplementedError(f"API 类型 '{self.api_type}' 未装配 ImageHandler。")
+
+    def prepare_speech_request(
+        self,
+        model: "LLMModel",
+        api_key: str,
+        input_text: str,
+        voice: str,
+        config: "TTSConfig",
+    ) -> RequestData:
+        """准备语音生成请求并委派给 `audio_handler`。"""
+        if self.audio_handler:
+            return self.audio_handler.prepare_speech_request(
+                adapter=self,
+                model=model,
+                api_key=api_key,
+                input_text=input_text,
+                voice=voice,
+                config=config,
+            )
+        raise NotImplementedError(
+            f"API 类型 '{self.api_type}' 未装配 AudioHandler，暂不支持语音生成。"
+        )
+
+    async def parse_speech_response(
+        self, model: "LLMModel", raw_response: Any
+    ) -> AudioResponse:
+        """解析语音响应并委派给 `audio_handler`。注意传入的是 httpx.Response 的 raw 对象"""
+        if self.audio_handler:
+            return await self.audio_handler.parse_speech_response(
+                adapter=self, model=model, raw_response=raw_response
+            )
+        raise NotImplementedError(f"API 类型 '{self.api_type}' 未装配 AudioHandler。")
 
     def validate_embedding_response(self, response_json: dict[str, Any]) -> None:
-        """验证嵌入API响应"""
+        """验证嵌入接口响应，检测 `error` 并转换为统一异常。"""
         if response_json.get("error"):
             error_info = response_json["error"]
             msg = (
@@ -282,16 +395,23 @@ class BaseAdapter(ABC):
             )
 
     def get_api_url(self, model: LLMModel, endpoint: str) -> str:
-        """构建API URL"""
+        """拼接最终请求 URL，兼容 `path_prefix` 与端点前后斜杠。"""
         if not model.api_base:
             raise LLMException(
                 f"模型 {model.model_name} 的 api_base 未设置",
                 code=LLMErrorCode.CONFIGURATION_ERROR,
             )
-        return f"{model.api_base.rstrip('/')}{endpoint}"
+
+        base_url = model.api_base.rstrip("/")
+        prefix = model.path_prefix.strip("/") if model.path_prefix else ""
+        ep = endpoint.lstrip("/")
+
+        if prefix:
+            return f"{base_url}/{prefix}/{ep}"
+        return f"{base_url}/{ep}"
 
     def get_base_headers(self, api_key: str) -> dict[str, str]:
-        """获取基础请求头"""
+        """构建默认请求头，包含 UA、JSON 类型与 Bearer 鉴权。"""
         from zhenxun.utils.user_agent import get_user_agent
 
         headers = get_user_agent()
@@ -304,7 +424,7 @@ class BaseAdapter(ABC):
         return headers
 
     def validate_response(self, response_json: dict[str, Any]) -> None:
-        """验证API响应，解析不同API的错误结构"""
+        """统一校验文本/多模态响应并映射平台错误码。"""
         if response_json.get("error"):
             error_info = response_json["error"]
 
@@ -375,31 +495,6 @@ class BaseAdapter(ABC):
                 code=LLMErrorCode.API_RESPONSE_INVALID,
                 details={"response": response_json},
             )
-
-    def _apply_generation_config(
-        self,
-        model: LLMModel,
-        config: LLMGenerationConfig | None = None,
-    ) -> dict[str, Any]:
-        """通用的配置应用逻辑"""
-        if config is not None:
-            return self.convert_generation_config(config, model)
-
-        if model._generation_config:
-            return self.convert_generation_config(model._generation_config, model)
-
-        return {}
-
-    def apply_config_override(
-        self,
-        model: LLMModel,
-        body: dict[str, Any],
-        config: LLMGenerationConfig | None = None,
-    ) -> dict[str, Any]:
-        """应用配置覆盖"""
-        config_params = self._apply_generation_config(model, config)
-        body.update(config_params)
-        return body
 
     def handle_http_error(self, response: httpx.Response) -> LLMException | None:
         """
@@ -480,187 +575,3 @@ class BaseAdapter(ABC):
                 "response": error_text,
             },
         )
-
-
-class OpenAICompatAdapter(BaseAdapter):
-    """
-    处理所有 OpenAI 兼容 API 的通用适配器。
-    """
-
-    @property
-    def log_sanitization_context(self) -> str:
-        return "openai_request"
-
-    @abstractmethod
-    def get_chat_endpoint(self, model: LLMModel) -> str:
-        """子类必须实现，返回 chat completions 的端点"""
-        pass
-
-    @abstractmethod
-    def get_embedding_endpoint(self, model: LLMModel) -> str:
-        """子类必须实现，返回 embeddings 的端点"""
-        pass
-
-    async def prepare_simple_request(
-        self,
-        model: LLMModel,
-        api_key: str,
-        prompt: str,
-        history: list[dict[str, str]] | None = None,
-    ) -> RequestData:
-        """准备简单文本生成请求 - OpenAI兼容API的通用实现"""
-        url = self.get_api_url(model, self.get_chat_endpoint(model))
-        headers = self.get_base_headers(api_key)
-
-        messages = []
-        if history:
-            messages.extend(history)
-        messages.append({"role": "user", "content": prompt})
-
-        body = {
-            "model": model.model_name,
-            "messages": messages,
-        }
-
-        body = self.apply_config_override(model, body)
-
-        return RequestData(url=url, headers=headers, body=body)
-
-    async def prepare_advanced_request(
-        self,
-        model: LLMModel,
-        api_key: str,
-        messages: list[LLMMessage],
-        config: LLMGenerationConfig | None = None,
-        tools: list[Any] | None = None,
-        tool_choice: str | dict[str, Any] | ToolChoice | None = None,
-    ) -> RequestData:
-        """准备高级请求 - OpenAI兼容格式"""
-        url = self.get_api_url(model, self.get_chat_endpoint(model))
-        headers = self.get_base_headers(api_key)
-        if model.api_type == "openrouter":
-            headers.update(
-                {
-                    "HTTP-Referer": "https://github.com/zhenxun-org/zhenxun_bot",
-                    "X-Title": "Zhenxun Bot",
-                }
-            )
-        from .components.openai import OpenAIMessageConverter
-
-        converter = OpenAIMessageConverter()
-        openai_messages = converter.convert_messages(messages)
-
-        body = {
-            "model": model.model_name,
-            "messages": openai_messages,
-        }
-
-        openai_tools: list[dict[str, Any]] | None = None
-        executables: list[Any] = []
-        if tools:
-            for tool in tools:
-                if hasattr(tool, "get_definition"):
-                    executables.append(tool)
-
-        if executables:
-            import asyncio
-
-            from zhenxun.utils.pydantic_compat import model_dump
-
-            definition_tasks = [
-                executable.get_definition() for executable in executables
-            ]
-            tool_defs = []
-            if definition_tasks:
-                tool_defs = await asyncio.gather(*definition_tasks)
-
-            if tool_defs:
-                openai_tools = [
-                    {"type": "function", "function": model_dump(tool)}
-                    for tool in tool_defs
-                ]
-
-        if openai_tools:
-            body["tools"] = openai_tools
-
-        if tool_choice:
-            body["tool_choice"] = tool_choice
-
-        body = self.apply_config_override(model, body, config)
-        return RequestData(url=url, headers=headers, body=body)
-
-    def parse_response(
-        self,
-        model: LLMModel,
-        response_json: dict[str, Any],
-        is_advanced: bool = False,
-    ) -> ResponseData:
-        """解析响应 - 直接使用组件化 ResponseParser"""
-        _ = model, is_advanced
-        from .components.openai import OpenAIResponseParser
-
-        parser = OpenAIResponseParser()
-        return parser.parse(response_json)
-
-    def prepare_embedding_request(
-        self,
-        model: LLMModel,
-        api_key: str,
-        texts: list[str],
-        config: LLMEmbeddingConfig,
-    ) -> RequestData:
-        """准备嵌入请求 - OpenAI兼容格式"""
-        url = self.get_api_url(model, self.get_embedding_endpoint(model))
-        headers = self.get_base_headers(api_key)
-
-        body = {
-            "model": model.model_name,
-            "input": texts,
-        }
-
-        if config.output_dimensionality:
-            body["dimensions"] = config.output_dimensionality
-
-        if config.task_type:
-            body["task"] = config.task_type
-
-        if config.encoding_format and config.encoding_format != "float":
-            body["encoding_format"] = config.encoding_format
-
-        return RequestData(url=url, headers=headers, body=body)
-
-    def parse_embedding_response(
-        self, response_json: dict[str, Any]
-    ) -> list[list[float]]:
-        """解析嵌入响应 - OpenAI兼容格式"""
-        self.validate_embedding_response(response_json)
-
-        try:
-            data = response_json.get("data", [])
-            if not data:
-                raise LLMException(
-                    "嵌入响应中没有数据",
-                    code=LLMErrorCode.EMBEDDING_FAILED,
-                    details=response_json,
-                )
-
-            embeddings = []
-            for item in data:
-                if "embedding" in item:
-                    embeddings.append(item["embedding"])
-                else:
-                    raise LLMException(
-                        "嵌入响应格式错误：缺少embedding字段",
-                        code=LLMErrorCode.EMBEDDING_FAILED,
-                        details=item,
-                    )
-
-            return embeddings
-
-        except Exception as e:
-            logger.error(f"解析嵌入响应失败: {e}", e=e)
-            raise LLMException(
-                f"解析嵌入响应失败: {e}",
-                code=LLMErrorCode.EMBEDDING_FAILED,
-                cause=e,
-            )

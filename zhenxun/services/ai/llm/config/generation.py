@@ -2,71 +2,156 @@
 LLM 生成配置相关类和函数
 """
 
-from typing import Any
+from typing import Any, Literal
 from typing_extensions import Self
 
-from zhenxun.services.ai.config import get_gemini_safety_threshold
-from zhenxun.services.ai.types.configs import (
-    CoreConfig,
-    ImageAspectRatio,
-    ImageResolution,
-    LLMGenerationConfig,
-    OutputConfig,
-    ReasoningConfig,
-    ReasoningEffort,
-    SafetyConfig,
-    ToolConfig,
-    VisualConfig,
+from zhenxun.services.ai.core.configs import (
+    GenerationConfig,
 )
-from zhenxun.services.ai.types.exceptions import LLMErrorCode, LLMException
-from zhenxun.services.ai.types.messages import ResponseFormat
+from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
+from zhenxun.services.ai.core.messages import ResponseFormat
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_validate
 
 
-class GenConfigBuilder:
+class GeminiIntentNamespace:
+    """Gemini 专属高级参数构建域"""
+
+    def __init__(self, builder: "IntentBuilder"):
+        self._builder = builder
+
+    def set_safety_threshold(self, threshold: str) -> "IntentBuilder":
+        """强制设置 Gemini 安全阈值 (如 BLOCK_NONE, BLOCK_ONLY_HIGH)"""
+        self._builder._config.gemini_options.safety_settings = {
+            "HARM_CATEGORY_HARASSMENT": threshold,
+            "HARM_CATEGORY_HATE_SPEECH": threshold,
+            "HARM_CATEGORY_SEXUALLY_EXPLICIT": threshold,
+            "HARM_CATEGORY_DANGEROUS_CONTENT": threshold,
+        }
+        return self._builder
+
+
+class OpenAIIntentNamespace:
+    """OpenAI 专属高级参数构建域"""
+
+    def __init__(self, builder: "IntentBuilder"):
+        self._builder = builder
+
+    def enable_server_storage(self, store: bool = True) -> "IntentBuilder":
+        """设置是否在 OpenAI 服务端留存请求记录"""
+        self._builder._config.openai_options.store = store
+        return self._builder
+
+
+class ClaudeIntentNamespace:
+    """Claude 专属高级参数构建域"""
+
+    def __init__(self, builder: "IntentBuilder"):
+        self._builder = builder
+
+    def set_beta_headers(self, headers: list[str]) -> "IntentBuilder":
+        """设置 Claude API 的特定 Beta 实验性 Header"""
+        self._builder._config.claude_options.beta_headers = headers
+        return self._builder
+
+
+class DeepSeekIntentNamespace:
+    """DeepSeek 专属高级参数构建域"""
+
+    def __init__(self, builder: "IntentBuilder"):
+        self._builder = builder
+
+    def disable_thinking(self) -> "IntentBuilder":
+        """显式关闭 DeepSeek 的思维链"""
+        self._builder._config.deepseek_options.thinking = False
+        return self._builder
+
+
+class IntentBuilder:
     """
-    LLM 生成配置的语义化构建器。
-    设计原则：高频业务场景优先，低频参数命名空间化。
+    基于能力意图声明的构建器 (Intent-Driven Builder)。
+    完全屏蔽底层厂商参数差异，面向开发者提供 Fluent API。
     """
 
     def __init__(self):
-        self._config = LLMGenerationConfig()
+        self._config = GenerationConfig()
 
-    def _ensure_core(self) -> CoreConfig:
-        if self._config.core is None:
-            self._config.core = CoreConfig()
-        return self._config.core
+    @property
+    def gemini(self) -> GeminiIntentNamespace:
+        return GeminiIntentNamespace(self)
 
-    def _ensure_output(self) -> OutputConfig:
-        if self._config.output is None:
-            self._config.output = OutputConfig()
-        return self._config.output
+    @property
+    def openai(self) -> OpenAIIntentNamespace:
+        return OpenAIIntentNamespace(self)
 
-    def _ensure_reasoning(self) -> ReasoningConfig:
-        if self._config.reasoning is None:
-            self._config.reasoning = ReasoningConfig()
-        return self._config.reasoning
+    @property
+    def claude(self) -> ClaudeIntentNamespace:
+        return ClaudeIntentNamespace(self)
 
-    def as_json(self, schema: dict[str, Any] | None = None) -> Self:
-        """
-        [高频] 强制模型输出 JSON 格式。
-        """
-        out = self._ensure_output()
-        out.response_format = ResponseFormat.JSON
-        if schema:
-            out.response_schema = schema
-        return self
+    @property
+    def deepseek(self) -> DeepSeekIntentNamespace:
+        return DeepSeekIntentNamespace(self)
 
-    def enable_thinking(
-        self, budget_tokens: int = -1, show_thoughts: bool = False
+    def with_reasoning(
+        self, level: str | None = None, budget: int | None = None
     ) -> Self:
         """
-        [高频] 启用模型的思考/推理能力 (如 Gemini 2.0 Flash Thinking, DeepSeek R1)。
+        跨厂商的思考/推理意图声明。
+        自动翻译为 OpenAI (reasoning_effort), Gemini (thinking_level, thinking_budget), Claude (effort, budget)
         """
-        reasoning = self._ensure_reasoning()
-        reasoning.budget_tokens = budget_tokens
-        reasoning.show_thoughts = show_thoughts
+        if level:
+            from typing import Literal, cast
+
+            self._config.openai_options.reasoning_effort = level
+            self._config.gemini_options.thinking_level = cast(
+                Literal["minimal", "low", "medium", "high"], level
+            )
+            self._config.claude_options.effort = cast(
+                Literal["low", "medium", "high", "xhigh", "max"], level
+            )
+        if budget is not None:
+            self._config.gemini_options.thinking_budget = budget
+            self._config.claude_options.thinking_budget_tokens = budget
+            self._config.claude_options.thinking_type = "adaptive"
+        if level or budget is not None:
+            self._config.gemini_options.include_thoughts = True
+            self._config.deepseek_options.thinking = True
+        return self
+
+    def with_json_output(self) -> Self:
+        """
+        基础结构化意图：要求大模型输出通用 JSON 格式（不校验 Schema）。
+        """
+        self._config.output.response_format = ResponseFormat.JSON
+        self._config.output.response_mime_type = "application/json"
+        self._config.output.structured_output_strategy = "native"
+        return self
+
+    def require_structured_output(self, schema: Any, strict: bool = True) -> Self:
+        """
+        强制要求结构化输出意图。
+        支持自动处理 Pydantic 模型并转换为厂商所需的 JSON Schema。
+        """
+        import inspect
+
+        from pydantic import BaseModel
+
+        from zhenxun.services.ai.core.configs import StructuredOutputStrategy
+        from zhenxun.utils.pydantic_compat import model_json_schema
+
+        self._config.output.response_format = ResponseFormat.JSON
+        self._config.output.response_mime_type = "application/json"
+        if schema:
+            if inspect.isclass(schema) and issubclass(schema, BaseModel):
+                self._config.output.response_schema = model_json_schema(schema)
+            else:
+                from typing import cast
+
+                self._config.output.response_schema = cast(dict[str, Any], schema)
+        if strict:
+            self._config.output.structured_output_strategy = (
+                StructuredOutputStrategy.NATIVE
+            )
         return self
 
     def config_core(
@@ -74,90 +159,134 @@ class GenConfigBuilder:
         temperature: float | None = None,
         max_tokens: int | None = None,
         top_p: float | None = None,
-        top_k: int | None = None,
-        stop: list[str] | str | None = None,
-        frequency_penalty: float | None = None,
-        presence_penalty: float | None = None,
     ) -> Self:
         """
-        [低频] 配置核心生成参数。
+        配置底层核心采样参数（如 temperature, max_tokens 等）。
         """
-        core = self._ensure_core()
         if temperature is not None:
-            core.temperature = temperature
+            self._config.common.temperature = temperature
         if max_tokens is not None:
-            core.max_tokens = max_tokens
+            self._config.common.max_tokens = max_tokens
         if top_p is not None:
-            core.top_p = top_p
-        if top_k is not None:
-            core.top_k = top_k
-        if stop is not None:
-            core.stop = stop
-        if frequency_penalty is not None:
-            core.frequency_penalty = frequency_penalty
-        if presence_penalty is not None:
-            core.presence_penalty = presence_penalty
+            self._config.common.top_p = top_p
         return self
 
-    def config_safety(self, settings: dict[str, str]) -> Self:
+    def with_all_native_capabilities(self) -> Self:
         """
-        [低频] 配置安全过滤设置。
+        自动开启当前模型支持的所有云端原生能力 (Native Capabilities)。
+        如网页搜索、代码执行等。开启的实际能力由底层模型能力声明 (capabilities) 决定。
         """
-        if self._config.safety is None:
-            self._config.safety = SafetyConfig()
-        self._config.safety.safety_settings = settings
+        self._config.enable_all_native_tools = True
         return self
 
-    def enable_server_tools_context(self) -> Self:
-        """
-        [高频] 开启服务端工具调用轨迹上下文循环 (支持内置工具与本地函数混合调用)。
-        """
-        if self._config.tool_config is None:
-            self._config.tool_config = ToolConfig()
-        self._config.tool_config.includeServerSideToolInvocations = True
-        return self
-
-    def config_visual(
+    def with_web_search(
         self,
-        aspect_ratio: ImageAspectRatio | str | None = None,
-        resolution: ImageResolution | str | None = None,
+        dynamic_threshold: float | None = None,
+        domain_filters: list[str] | None = None,
     ) -> Self:
         """
-        [低频] 配置视觉生成参数 (DALL-E 3 / Gemini Imagen)。
+        启用当前模型原生的网页检索/联网能力。
+        底层将自动适配为对应厂商的格式 (如 OpenAI web_search / Gemini google_search)。
         """
-        if self._config.visual is None:
-            self._config.visual = VisualConfig()
-        if aspect_ratio:
-            self._config.visual.aspect_ratio = aspect_ratio
-        if resolution:
-            self._config.visual.resolution = resolution
+        from zhenxun.services.ai.core.configs import WebSearchTool
+
+        self._config.native_tools.append(
+            WebSearchTool(
+                dynamic_threshold=dynamic_threshold,
+                domain_filters=domain_filters,
+            )
+        )
         return self
 
-    def set_custom_param(self, key: str, value: Any) -> Self:
-        """设置特定于厂商的自定义参数"""
-        if self._config.custom_params is None:
-            self._config.custom_params = {}
-        self._config.custom_params[key] = value
+    def with_code_execution(self, timeout: int | None = None) -> Self:
+        """启用厂商原生的安全沙箱代码执行能力。"""
+        from zhenxun.services.ai.core.configs import CodeExecutionTool
+
+        self._config.native_tools.append(CodeExecutionTool(timeout=timeout))
         return self
 
-    def build(self) -> LLMGenerationConfig:
+    def with_computer_use(
+        self, display_width_px: int = 1024, display_height_px: int = 768
+    ) -> Self:
+        """启用桌面环境控制 (Computer Use) 能力。"""
+        from zhenxun.services.ai.core.configs import ComputerUseTool
+
+        self._config.native_tools.append(
+            ComputerUseTool(
+                display_width_px=display_width_px,
+                display_height_px=display_height_px,
+            )
+        )
+        return self
+
+    def with_safety_level(self, level: str = "moderate") -> Self:
+        """
+        安全合规意图。
+        level 取值: 'strict' (最严格), 'moderate' (中等), 'none' (完全无限制)。
+        """
+        from zhenxun.services.ai.config import get_gemini_safety_threshold
+
+        if level == "strict":
+            self.gemini.set_safety_threshold("BLOCK_LOW_AND_ABOVE")
+        elif level == "none":
+            self.gemini.set_safety_threshold("BLOCK_NONE")
+        else:
+            self.gemini.set_safety_threshold(get_gemini_safety_threshold())
+        return self
+
+    def with_image_generation_params(
+        self, aspect_ratio: str = "16:9", resolution: str = "1K"
+    ) -> Self:
+        """
+        生图意图：统一配置图像生成的比例与分辨率。
+        """
+        self._config.media.aspect_ratio = aspect_ratio
+        self._config.media.resolution = resolution
+        return self
+
+    def with_vision_optimization(
+        self, quality: Literal["low", "medium", "high", "standard", "hd"] = "high"
+    ) -> Self:
+        """
+        视觉优化意图。
+        """
+        self._config.media.quality = quality
+        return self
+
+    def with_provider_raw_kwargs(self, provider_name: str, **kwargs) -> Self:
+        """厂商逃生舱：直接注入特有参数"""
+        provider_name = provider_name.lower()
+        if provider_name == "openai":
+            for k, v in kwargs.items():
+                setattr(self._config.openai_options, k, v)
+        elif provider_name == "gemini":
+            for k, v in kwargs.items():
+                setattr(self._config.gemini_options, k, v)
+        elif provider_name == "claude":
+            for k, v in kwargs.items():
+                setattr(self._config.claude_options, k, v)
+        else:
+            self._config.custom_kwargs.update(kwargs)
+        return self
+
+    def build(self) -> GenerationConfig:
         """构建最终的配置对象"""
         return self._config
 
 
 def validate_override_params(
-    override_config: dict[str, Any] | LLMGenerationConfig | None,
-) -> LLMGenerationConfig:
+    override_config: dict[str, Any] | GenerationConfig | None,
+) -> GenerationConfig:
     """验证和标准化覆盖参数"""
     if override_config is None:
-        return LLMGenerationConfig()
+        return GenerationConfig()
 
-    if isinstance(override_config, LLMGenerationConfig):
+    if isinstance(override_config, GenerationConfig):
         return override_config
 
     if isinstance(override_config, dict):
         try:
-            return model_validate(LLMGenerationConfig, override_config)
+            return model_validate(GenerationConfig, override_config)
         except Exception as e:
             logger.warning(f"覆盖配置参数验证失败: {e}")
             raise LLMException(
@@ -170,103 +299,3 @@ def validate_override_params(
         f"不支持的配置类型: {type(override_config)}",
         code=LLMErrorCode.CONFIGURATION_ERROR,
     )
-
-
-class CommonOverrides:
-    """常用的配置覆盖预设"""
-
-    @staticmethod
-    def gemini_json() -> LLMGenerationConfig:
-        """Gemini JSON模式：强制JSON输出"""
-        return LLMGenerationConfig(
-            core=CoreConfig(),
-            output=OutputConfig(
-                response_format=ResponseFormat.JSON,
-                response_mime_type="application/json",
-            ),
-        )
-
-    @staticmethod
-    def gemini_2_5_thinking(tokens: int = -1) -> LLMGenerationConfig:
-        """Gemini 2.5 思考模式：默认 -1 (动态思考)，0 为禁用，>=1024 为固定预算"""
-        return LLMGenerationConfig(
-            core=CoreConfig(temperature=1.0),
-            reasoning=ReasoningConfig(budget_tokens=tokens, show_thoughts=True),
-        )
-
-    @staticmethod
-    def gemini_3_thinking(level: str = "HIGH") -> LLMGenerationConfig:
-        """Gemini 3 深度思考模式：使用思考等级"""
-        try:
-            effort = ReasoningEffort(level.upper())
-        except ValueError:
-            effort = ReasoningEffort.HIGH
-
-        return LLMGenerationConfig(
-            core=CoreConfig(),
-            reasoning=ReasoningConfig(effort=effort, show_thoughts=True),
-        )
-
-    @staticmethod
-    def gemini_structured(schema: dict[str, Any]) -> LLMGenerationConfig:
-        """Gemini 结构化输出：自定义JSON模式"""
-        return LLMGenerationConfig(
-            core=CoreConfig(),
-            output=OutputConfig(
-                response_mime_type="application/json", response_schema=schema
-            ),
-        )
-
-    @staticmethod
-    def gemini_safe() -> LLMGenerationConfig:
-        """Gemini 安全模式：使用配置的安全设置"""
-        threshold = get_gemini_safety_threshold()
-        return LLMGenerationConfig(
-            core=CoreConfig(),
-            safety=SafetyConfig(
-                safety_settings={
-                    "HARM_CATEGORY_HARASSMENT": threshold,
-                    "HARM_CATEGORY_HATE_SPEECH": threshold,
-                    "HARM_CATEGORY_SEXUALLY_EXPLICIT": threshold,
-                    "HARM_CATEGORY_DANGEROUS_CONTENT": threshold,
-                }
-            ),
-        )
-
-    @staticmethod
-    def gemini_code_execution() -> LLMGenerationConfig:
-        """Gemini 代码执行模式：启用代码执行功能"""
-        return LLMGenerationConfig(
-            core=CoreConfig(),
-            custom_params={"code_execution_timeout": 30},
-        )
-
-    @staticmethod
-    def gemini_grounding() -> LLMGenerationConfig:
-        """Gemini 信息来源关联模式：启用Google搜索"""
-        return LLMGenerationConfig(
-            core=CoreConfig(),
-            custom_params={
-                "grounding_config": {"dynamicRetrievalConfig": {"mode": "MODE_DYNAMIC"}}
-            },
-        )
-
-    @staticmethod
-    def gemini_nano_banana(aspect_ratio: str = "16:9") -> LLMGenerationConfig:
-        """Gemini Nano Banana Pro：自定义比例生图"""
-        try:
-            ar = ImageAspectRatio(aspect_ratio)
-        except ValueError:
-            ar = ImageAspectRatio.LANDSCAPE_16_9
-
-        return LLMGenerationConfig(
-            core=CoreConfig(),
-            visual=VisualConfig(aspect_ratio=ar),
-        )
-
-    @staticmethod
-    def gemini_high_res() -> LLMGenerationConfig:
-        """Gemini 3: 强制使用高解析度处理输入媒体"""
-        return LLMGenerationConfig(
-            visual=VisualConfig(media_resolution="HIGH", resolution=ImageResolution.HD)
-        )

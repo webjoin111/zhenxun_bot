@@ -18,10 +18,15 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-import ptyprocess
 from pydantic import VERSION as PYDANTIC_VERSION
 from pydantic import BaseModel, Field
-import pyte
+
+try:
+    import ptyprocess  # type: ignore
+    import pyte  # type: ignore
+except ImportError:
+    ptyprocess = None
+    pyte = None
 
 IS_PYDANTIC_V2 = PYDANTIC_VERSION.startswith("2.")
 
@@ -140,11 +145,11 @@ class PtySession:
         if env:
             run_env.update(env)
 
-        self.pty = ptyprocess.PtyProcessUnicode.spawn(
+        self.pty = ptyprocess.PtyProcessUnicode.spawn(  # type: ignore
             args, cwd=cwd, env=run_env, dimensions=(rows, cols)
         )
-        self.screen = pyte.Screen(cols, rows)
-        self.stream = pyte.Stream(self.screen)
+        self.screen = pyte.Screen(cols, rows)  # type: ignore
+        self.stream = pyte.Stream(self.screen)  # type: ignore
         self.active = True
         self.ws: WebSocket | None = None
         self._bg_tasks = set()

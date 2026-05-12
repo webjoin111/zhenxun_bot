@@ -1,12 +1,12 @@
 import nonebot
 
 from zhenxun.configs.config import Config
-from zhenxun.services.ai.utils.lifespan import ResourceLifespanMixin
-from zhenxun.services.ai.types.sandbox import (
+from zhenxun.services.ai.sandbox.models import (
     SandboxRequirements,
     SandboxSecurityProfile,
     SandboxTier,
 )
+from zhenxun.services.ai.utils.lifespan import ResourceLifespanMixin
 from zhenxun.services.log import logger
 
 from .drivers.base import BaseSandboxDriver
@@ -19,15 +19,8 @@ def register_sandbox_configs():
         "sandbox",
         "SANDBOX_TYPE",
         "auto",
-        help="沙箱底层驱动类型: auto (自动路由), docker, e2b (云端), wasm (极速轻量)",
+        help="沙箱底层驱动类型: auto (自动路由), docker, wasm (极速轻量)",
         type=str,
-    )
-    Config.add_plugin_config(
-        "sandbox",
-        "SANDBOX_API_KEYS",
-        {"E2B": "YOUR_API_KEY"},
-        help="云端沙箱服务 API Keys 字典，例如: {'E2B': '你的密钥', 'Daytona': '...'}",
-        type=dict,
     )
     Config.add_plugin_config(
         "sandbox",
@@ -124,7 +117,11 @@ class _SandboxManager(ResourceLifespanMixin):
                 or implied_tier != SandboxTier.LIGHTWEIGHT
             )
 
-        if requirements and requirements.dependencies:
+        if requirements and (
+            requirements.env_setup.python_packages
+            or requirements.env_setup.system_packages
+            or requirements.env_setup.install_scripts
+        ):
             profile.enable_network = True
 
         plugins_to_mount = set()
@@ -152,7 +149,11 @@ class _SandboxManager(ResourceLifespanMixin):
                 await self.close_session(session_id)
             else:
                 driver.touch()
-                if requirements and requirements.dependencies:
+                if requirements and (
+                    requirements.env_setup.python_packages
+                    or requirements.env_setup.system_packages
+                    or requirements.env_setup.install_scripts
+                ):
                     await driver.install_dependencies(requirements)
                 for p in plugins_to_mount:
                     await driver.mount_plugin(p)
@@ -169,7 +170,11 @@ class _SandboxManager(ResourceLifespanMixin):
             await driver.close()
             raise e
 
-        if requirements and requirements.dependencies:
+        if requirements and (
+            requirements.env_setup.python_packages
+            or requirements.env_setup.system_packages
+            or requirements.env_setup.install_scripts
+        ):
             await driver.install_dependencies(requirements)
 
         for p in plugins_to_mount:
@@ -180,7 +185,7 @@ class _SandboxManager(ResourceLifespanMixin):
         return driver
 
     async def setup_workspace_environment(
-        self, session_id: str, workspace_dir: str, openclaw_metadata: dict | None = None
+        self, session_id: str, workspace_dir: str
     ) -> bool:
         """统一扫描指定工作区，通过 Provisioner 体系完成环境装配"""
         if session_id not in self._active_sandboxes:
@@ -195,40 +200,6 @@ class _SandboxManager(ResourceLifespanMixin):
 
         for prov in ProvisionerRegistry.get_all().values():
             await prov.scan_and_setup_workspace(driver, workspace_dir)
-
-        if openclaw_metadata and "install" in openclaw_metadata:
-            from zhenxun.services.ai.sandbox.extension import SupportsCommandExecution
-
-            if isinstance(driver, SupportsCommandExecution):
-                for item in openclaw_metadata["install"]:
-                    kind = item.get("kind")
-                    pkg = (
-                        item.get("package") or item.get("module") or item.get("formula")
-                    )
-                    if not pkg:
-                        continue
-                    cmd = ""
-                    if kind == "node":
-                        cmd = f"npm install {pkg}"
-                    elif kind == "python":
-                        cmd = f"pip install {pkg}"
-                    elif kind == "go":
-                        cmd = f"go install {pkg}"
-                    elif kind == "brew":
-                        cmd = f"brew install {pkg}"
-
-                    if cmd:
-                        res = await driver.execute_raw_command(
-                            cmd, cwd=workspace_dir, timeout=300
-                        )
-                        if res.exit_code == 0:
-                            logger.info(
-                                f"[SandboxManager] OpenClaw Install 成功 ({cmd})"
-                            )
-                        else:
-                            logger.error(
-                                f"[SandboxManager] OpenClaw Install 失败 ({cmd}): {res.stderr or res.stdout}"
-                            )
         return True
 
     async def release_resource(self, resource_id: str):
@@ -264,20 +235,35 @@ driver = nonebot.get_driver()
 async def _startup_sandboxes():
     providers = SandboxRegistry.get_all_providers()
     if "docker" in providers:
+        import asyncio
+
         from .drivers.docker import DockerDriver
 
-        is_alive = await DockerDriver.check_engine_alive()
-        docker_provider = providers["docker"]
+        async def _async_init_docker_sandbox():
+            docker_provider = providers["docker"]
+            try:
+                is_alive = await asyncio.wait_for(
+                    DockerDriver.check_engine_alive(), timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                is_alive = False
+                logger.warning(
+                    "[SandboxManager] Docker 引擎探活超时(5s)，可能处于假死状态，已自动禁用本地路由。"
+                )
+            except Exception:
+                is_alive = False
 
-        if hasattr(docker_provider, "set_engine_status"):
-            getattr(docker_provider, "set_engine_status")(is_alive)
+            if hasattr(docker_provider, "set_engine_status"):
+                getattr(docker_provider, "set_engine_status")(is_alive)
 
-        if is_alive:
-            await DockerDriver.prune_orphan_containers()
-        else:
-            logger.debug(
-                "[SandboxManager] 未检测到本地 Docker 引擎运行，Docker 沙箱路由已自动禁用。"
-            )
+            if is_alive:
+                await DockerDriver.prune_orphan_containers()
+            else:
+                logger.debug(
+                    "[SandboxManager] 未检测到可用本地 Docker 引擎，Docker 沙箱路由已自动禁用。"
+                )
+
+        asyncio.create_task(_async_init_docker_sandbox())
 
 
 @driver.on_shutdown

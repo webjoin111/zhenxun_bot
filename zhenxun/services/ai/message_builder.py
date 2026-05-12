@@ -15,9 +15,9 @@ from nonebot_plugin_alconna.uniseg import (
 )
 from PIL.Image import Image as PILImageType
 
-from zhenxun.services.ai.types.messages import (
-    BaseContentPart,
+from zhenxun.services.ai.core.messages import (
     AudioPart,
+    BaseContentPart,
     FilePart,
     ImagePart,
     LLMContentPart,
@@ -260,3 +260,4 @@ async def _handle_image(seg: Image) -> ImagePart | None:
     if url:
         return ImagePart(url=url, mime_type=mime_type)
     return None
+

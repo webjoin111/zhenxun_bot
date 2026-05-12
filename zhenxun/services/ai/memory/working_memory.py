@@ -3,19 +3,20 @@ from collections.abc import Callable
 
 from pydantic import BaseModel, Field
 
-from zhenxun.services.ai.engine.token_estimator import global_estimator
+from zhenxun.services.ai.core.messages import (
+    LLMMessage,
+    SystemMessage,
+    ToolMessage,
+)
+from zhenxun.services.ai.core.engine.token_estimator import global_estimator
 from zhenxun.services.ai.protocols.memory import (
     BaseMemoryReducer,
     BaseMessageStore,
     BaseWorkingMemory,
     SessionMetadata,
 )
-from zhenxun.services.ai.types.messages import (
-    LLMMessage,
-    SystemMessage,
-    ToolMessage,
-)
 from zhenxun.services.log import logger
+from zhenxun.utils.pydantic_compat import model_copy
 
 
 class InMemoryMessageStore(BaseMessageStore):
@@ -137,7 +138,9 @@ class ToolOutputCompactor(BaseMemoryReducer):
                         tail = text[-300:]
                         omitted = len(text) - 600
                         new_output = f"{head}\n\n...[由于上下文限制，已静默省略 {omitted} 个字符]...\n\n{tail}"
-                        new_part = return_part.model_copy(update={"output": new_output})
+                        new_part = model_copy(
+                            return_part, update={"output": new_output}
+                        )
                         new_content.append(new_part)
                         msg_changed = True
                         changed = True
@@ -145,7 +148,7 @@ class ToolOutputCompactor(BaseMemoryReducer):
                         new_content.append(return_part)
 
                 if msg_changed:
-                    new_msg = msg.model_copy(deep=True)
+                    new_msg = model_copy(msg, deep=True)
                     new_msg.content = new_content
                     new_msg.token_cost = None
                     new_messages.append(new_msg)
@@ -236,9 +239,7 @@ class LLMSummarizerReducer(BaseMemoryReducer):
             prompt_text += f"> {prev_summary}\n\n"
         prompt_text += "#### 待处理的历史消息流：\n"
         for m in to_summarize:
-            from zhenxun.services.ai.llm.utils import extract_text_from_content
-
-            c_str = extract_text_from_content(m.content)[:1500]
+            c_str = m.extract_text[:1500]
             speaker = m.source_name if m.source_name else m.role.capitalize()
             prompt_text += f"[{speaker}]: {c_str}\n"
         prompt_text += "</需要合并的旧对话记录>\n"
@@ -316,9 +317,7 @@ class StructuredSummaryReducer(BaseMemoryReducer):
             prompt_text += f"<之前的状态摘要>\n{prev_summary}\n</之前的状态摘要>\n\n"
         prompt_text += "<需要合并的旧对话记录>\n"
         for m in to_summarize:
-            from zhenxun.services.ai.llm.utils import extract_text_from_content
-
-            c_str = extract_text_from_content(m.content)[:1500]
+            c_str = m.extract_text[:1500]
             speaker = m.source_name if m.source_name else m.role.capitalize()
             prompt_text += f"[{speaker}]: {c_str}\n"
         prompt_text += "</需要合并的旧对话记录>\n"

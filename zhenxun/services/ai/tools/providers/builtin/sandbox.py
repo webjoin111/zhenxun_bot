@@ -1,14 +1,19 @@
 import asyncio
 from typing import Any, Protocol, cast
 
-from zhenxun.services.ai.tools.core.context import RunContext
-from zhenxun.services.ai.tools.core.decorators import silent, toolkit_tool
-from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
-from zhenxun.services.ai.types.sandbox import (
+from zhenxun.services.ai.run import Inject, RunContext
+from zhenxun.services.ai.sandbox.extension import (
+    SupportsCommandExecution,
+    SupportsFileSystem,
+    SupportsInteractivePTY,
+)
+from zhenxun.services.ai.sandbox.models import (
     SandboxExecutionResult,
     SandboxSecurityProfile,
 )
-from zhenxun.services.ai.types.tools import ToolResult
+from zhenxun.services.ai.tools.core.decorators import silent, tool
+from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
+from zhenxun.services.ai.tools.models import ToolResult
 from zhenxun.services.log import logger
 
 
@@ -29,11 +34,11 @@ class SandboxToolkit(BaseToolkit):
         "但**绝对不支持 `input()` 交互**。\n"
         "2. **交互式程序与长效服务**：如果你的代码包含 `input()` "
         "或需要启动 Web Server，你**必须**遵循以下流程：\n"
-        "   - **第一步**：使用 `write_sandbox_file` 将代码写入文件（如 `/workspace/game.py`）。\n"
-        "   - **第二步**：使用 `execute_terminal_command` 并设置 `is_interactive=True` 运行该文件。\n"
-        "   - **后续交互**：调用此命令后，系统会分配虚拟终端并返回初始屏幕画面。你需要通过观察屏幕来决定下一步。使用 `send_sandbox_input` 填入所需数据（别忘了换行符 `\\n`），并使用 `read_sandbox_screen` 随时刷新屏幕。\n"
+        "   - **第一步**：使用 `write_sandbox_file` 将代码写入文件（如 `/workspace/game.py`）。\n"  # noqa: E501
+        "   - **第二步**：使用 `execute_terminal_command` 并设置 `is_interactive=True` 运行该文件。\n"  # noqa: E501
+        "   - **后续交互**：调用此命令后，系统会分配虚拟终端并返回初始屏幕画面。你需要通过观察屏幕来决定下一步。使用 `send_sandbox_input` 填入所需数据（别忘了换行符 `\\n`），并使用 `read_sandbox_screen` 随时刷新屏幕。\n"  # noqa: E501
         "   - **⚠️ 重要警告：终端占用**\n"
-        "     同一个终端只能运行一个前台程序！如果程序陷入死循环或报错，你**必须首先**调用 `interrupt_sandbox` 发送 Ctrl+C 中断它，然后才能修改代码重新执行！\n"
+        "     同一个终端只能运行一个前台程序！如果程序陷入死循环或报错，你**必须首先**调用 `interrupt_sandbox` 发送 Ctrl+C 中断它，然后才能修改代码重新执行！\n"  # noqa: E501
         "3. **文件操作**：使用 `write_sandbox_file` 和 `read_sandbox_file` "
         "管理沙箱内的文件。"
     )
@@ -58,7 +63,7 @@ class SandboxToolkit(BaseToolkit):
 
         if session_id in self._executors:
             logger.debug(
-                f"[SandboxToolkit] 当前 Agent 交互轮次结束，沙箱驻留后台 (Session: {session_id})"
+                f"[SandboxToolkit] 当前 Agent 交互轮次结束，沙箱驻留后台 (Session: {session_id})"  # noqa: E501
             )
             self._executors.pop(session_id, None)
         session = self._interactive_sessions.pop(session_id, None)
@@ -68,7 +73,7 @@ class SandboxToolkit(BaseToolkit):
             except Exception:
                 pass
 
-    @toolkit_tool(
+    @tool(
         name="execute_python_code",
         description=(
             "在沙箱环境中执行 Python 代码。\n"
@@ -77,7 +82,9 @@ class SandboxToolkit(BaseToolkit):
             "你将收到目前的屏幕输出，并可以决定后续操作。"
         ),
     )
-    async def execute_python_code(self, code: str, context: RunContext) -> ToolResult:
+    async def execute_python_code(
+        self, code: str, context: RunContext, ui: Inject.UI
+    ) -> ToolResult:
         session_id = (
             context.session_id if context.session_id else "default_sandbox_session"
         )
@@ -87,16 +94,16 @@ class SandboxToolkit(BaseToolkit):
         )
 
         from zhenxun.services.ai.sandbox.manager import sandbox_manager
-        from zhenxun.services.ai.sandbox.utils import ASTAnalyzer
+        from zhenxun.services.ai.sandbox.models import SandboxRequirements
 
-        reqs = ASTAnalyzer.analyze_code_requirements(code)
-        deps = reqs.dependencies.get("python_pip", [])
+        reqs = SandboxRequirements()
+        deps = reqs.env_setup.python_packages
 
         logger.info(f"沙箱路由感知: 判定为 {reqs.tier.value} 级别任务。")
         if deps:
             logger.info(f"沙箱热注入: 自动提取到待安装依赖 -> {deps}")
 
-        await context.emit("正在分析代码依赖并分配沙箱环境...")
+        await ui.send_text("正在分析代码依赖并分配沙箱环境...")
         executor = await sandbox_manager.get_or_create_session(
             session_id, self.profile, reqs
         )
@@ -106,7 +113,6 @@ class SandboxToolkit(BaseToolkit):
         for p_name in [
             "universal_python",
             "jupyter_python",
-            "e2b_python",
             "wasm_python",
             "basic_python",
         ]:
@@ -119,10 +125,10 @@ class SandboxToolkit(BaseToolkit):
 
         if not python_plugin:
             return ToolResult(
-                output="当前沙箱环境尚未挂载任何 Python 执行插件。", is_error=True
-            )
+                output="当前沙箱环境尚未挂载任何 Python 执行插件。"
+            ).as_error()
 
-        await context.emit("沙箱已就绪，正在后台执行代码...")
+        await ui.send_text("沙箱已就绪，正在后台执行代码...")
         system_notice = None
 
         if not python_plugin.supports_state:
@@ -137,11 +143,11 @@ class SandboxToolkit(BaseToolkit):
             result = await python_plugin.execute(code, timeout=45)
         except Exception as e:
             logger.error(f"沙箱执行框架异常: {e}")
-            return ToolResult(
-                output=f"System Error: 容器执行环境不可用，异常信息: {e}",
+            from zhenxun.services.ai.core.exceptions import AbortException
+
+            raise AbortException(
+                reason=f"System Error: 容器执行环境不可用，异常信息: {e}",
                 display=f"❌ 沙箱框架异常: {e}",
-                is_error=True,
-                terminate_run=True,
             )
 
         output_parts = []
@@ -221,7 +227,7 @@ class SandboxToolkit(BaseToolkit):
         from nonebot_plugin_alconna import Image as AlcImage
         from nonebot_plugin_alconna import UniMessage
 
-        from zhenxun.services.ai.types.messages import (
+        from zhenxun.services.ai.core.messages import (
             ImagePart,
             LLMContentPart,
             TextPart,
@@ -236,24 +242,31 @@ class SandboxToolkit(BaseToolkit):
             final_output.append(ImagePart(raw=img_bytes))
             has_display = True
 
-        return ToolResult(
-            output=final_output if len(final_output) > 1 else output_text.strip(),
-            display=display_msg if has_display else None,
-            is_error=False,
-            system_prompt_append=system_notice,
-        )
+        if system_notice:
+            context.run.add_system_prompt(system_notice)
 
-    @toolkit_tool(
+        result = ToolResult(
+            output=final_output if len(final_output) > 1 else output_text.strip()
+        )
+        if has_display:
+            result = result.show_to_user(display_msg)
+        return result
+
+    @tool(
         name="execute_terminal_command",
         description=(
             "在沙箱的终端中执行 Shell 命令"
             "（例如 `python3 script.py` 或 `npm start`）。\n"
-            "如果只是执行普通的短时非交互脚本，保持 is_interactive=False 即可（执行速度极快且稳定）。\n"
-            "如果程序包含 `input()` 或需要长期驻留（如 Server），请务必设置 is_interactive=True 开启虚拟屏幕模式！"
+            "如果只是执行普通的短时非交互脚本，保持 is_interactive=False 即可（执行速度极快且稳定）。\n"  # noqa: E501
+            "如果程序包含 `input()` 或需要长期驻留（如 Server），请务必设置 is_interactive=True 开启虚拟屏幕模式！"  # noqa: E501
         ),
     )
     async def execute_terminal_command(
-        self, command: str, context: RunContext, is_interactive: bool = False
+        self,
+        command: str,
+        context: RunContext,
+        ui: Inject.UI,
+        is_interactive: bool = False,
     ) -> ToolResult:
         session_id = (
             context.session_id if context.session_id else "default_sandbox_session"
@@ -261,40 +274,35 @@ class SandboxToolkit(BaseToolkit):
 
         from zhenxun.services.ai.sandbox.manager import sandbox_manager
 
-        await context.emit(f"正在虚拟终端执行命令: {command} ...")
+        await ui.send_text(f"正在虚拟终端执行命令: {command} ...")
         executor = await sandbox_manager.get_or_create_session(session_id, self.profile)
 
         if not is_interactive:
-            try:
-                res = await executor.execute_raw_command(command)
-            except NotImplementedError:
-                return ToolResult(
-                    output="当前沙箱环境不支持终端执行能力。", is_error=True
-                )
+            if not isinstance(executor, SupportsCommandExecution):
+                return ToolResult(output="当前沙箱环境不支持终端执行能力。").as_error()
+            cmd_executor = cast(SupportsCommandExecution, executor)
+            res = await cmd_executor.execute_raw_command(command)
 
             if getattr(res, "is_timeout", False):
                 return ToolResult(
-                    output=f"⚠️ 警告：命令执行发生软超时（进程被挂起）！\nStdout:\n{res.stdout}\nStderr:\n{res.stderr}\n\n"
-                    f"[系统引导]：这通常是因为你的代码包含 `input()` 或启动了持久化服务导致进程阻塞。\n"
+                    output=f"⚠️ 警告：命令执行发生软超时（进程被挂起）！\nStdout:\n{res.stdout}\nStderr:\n{res.stderr}\n\n"  # noqa: E501
+                    f"[系统引导]：这通常是因为你的代码包含 `input()` 或启动了持久化服务导致进程阻塞。\n"  # noqa: E501
                     f"由于你使用了 is_interactive=False，系统无法与挂起的进程交互！\n"
                     f"👉 请务必设置 `is_interactive=True` 重新调用本工具执行！",
-                    is_error=True,
-                )
+                ).as_error()
 
             return ToolResult(
-                output=f"Exit Code: {res.exit_code}\nStdout: {res.stdout}\nStderr: {res.stderr}"
+                output=f"Exit Code: {res.exit_code}\nStdout: {res.stdout}\nStderr: {res.stderr}"  # noqa: E501
             )
 
         session = self._interactive_sessions.get(session_id)
         if session:
             await session.close()
 
-        try:
-            interactive_session = await executor.create_pty_session()
-        except NotImplementedError:
-            return ToolResult(
-                output="当前沙箱环境不支持交互式 PTY 终端。", is_error=True
-            )
+        if not isinstance(executor, SupportsInteractivePTY):
+            return ToolResult(output="当前沙箱环境不支持交互式 PTY 终端。").as_error()
+        pty_executor = cast(SupportsInteractivePTY, executor)
+        interactive_session = await pty_executor.create_pty_session()
 
         self._interactive_sessions[session_id] = interactive_session
 
@@ -305,12 +313,12 @@ class SandboxToolkit(BaseToolkit):
             return ToolResult(
                 output=f"已成功在虚拟终端启动程序。\n"
                 f"📺 初始屏幕快照如下:\n```text\n{screen}\n```\n\n"
-                f"请仔细阅读屏幕快照，如果程序在等待输入，请调用 `send_sandbox_input` 发送按键（记得带换行符）。"
+                f"请仔细阅读屏幕快照，如果程序在等待输入，请调用 `send_sandbox_input` 发送按键（记得带换行符）。"  # noqa: E501
             )
         except Exception as e:
-            return ToolResult(output=f"虚拟屏幕启动异常: {e}", is_error=True)
+            return ToolResult(output=f"虚拟屏幕启动异常: {e}").as_error()
 
-    @toolkit_tool(
+    @tool(
         name="send_sandbox_input",
         description=(
             "向当前沙箱中正在挂起运行的后台进程"
@@ -325,9 +333,8 @@ class SandboxToolkit(BaseToolkit):
         interactive_session = self._interactive_sessions.get(session_id)
         if not interactive_session:
             return ToolResult(
-                output="错误：当前会话没有处于运行中的交互式虚拟屏幕！请先使用 execute_terminal_command(is_interactive=True) 启动程序。",
-                is_error=True,
-            )
+                output="错误：当前会话没有处于运行中的交互式虚拟屏幕！请先使用 execute_terminal_command(is_interactive=True) 启动程序。",  # noqa: E501
+            ).as_error()
 
         text = text.replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t")
 
@@ -337,11 +344,10 @@ class SandboxToolkit(BaseToolkit):
         output = await interactive_session.read_output(timeout=5)
 
         return ToolResult(
-            output=f"已发送按键。📺 屏幕刷新后快照如下：\n```text\n{output}\n```",
-            display="⌨️ 已向后台进程发送输入",
-        )
+            output=f"已发送按键。📺 屏幕刷新后快照如下：\n```text\n{output}\n```"
+        ).show_to_user("⌨️ 已向后台进程发送输入")
 
-    @toolkit_tool(
+    @tool(
         name="read_sandbox_screen",
         description=(
             "主动窥探并读取当前虚拟屏幕的画面。当你觉得后台程序可能已经渲染出新内容时，可以使用此工具。"
@@ -353,12 +359,12 @@ class SandboxToolkit(BaseToolkit):
         )
         interactive_session = self._interactive_sessions.get(session_id)
         if not interactive_session:
-            return ToolResult(output="没有运行中的虚拟屏幕。", is_error=True)
+            return ToolResult(output="没有运行中的虚拟屏幕。").as_error()
 
         output = await interactive_session.read_output()
         return ToolResult(output=f"📺 当前屏幕快照:\n```text\n{output}\n```")
 
-    @toolkit_tool(
+    @tool(
         name="interrupt_sandbox",
         description=(
             "向当前沙箱发送 Ctrl+C (SIGINT) 信号，强制中断正在死循环或挂起的后台进程。"
@@ -370,19 +376,16 @@ class SandboxToolkit(BaseToolkit):
         )
         interactive_session = self._interactive_sessions.get(session_id)
         if not interactive_session:
-            return ToolResult(output="没有运行中的虚拟屏幕需要中断。", is_error=True)
+            return ToolResult(output="没有运行中的虚拟屏幕需要中断。").as_error()
 
         await interactive_session.interrupt()
         await asyncio.sleep(1)
         output = await interactive_session.read_output()
         return ToolResult(
-            output=(
-                f"✅ 成功发送 Ctrl+C 中断信号。📺 当前屏幕快照：\n```text\n{output}\n```"
-            ),
-            display="🛑 已强制中断后台进程",
-        )
+            output=f"✅ 成功发送 Ctrl+C 中断信号。📺 当前屏幕快照：\n```text\n{output}\n```"
+        ).show_to_user("🛑 已强制中断后台进程")
 
-    @toolkit_tool(
+    @tool(
         name="write_sandbox_file",
         description="将文本内容写入沙箱文件系统中，支持保存大块数据或配置，避免超过对话上下文。",
     )
@@ -401,21 +404,28 @@ class SandboxToolkit(BaseToolkit):
                 session_id, self.profile
             )
 
-        success = await executor.write_raw_file(path, content)
+        if not isinstance(executor, SupportsFileSystem):
+            from zhenxun.services.ai.core.exceptions import AbortException
+
+            raise AbortException(
+                reason="写入文件失败 (当前沙箱环境不支持持久化IO)",
+                display="❌ 写入文件失败：沙箱环境不支持文件系统操作",
+            )
+        fs_executor = cast(SupportsFileSystem, executor)
+        success = await fs_executor.write_raw_file(path, content)
         if success:
-            return ToolResult(
-                output=f"成功将内容写入文件: {path}",
-                log_content=f"📝 已向沙箱写入文件: {path}",
+            return ToolResult(output=f"成功将内容写入文件: {path}").with_log(
+                f"📝 已向沙箱写入文件: {path}"
             )
         else:
-            return ToolResult(
-                output="写入文件失败 (当前沙箱环境失联或不支持持久化IO)",
+            from zhenxun.services.ai.core.exceptions import AbortException
+
+            raise AbortException(
+                reason="写入文件失败 (当前沙箱环境失联或不支持持久化IO)",
                 display="❌ 写入文件失败：沙箱失联",
-                is_error=True,
-                terminate_run=True,
             )
 
-    @toolkit_tool(
+    @tool(
         name="read_sandbox_file",
         description="从沙箱文件系统中读取指定文件的文本内容。",
     )
@@ -432,17 +442,20 @@ class SandboxToolkit(BaseToolkit):
                 session_id, self.profile
             )
 
+        if not isinstance(executor, SupportsFileSystem):
+            from zhenxun.services.ai.core.exceptions import AbortException
+
+            raise AbortException(reason="当前沙箱环境不支持文件系统操作。")
+        fs_executor = cast(SupportsFileSystem, executor)
+
         try:
-            content = await executor.read_raw_file(path)
+            content = await fs_executor.read_raw_file(path)
             if content.startswith("Error:") or content.startswith("Failed to"):
-                return ToolResult(output=content, is_error=True)
-            return ToolResult(
-                output=content,
-                log_content=f"已读取沙箱文件 {path} (共 {len(content)} 字符)",
+                return ToolResult(output=content).as_error()
+            return ToolResult(output=content).with_log(
+                f"已读取沙箱文件 {path} (共 {len(content)} 字符)"
             )
         except Exception as e:
-            return ToolResult(
-                output=f"读取文件发生框架级异常: {e}",
-                is_error=True,
-                terminate_run=True,
-            )
+            from zhenxun.services.ai.core.exceptions import AbortException
+
+            raise AbortException(reason=f"读取文件发生框架级异常: {e}")

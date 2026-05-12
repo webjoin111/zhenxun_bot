@@ -4,7 +4,7 @@ from tortoise import fields
 
 from zhenxun.services.ai.memory.utils import cosine_similarity
 from zhenxun.services.ai.protocols.memory import StorageBackend
-from zhenxun.services.ai.types.memory import MemoryRecord
+from zhenxun.services.ai.memory.models import MemoryRecord
 from zhenxun.services.db_context import Model
 
 
@@ -103,3 +103,4 @@ class TortoiseStorageBackend(StorageBackend):
             query = query.filter(id__in=record_ids)
 
         return await query.delete()
+

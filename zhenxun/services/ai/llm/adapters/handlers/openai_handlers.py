@@ -1,0 +1,1228 @@
+import asyncio
+import base64
+import binascii
+import json
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from zhenxun.services.ai.core.configs import TTSConfig
+    from zhenxun.services.ai.core.messages import AudioResponse
+    from zhenxun.services.ai.llm.adapters.base import BaseAdapter
+    from zhenxun.services.ai.llm.service import LLMModel
+    from zhenxun.services.ai.tools.models import ToolChoice
+
+import json_repair
+
+from zhenxun.services.ai.core.configs import (
+    GenerationConfig,
+    LLMEmbeddingConfig,
+    StructuredOutputStrategy,
+)
+from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
+from zhenxun.services.ai.core.messages import (
+    AssistantMessage,
+    ImagePart,
+    LLMMessage,
+    RerankDocument,
+    RerankResult,
+    ResponseFormat,
+    SystemMessage,
+    TextPart,
+    ThoughtPart,
+    ToolCallPart,
+    ToolMessage,
+    UserMessage,
+)
+from zhenxun.services.ai.core.models import ModelCapabilities, ModelDetail
+from zhenxun.services.ai.llm.adapters.base import (
+    RequestData,
+    ResponseData,
+    process_image_data,
+)
+from zhenxun.services.ai.llm.adapters.handlers.base import (
+    BaseAudioHandler,
+    BaseEmbeddingHandler,
+    BaseImageHandler,
+    BaseRerankHandler,
+    BaseTextHandler,
+    ConfigMapper,
+    MessageConverter,
+    ResponseParser,
+    ToolSerializer,
+)
+from zhenxun.services.ai.tools.models import ToolDefinition
+from zhenxun.services.log import logger
+
+
+class OpenAIConfigMapper(ConfigMapper):
+    def __init__(self, api_type: str = "openai"):
+        self.api_type = api_type
+
+    def map_config(
+        self,
+        config: GenerationConfig,
+        model_detail: ModelDetail | None = None,
+        capabilities: ModelCapabilities | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        strategy = config.output.structured_output_strategy
+        if strategy is None:
+            strategy = (
+                StructuredOutputStrategy.TOOL_CALL
+                if self.api_type == "deepseek"
+                else StructuredOutputStrategy.NATIVE
+            )
+
+        if config.common:
+            if config.common.temperature is not None:
+                params["temperature"] = config.common.temperature
+            if config.common.max_tokens is not None:
+                params["max_tokens"] = config.common.max_tokens
+            if config.common.top_k is not None:
+                params["top_k"] = config.common.top_k
+            if config.common.top_p is not None:
+                params["top_p"] = config.common.top_p
+            if config.common.frequency_penalty is not None:
+                params["frequency_penalty"] = config.common.frequency_penalty
+            if config.common.presence_penalty is not None:
+                params["presence_penalty"] = config.common.presence_penalty
+            if config.common.stop is not None:
+                params["stop"] = config.common.stop
+
+            if config.common.repetition_penalty is not None:
+                if self.api_type == "openai":
+                    pass
+                else:
+                    params["repetition_penalty"] = config.common.repetition_penalty
+
+        if config.openai_options.reasoning_effort:
+            effort = config.openai_options.reasoning_effort
+            from zhenxun.services.ai.core.configs import ReasoningEffort
+
+            params["reasoning_effort"] = (
+                effort.value.lower()
+                if isinstance(effort, ReasoningEffort)
+                else str(effort).lower()
+            )
+
+        if isinstance(config.output.response_format, dict):
+            params["response_format"] = config.output.response_format
+        elif (
+            config.output.response_format == ResponseFormat.JSON
+            and strategy == StructuredOutputStrategy.NATIVE
+        ):
+            if config.output.response_schema:
+                serializer = OpenAIToolSerializer(api_type=self.api_type)
+                sanitized = serializer.sanitize_schema(config.output.response_schema)
+                params["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "structured_response",
+                        "schema": sanitized,
+                        "strict": True,
+                    },
+                }
+            else:
+                params["response_format"] = {"type": "json_object"}
+
+        if config.custom_kwargs:
+            mapped_custom = config.custom_kwargs.copy()
+            if "repetition_penalty" in mapped_custom and self.api_type == "openai":
+                mapped_custom.pop("repetition_penalty")
+
+            params.update(mapped_custom)
+
+        return params
+
+
+class OpenAIMessageConverter(MessageConverter):
+    def __init__(self, api_type: str = "openai"):
+        self.api_type = api_type
+
+    def convert_messages(self, messages: list[LLMMessage]) -> list[dict[str, Any]]:
+        openai_messages: list[dict[str, Any]] = []
+        for msg in messages:
+            if isinstance(msg, SystemMessage):
+                openai_msg: dict[str, Any] = {"role": "system"}
+            elif isinstance(msg, UserMessage):
+                openai_msg: dict[str, Any] = {"role": "user"}
+            elif isinstance(msg, AssistantMessage):
+                openai_msg: dict[str, Any] = {"role": "assistant"}
+            elif isinstance(msg, ToolMessage):
+                openai_msg: dict[str, Any] = {"role": "tool"}
+            else:
+                openai_msg: dict[str, Any] = {"role": msg.role}
+
+            if isinstance(msg, ToolMessage):
+                returns = msg.tool_returns
+                if returns:
+                    openai_msg["tool_call_id"] = returns[0].tool_call_id
+                    openai_msg["name"] = returns[0].tool_name
+                    out_val = returns[0].output
+                    openai_msg["content"] = (
+                        out_val
+                        if isinstance(out_val, str)
+                        else json.dumps(out_val, ensure_ascii=False)
+                    )
+            else:
+                if len(msg.content) == 1 and isinstance(msg.content[0], TextPart):
+                    openai_msg["content"] = msg.content[0].text
+                else:
+                    content_parts = []
+                    for part in msg.content:
+                        if isinstance(part, TextPart):
+                            content_parts.append({"type": "text", "text": part.text})
+                        elif isinstance(part, ImagePart):
+                            if part.url is not None:
+                                content_parts.append(
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {"url": part.url},
+                                    }
+                                )
+                            elif part.raw is not None:
+                                import base64
+
+                                raw_data = part.raw
+                                mime = part.mime_type or "image/png"
+                                b64_str = base64.b64encode(raw_data).decode("utf-8")
+                                data_uri = f"data:{mime};base64,{b64_str}"
+                                content_parts.append(
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {"url": data_uri},
+                                    }
+                                )
+                            elif part.path is not None:
+                                import base64
+
+                                raw_data = part.path.read_bytes()
+                                mime = part.mime_type or "image/png"
+                                b64_str = base64.b64encode(raw_data).decode("utf-8")
+                                data_uri = f"data:{mime};base64,{b64_str}"
+                                content_parts.append(
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {"url": data_uri},
+                                    }
+                                )
+                    openai_msg["content"] = content_parts
+
+            if isinstance(msg, AssistantMessage):
+                thought_text = "\n".join(
+                    p.thought_text
+                    for p in msg.content
+                    if isinstance(p, ThoughtPart) and p.thought_text
+                ).strip()
+
+                if thought_text:
+                    openai_msg["reasoning_content"] = thought_text
+                elif self.api_type in ("deepseek"):
+                    openai_msg["reasoning_content"] = ""
+
+                if not openai_msg.get("content"):
+                    openai_msg["content"] = ""
+
+            if isinstance(msg, AssistantMessage) and msg.tool_calls:
+                assistant_tool_calls = []
+                for call in msg.tool_calls:
+                    assistant_tool_calls.append(
+                        {
+                            "id": call.id,
+                            "type": "function",
+                            "function": {
+                                "name": call.tool_name,
+                                "arguments": call.args
+                                if isinstance(call.args, str)
+                                else json.dumps(call.args, ensure_ascii=False),
+                            },
+                        }
+                    )
+                openai_msg["tool_calls"] = assistant_tool_calls
+
+            openai_messages.append(openai_msg)
+        return openai_messages
+
+
+class OpenAIToolSerializer(ToolSerializer):
+    def __init__(self, api_type: str = "openai"):
+        self.api_type = api_type
+
+    def sanitize_schema(self, schema: Any) -> Any:
+        from zhenxun.services.ai.llm.schema_transformer import (
+            OpenAIUnionFlattenTransformer,
+            RefComplianceTransformer,
+            RemoveUnsupportedKeysTransformer,
+            RootRefInlineTransformer,
+            SchemaPipeline,
+            StrictObjectTransformer,
+            TypeEnforcerTransformer,
+        )
+
+        unsupported_keys = [
+            "default",
+            "minLength",
+            "maxLength",
+            "pattern",
+            "format",
+            "minimum",
+            "maximum",
+            "multipleOf",
+            "patternProperties",
+            "propertyNames",
+            "minItems",
+            "maxItems",
+            "uniqueItems",
+            "$schema",
+            "title",
+        ]
+        pipeline = SchemaPipeline(
+            [
+                RootRefInlineTransformer(),
+                RefComplianceTransformer(),
+                RemoveUnsupportedKeysTransformer(unsupported_keys),
+                OpenAIUnionFlattenTransformer(),
+                TypeEnforcerTransformer(),
+                StrictObjectTransformer(),
+            ]
+        )
+        return pipeline.run(schema)
+
+    def serialize_tools(
+        self, tools: list[ToolDefinition]
+    ) -> list[dict[str, Any]] | None:
+        if not tools:
+            return None
+
+        openai_tools = []
+        for tool in tools:
+            raw_schema = tool.parameters.copy() if tool.parameters else {}
+            sanitized_schema = self.sanitize_schema(raw_schema)
+
+            tool_payload = {
+                "name": tool.name,
+                "description": tool.description or "",
+                "parameters": sanitized_schema,
+            }
+            tool_payload["strict"] = True
+
+            openai_tools.append({"type": "function", "function": tool_payload})
+        return openai_tools
+
+
+class OpenAIResponseParser(ResponseParser):
+    def validate_response(self, response_json: dict[str, Any]) -> None:
+        if response_json.get("error"):
+            error_info = response_json["error"]
+            if isinstance(error_info, dict):
+                error_message = error_info.get("message", "未知错误")
+                error_code = error_info.get("code", "unknown")
+
+                error_code_mapping = {
+                    "invalid_api_key": LLMErrorCode.API_KEY_INVALID,
+                    "authentication_failed": LLMErrorCode.API_KEY_INVALID,
+                    "insufficient_quota": LLMErrorCode.API_QUOTA_EXCEEDED,
+                    "rate_limit_exceeded": LLMErrorCode.API_RATE_LIMITED,
+                    "quota_exceeded": LLMErrorCode.API_RATE_LIMITED,
+                    "model_not_found": LLMErrorCode.MODEL_NOT_FOUND,
+                    "invalid_model": LLMErrorCode.MODEL_NOT_FOUND,
+                    "context_length_exceeded": LLMErrorCode.CONTEXT_LENGTH_EXCEEDED,
+                    "max_tokens_exceeded": LLMErrorCode.CONTEXT_LENGTH_EXCEEDED,
+                    "invalid_request_error": LLMErrorCode.INVALID_PARAMETER,
+                    "invalid_parameter": LLMErrorCode.INVALID_PARAMETER,
+                }
+
+                llm_error_code = error_code_mapping.get(
+                    error_code, LLMErrorCode.API_RESPONSE_INVALID
+                )
+            else:
+                error_message = str(error_info)
+                error_code = "unknown"
+                llm_error_code = LLMErrorCode.API_RESPONSE_INVALID
+
+            raise LLMException(
+                f"API请求失败: {error_message}",
+                code=llm_error_code,
+                details={"api_error": error_info, "error_code": error_code},
+            )
+
+    def parse(self, response_json: dict[str, Any]) -> ResponseData:
+        self.validate_response(response_json)
+
+        choices = response_json.get("choices", [])
+        if not choices:
+            return ResponseData(raw_response=response_json)
+
+        choice = choices[0]
+        message = choice.get("message", {})
+        content = message.get("content", "")
+        reasoning_content = message.get("reasoning_content", None)
+        refusal = message.get("refusal")
+
+        if refusal:
+            raise LLMException(
+                f"模型拒绝生成请求: {refusal}",
+                code=LLMErrorCode.CONTENT_FILTERED,
+                details={"refusal": refusal},
+                recoverable=False,
+            )
+
+        if content:
+            content = content.strip()
+
+        images_payload: list[bytes | Path] = []
+        if content and content.startswith("{") and content.endswith("}"):
+            try:
+                content_json = json.loads(content)
+                if "b64_json" in content_json:
+                    b64_str = content_json["b64_json"]
+                    if isinstance(b64_str, str) and b64_str.startswith("data:"):
+                        b64_str = b64_str.split(",", 1)[1]
+                    decoded = base64.b64decode(b64_str)
+                    images_payload.append(process_image_data(decoded))
+                    content = "[图片已生成]"
+                elif "data" in content_json and isinstance(content_json["data"], str):
+                    b64_str = content_json["data"]
+                    if b64_str.startswith("data:"):
+                        b64_str = b64_str.split(",", 1)[1]
+                    decoded = base64.b64decode(b64_str)
+                    images_payload.append(process_image_data(decoded))
+                    content = "[图片已生成]"
+
+            except (json.JSONDecodeError, KeyError, binascii.Error):
+                pass
+        elif (
+            "images" in message
+            and isinstance(message["images"], list)
+            and message["images"]
+        ):
+            for image_info in message["images"]:
+                if image_info.get("type") == "image_url":
+                    image_url_obj = image_info.get("image_url", {})
+                    url_str = image_url_obj.get("url", "")
+                    if url_str.startswith("data:image"):
+                        try:
+                            b64_data = url_str.split(",", 1)[1]
+                            decoded = base64.b64decode(b64_data)
+                            images_payload.append(process_image_data(decoded))
+                        except (IndexError, binascii.Error) as e:
+                            logger.warning(f"解析OpenRouter Base64图片数据失败: {e}")
+
+            if images_payload:
+                content = content if content else "[图片已生成]"
+
+        content_parts = []
+        if content:
+            content_parts.append(TextPart(text=content))
+        if reasoning_content:
+            content_parts.append(ThoughtPart(thought_text=reasoning_content))
+        for img in images_payload:
+            content_parts.append(
+                ImagePart(raw=img) if isinstance(img, bytes) else ImagePart(path=img)
+            )
+
+        if message_tool_calls := message.get("tool_calls"):
+            for tc_data in message_tool_calls:
+                try:
+                    if tc_data.get("type") == "function":
+                        raw_arguments = tc_data["function"]["arguments"]
+                        repaired_arguments = raw_arguments
+
+                        if raw_arguments:
+                            try:
+                                json.loads(raw_arguments)
+                            except json.JSONDecodeError:
+                                try:
+                                    repaired_obj = json_repair.loads(raw_arguments)
+                                    if isinstance(repaired_obj, dict):
+                                        repaired_arguments = json.dumps(
+                                            repaired_obj, ensure_ascii=False
+                                        )
+                                        logger.debug(
+                                            "成功修复损坏的工具参数: "
+                                            f"{raw_arguments} -> {repaired_arguments}"
+                                        )
+                                except Exception as repair_err:
+                                    logger.warning(
+                                        f"尝试修复损坏的工具参数失败: {raw_arguments}, "
+                                        f"错误: {repair_err}"
+                                    )
+
+                        content_parts.append(
+                            ToolCallPart(
+                                id=tc_data["id"],
+                                tool_name=tc_data["function"]["name"],
+                                args=repaired_arguments,
+                            )
+                        )
+                except KeyError as e:
+                    logger.warning(
+                        f"解析OpenAI工具调用数据时缺少键: {tc_data}, 错误: {e}"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"解析OpenAI工具调用数据时出错: {tc_data}, 错误: {e}"
+                    )
+
+        usage_info = response_json.get("usage")
+
+        return ResponseData(
+            content_parts=content_parts,
+            usage_info=usage_info,
+            raw_response=response_json,
+        )
+
+
+class ResponsesConfigMapper(OpenAIConfigMapper):
+    """针对 OpenAI Responses API 的配置映射器"""
+
+    def map_config(
+        self,
+        config: GenerationConfig,
+        model_detail: ModelDetail | None = None,
+        capabilities: ModelCapabilities | None = None,
+    ) -> dict[str, Any]:
+        params = super().map_config(config, model_detail, capabilities)
+
+        if "reasoning_effort" in params:
+            effort_val = params.pop("reasoning_effort")
+            params["reasoning"] = {"effort": effort_val}
+
+        if "response_format" in params:
+            fmt = params.pop("response_format")
+            if isinstance(fmt, dict) and fmt.get("type") == "json_schema":
+                json_schema_dict = fmt.get("json_schema", {})
+                params["text"] = {
+                    "format": {
+                        "type": "json_schema",
+                        "name": json_schema_dict.get("name", "structured_response"),
+                        "strict": json_schema_dict.get("strict", True),
+                        "schema": json_schema_dict.get("schema", {}),
+                    }
+                }
+            elif isinstance(fmt, dict):
+                params["text"] = {"format": fmt}
+
+        return params
+
+
+class ResponsesMessageConverter(MessageConverter):
+    """针对 OpenAI Responses API 的消息转换器"""
+
+    def convert_messages(self, messages: list[LLMMessage]) -> list[dict[str, Any]]:
+        input_items: list[dict[str, Any]] = []
+        for msg in messages:
+            role = msg.role
+
+            if isinstance(msg, ToolMessage):
+                returns = msg.tool_returns
+                if returns:
+                    input_items.append(
+                        {
+                            "type": "function_call_output",
+                            "call_id": returns[0].tool_call_id,
+                            "output": returns[0].output
+                            if isinstance(returns[0].output, str)
+                            else json.dumps(returns[0].output, ensure_ascii=False),
+                        }
+                    )
+                    continue
+
+            content_list: list[dict[str, Any]] = []
+            for part in msg.content:
+                if part is None:
+                    continue
+
+                if isinstance(part, TextPart):
+                    c_type = "output_text" if role == "assistant" else "input_text"
+                    content_list.append({"type": c_type, "text": part.text})
+                elif isinstance(part, ImagePart):
+                    if part.url is not None:
+                        content_list.append(
+                            {"type": "input_image", "image_url": part.url}
+                        )
+                    elif part.raw is not None:
+                        import base64
+
+                        raw_data = part.raw
+                        mime = part.mime_type or "image/png"
+                        b64_str = base64.b64encode(raw_data).decode("utf-8")
+                        data_uri = f"data:{mime};base64,{b64_str}"
+                        content_list.append(
+                            {"type": "input_image", "image_url": data_uri}
+                        )
+                    elif part.path is not None:
+                        import base64
+
+                        raw_data = part.path.read_bytes()
+                        mime = part.mime_type or "image/png"
+                        b64_str = base64.b64encode(raw_data).decode("utf-8")
+                        data_uri = f"data:{mime};base64,{b64_str}"
+                        content_list.append(
+                            {"type": "input_image", "image_url": data_uri}
+                        )
+                elif isinstance(part, dict):
+                    part_type = part.get("type")
+                    if part_type == "text":
+                        c_type = "output_text" if role == "assistant" else "input_text"
+                        content_list.append(
+                            {"type": c_type, "text": part.get("text", "")}
+                        )
+                    elif part_type in {"image", "image_url"}:
+                        image_src = part.get("image_url") or part.get("url", "")
+                        content_list.append(
+                            {"type": "input_image", "image_url": image_src}
+                        )
+
+            if content_list:
+                input_items.append({"role": role, "content": content_list})
+
+            if isinstance(msg, AssistantMessage) and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    input_items.append(
+                        {
+                            "type": "function_call",
+                            "call_id": tc.id,
+                            "name": tc.tool_name,
+                            "arguments": tc.args
+                            if isinstance(tc.args, str)
+                            else json.dumps(tc.args, ensure_ascii=False),
+                        }
+                    )
+
+        return input_items
+
+
+class ResponsesToolSerializer(OpenAIToolSerializer):
+    """针对 OpenAI Responses API 的工具序列化器"""
+
+    def serialize_tools(
+        self, tools: list[ToolDefinition]
+    ) -> list[dict[str, Any]] | None:
+        if not tools:
+            return None
+        res_tools = []
+        for tool in tools:
+            raw_schema = tool.parameters.copy() if tool.parameters else {}
+            sanitized_schema = self.sanitize_schema(raw_schema)
+            tool_payload = {
+                "type": "function",
+                "name": tool.name,
+                "description": tool.description or "",
+                "parameters": sanitized_schema,
+            }
+            tool_payload["strict"] = True
+            res_tools.append(tool_payload)
+        return res_tools
+
+
+class ResponsesResponseParser(OpenAIResponseParser):
+    """针对 OpenAI Responses API 的响应解析器"""
+
+    def parse(self, response_json: dict[str, Any]) -> ResponseData:
+        content_parts: list[Any] = []
+        text_content = ""
+
+        for item in response_json.get("output", []):
+            if item.get("type") == "message" and item.get("role") == "assistant":
+                for content_item in item.get("content", []):
+                    if content_item.get("type") == "output_text":
+                        text_content += content_item.get("text", "")
+                    elif content_item.get("type") == "refusal":
+                        raise LLMException(
+                            f"模型拒绝生成: {content_item.get('refusal')}",
+                            code=LLMErrorCode.CONTENT_FILTERED,
+                            recoverable=False,
+                        )
+            elif item.get("type") == "function_call":
+                content_parts.append(
+                    ToolCallPart(
+                        id=item.get("call_id", ""),
+                        tool_name=item.get("name", ""),
+                        args=item.get("arguments", "{}"),
+                    )
+                )
+
+        if text_content:
+            content_parts.insert(0, TextPart(text=text_content))
+
+        return ResponseData(
+            content_parts=content_parts,
+            usage_info=response_json.get("usage"),
+            raw_response=response_json,
+        )
+
+
+class OpenAITextHandler(BaseTextHandler):
+    """标准 OpenAI 协议的文本对话处理器"""
+
+    def __init__(self, api_type: str = "openai"):
+        self.api_type = api_type
+        self.converter = OpenAIMessageConverter(api_type=api_type)
+        self.serializer = OpenAIToolSerializer(api_type=api_type)
+        self.mapper = OpenAIConfigMapper(api_type=api_type)
+        self.parser = OpenAIResponseParser()
+
+    def _build_base_body(
+        self, model: "LLMModel", messages: list[Any]
+    ) -> dict[str, Any]:
+        return {
+            "model": model.model_name,
+            "messages": messages,
+        }
+
+    def _inject_native_tools(
+        self, model: "LLMModel", config: "GenerationConfig | None", body: dict[str, Any]
+    ) -> None:
+        if not config:
+            return
+        has_requested_tools = (
+            config.enable_all_native_tools or len(config.native_tools) > 0
+        )
+        if has_requested_tools:
+            logger.warning(
+                f"Chat Completions 协议 (当前模型 {model.model_name}) "
+                "不支持通过 tools 数组调用云端内置工具。\n"
+                "👉 如果你想使用 Web Search、代码解释器等能力，"
+                "请在 WebUI 模型配置中将 api_type 修改为 'openai_responses'。"
+            )
+
+    async def prepare_text_request(
+        self,
+        adapter: "BaseAdapter",
+        model: "LLMModel",
+        api_key: str,
+        messages: list[LLMMessage],
+        config: GenerationConfig | None = None,
+        tools: list[Any] | None = None,
+        tool_choice: "ToolChoice | str | dict[str, Any] | None" = None,
+    ) -> RequestData:
+        endpoint = getattr(adapter, "get_chat_endpoint")(model)
+        url = adapter.get_api_url(model, endpoint)
+        headers = adapter.get_base_headers(api_key)
+        effective_config = (
+            config if config is not None else getattr(model, "_generation_config", None)
+        )
+        structured_strategy = (
+            effective_config.output.structured_output_strategy
+            if effective_config and effective_config.output
+            else None
+        )
+        if structured_strategy is None:
+            structured_strategy = (
+                StructuredOutputStrategy.TOOL_CALL
+                if model.api_type == "deepseek" and model.model_name == "deepseek-chat"
+                else StructuredOutputStrategy.NATIVE
+            )
+
+        executables: list[Any] = []
+        if tools:
+            if isinstance(tools, dict):
+                executables = list(tools.values())
+            else:
+                for tool in tools:
+                    if hasattr(tool, "get_definition"):
+                        executables.append(tool)
+
+        definition_tasks = [executable.get_definition() for executable in executables]
+        tool_defs: list[Any] = []
+        if definition_tasks:
+            results = await asyncio.gather(*definition_tasks)
+            tool_defs = [td for td in results if td is not None]
+
+        openai_tools: list[dict[str, Any]] | None = None
+        if tool_defs:
+            openai_tools = self.serializer.serialize_tools(tool_defs)
+
+        final_tool_choice = tool_choice
+        if final_tool_choice is None and effective_config:
+            mode = effective_config.tools.mode
+            if mode == "ANY":
+                allowed = effective_config.tools.allowed_function_names
+                if allowed:
+                    if len(allowed) == 1:
+                        if isinstance(self, OpenAIResponsesTextHandler):
+                            final_tool_choice = {"type": "function", "name": allowed[0]}
+                        else:
+                            final_tool_choice = {
+                                "type": "function",
+                                "function": {"name": allowed[0]},
+                            }
+                    else:
+                        logger.warning(
+                            "OpenAI API 不支持多个 allowed_function_names，"
+                            "降级为 required。"
+                        )
+                        final_tool_choice = "required"
+                else:
+                    final_tool_choice = "required"
+            elif mode == "NONE":
+                final_tool_choice = "none"
+            elif mode == "AUTO":
+                final_tool_choice = "auto"
+
+        if (
+            structured_strategy == StructuredOutputStrategy.TOOL_CALL
+            and effective_config
+            and effective_config.output
+            and effective_config.output.response_schema
+        ):
+            sanitized_schema = self.serializer.sanitize_schema(
+                effective_config.output.response_schema
+            )
+            structured_tool = {
+                "type": "function",
+                "function": {
+                    "name": "return_structured_response",
+                    "description": "Output the final structured response.",
+                    "parameters": sanitized_schema,
+                },
+            }
+            structured_tool["function"]["strict"] = True
+
+            if isinstance(self, OpenAIResponsesTextHandler):
+                func_data = structured_tool.pop("function")
+                structured_tool.update(func_data)
+                final_tool_choice = {
+                    "type": "function",
+                    "name": "return_structured_response",
+                }
+            else:
+                final_tool_choice = {
+                    "type": "function",
+                    "function": {"name": "return_structured_response"},
+                }
+
+            if openai_tools is None:
+                openai_tools = []
+            openai_tools.append(structured_tool)
+
+        converted_messages = self.converter.convert_messages(messages)
+        body = self._build_base_body(model, converted_messages)
+
+        if openai_tools:
+            body["tools"] = openai_tools
+        if final_tool_choice is not None and openai_tools:
+            body["tool_choice"] = final_tool_choice
+
+        config_params = {}
+        if effective_config:
+            config_params = self.mapper.map_config(
+                effective_config, model.model_detail, model.capabilities
+            )
+        body.update(config_params)
+
+        self._inject_native_tools(model, effective_config, body)
+
+        if "tools" not in body and "tool_choice" in body:
+            body.pop("tool_choice")
+
+        return RequestData(url=url, headers=headers, body=body)
+
+    def parse_text_response(
+        self,
+        adapter: "BaseAdapter",
+        model: "LLMModel",
+        response_json: dict[str, Any],
+        is_advanced: bool = False,
+    ) -> ResponseData:
+        response_data = self.parser.parse(response_json)
+
+        tool_calls = [
+            p for p in response_data.content_parts if isinstance(p, ToolCallPart)
+        ]
+        if tool_calls:
+            target_tool = next(
+                (
+                    tc
+                    for tc in tool_calls
+                    if tc.tool_name == "return_structured_response"
+                ),
+                None,
+            )
+            if target_tool:
+                args_data = target_tool.args
+                if isinstance(args_data, str):
+                    response_data.text = json_repair.repair_json(args_data)
+                else:
+                    response_data.text = json.dumps(args_data, ensure_ascii=False)
+                response_data.content_parts = [
+                    p
+                    for p in response_data.content_parts
+                    if not (
+                        isinstance(p, ToolCallPart)
+                        and p.tool_name == "return_structured_response"
+                    )
+                ]
+
+        return response_data
+
+
+class OpenAIResponsesTextHandler(OpenAITextHandler):
+    """OpenAI v1/responses 协议的文本对话处理器"""
+
+    def __init__(self, api_type: str = "openai_responses"):
+        super().__init__(api_type=api_type)
+        self.converter = ResponsesMessageConverter()
+        self.serializer = ResponsesToolSerializer(api_type=api_type)
+        self.mapper = ResponsesConfigMapper(api_type=api_type)
+        self.parser = ResponsesResponseParser()
+
+    def _build_base_body(
+        self, model: "LLMModel", messages: list[Any]
+    ) -> dict[str, Any]:
+        return {
+            "model": model.model_name,
+            "input": messages,
+        }
+
+    def _inject_native_tools(
+        self, model: "LLMModel", config: "GenerationConfig | None", body: dict[str, Any]
+    ) -> None:
+        if not config:
+            return
+
+        supported = model.capabilities.supported_native_tools
+        requested_tools = []
+
+        if config.enable_all_native_tools:
+            from zhenxun.services.ai.core.configs import NATIVE_TOOL_REGISTRY
+
+            for t_name in supported:
+                if t_name in NATIVE_TOOL_REGISTRY:
+                    requested_tools.append(NATIVE_TOOL_REGISTRY[t_name]())
+
+        requested_tools.extend(config.native_tools)
+
+        if not requested_tools:
+            return
+
+        seen = set()
+        unique_requested = []
+        for t in requested_tools:
+            t_name = t.get_tool_name()
+            if t_name not in seen:
+                seen.add(t_name)
+                unique_requested.append(t)
+
+        tools = body.get("tools", [])
+
+        for tool in unique_requested:
+            t_name = tool.get_tool_name()
+            if t_name not in supported:
+                logger.warning(f"模型 {model.model_name} 声明不支持 {t_name}，已跳过。")
+                continue
+
+            payload = tool.to_openai_payload()
+            if payload:
+                tools.append(payload)
+
+        if tools:
+            body["tools"] = tools
+
+
+class OpenAIEmbeddingHandler(BaseEmbeddingHandler):
+    """OpenAI 嵌入向量处理器"""
+
+    def prepare_embedding_request(
+        self,
+        adapter: "BaseAdapter",
+        model: "LLMModel",
+        api_key: str,
+        texts: list[str],
+        config: "LLMEmbeddingConfig",
+    ) -> RequestData:
+        endpoint = getattr(adapter, "get_embedding_endpoint")(model)
+        url = adapter.get_api_url(model, endpoint)
+        headers = adapter.get_base_headers(api_key)
+
+        body = {
+            "model": model.model_name,
+            "input": texts,
+        }
+
+        if config.output_dimensionality:
+            body["dimensions"] = config.output_dimensionality
+        if config.task_type:
+            body["task"] = config.task_type
+        if config.encoding_format and config.encoding_format != "float":
+            body["encoding_format"] = config.encoding_format
+
+        return RequestData(url=url, headers=headers, body=body)
+
+    def parse_embedding_response(
+        self, adapter: "BaseAdapter", response_json: dict[str, Any]
+    ) -> list[list[float]]:
+        adapter.validate_response(response_json)
+        try:
+            data = response_json.get("data", [])
+            if not data:
+                raise LLMException(
+                    "嵌入响应中没有数据",
+                    code=LLMErrorCode.EMBEDDING_FAILED,
+                    details=response_json,
+                )
+            embeddings = []
+            for item in data:
+                if "embedding" in item:
+                    embeddings.append(item["embedding"])
+                else:
+                    raise LLMException(
+                        "嵌入响应格式错误：缺少embedding字段",
+                        code=LLMErrorCode.EMBEDDING_FAILED,
+                        details=item,
+                    )
+            return embeddings
+        except Exception as e:
+            logger.error(f"解析嵌入响应失败: {e}", e=e)
+            raise LLMException(
+                f"解析嵌入响应失败: {e}",
+                code=LLMErrorCode.EMBEDDING_FAILED,
+                cause=e,
+            )
+
+
+class OpenAIImageHandler(BaseImageHandler):
+    """OpenAI 图像生成处理器"""
+
+    def prepare_image_request(
+        self,
+        adapter: "BaseAdapter",
+        model: "LLMModel",
+        api_key: str,
+        prompt: str,
+        images: list[Any] | None = None,
+        config: "GenerationConfig | None" = None,
+    ) -> RequestData:
+        headers = adapter.get_base_headers(api_key)
+
+        body: dict[str, Any] = {
+            "model": model.model_name,
+            "prompt": prompt,
+            "response_format": "b64_json",
+        }
+
+        if config:
+            if config.media.resolution:
+                res_str = str(config.media.resolution).upper()
+                if res_str == "1K":
+                    res_str = "1024x1024"
+                elif res_str == "2K":
+                    res_str = "2048x2048"
+                elif res_str == "4K":
+                    res_str = "4096x4096"
+                body["size"] = res_str
+
+            if config.media.quality:
+                body["quality"] = config.media.quality
+
+        if not images:
+            endpoint = "/v1/images/generations"
+            url = adapter.get_api_url(model, endpoint)
+            return RequestData(url=url, headers=headers, body=body)
+        else:
+            endpoint = "/v1/images/edits"
+            url = adapter.get_api_url(model, endpoint)
+            files = []
+            file_key = "image[]" if len(images) > 1 else "image"
+
+            for i, img_source in enumerate(images):
+                img_bytes = None
+                if isinstance(img_source, bytes):
+                    img_bytes = img_source
+                elif hasattr(img_source, "read_bytes"):
+                    img_bytes = img_source.read_bytes()
+                elif isinstance(img_source, str) and img_source.startswith(
+                    "data:image"
+                ):
+                    b64_data = img_source.split(",", 1)[1]
+                    img_bytes = base64.b64decode(b64_data)
+                else:
+                    raise LLMException(
+                        "OpenAI 图像编辑仅支持 bytes/Path/base64 URI",
+                        code=LLMErrorCode.INVALID_PARAMETER,
+                        recoverable=False,
+                    )
+
+                files.append((file_key, (f"image_{i}.png", img_bytes, "image/png")))
+
+            headers.pop("Content-Type", None)
+            return RequestData(url=url, headers=headers, body=body, files=files)
+
+    def parse_image_response(
+        self, adapter: "BaseAdapter", response_json: dict[str, Any]
+    ) -> ResponseData:
+        adapter.validate_response(response_json)
+
+        images_data: list[bytes | Path | str] = []
+        data_list = response_json.get("data", [])
+
+        for item in data_list:
+            if "b64_json" in item:
+                try:
+                    b64_str = item["b64_json"]
+                    if b64_str.startswith("data:"):
+                        b64_str = b64_str.split(",", 1)[1]
+                    img = base64.b64decode(b64_str)
+                    images_data.append(process_image_data(img))
+                except Exception as exc:
+                    logger.error(f"Base64 解码失败: {exc}")
+            elif "url" in item:
+                images_data.append(item["url"])
+
+        content_parts = []
+        for img in images_data:
+            if isinstance(img, str) and img.startswith("http"):
+                content_parts.append(ImagePart(url=img))
+            elif isinstance(img, bytes):
+                content_parts.append(ImagePart(raw=img))
+            elif isinstance(img, str):
+                content_parts.append(ImagePart(path=Path(img)))
+            else:
+                content_parts.append(ImagePart(path=img))
+
+        if not content_parts:
+            raise LLMException("OpenAI 图像生成响应中未找到有效的图片数据")
+
+        return ResponseData(
+            content_parts=content_parts,
+            raw_response=response_json,
+        )
+
+
+class OpenAIRerankHandler(BaseRerankHandler):
+    """OpenAI (扩展) 重排处理器"""
+
+    def prepare_rerank_request(
+        self,
+        adapter: "BaseAdapter",
+        model: "LLMModel",
+        api_key: str,
+        query: str,
+        documents: list[str | dict[str, str]],
+        top_n: int,
+    ) -> RequestData:
+        endpoint = "/v1/rerank"
+        url = adapter.get_api_url(model, endpoint)
+        headers = adapter.get_base_headers(api_key)
+
+        safe_documents = []
+        for doc in documents:
+            if isinstance(doc, dict):
+                safe_documents.append(doc.get("text", str(doc)))
+            else:
+                safe_documents.append(str(doc))
+
+        body = {
+            "model": model.model_name,
+            "query": query,
+            "documents": safe_documents,
+            "top_n": top_n,
+        }
+        return RequestData(url=url, headers=headers, body=body)
+
+    def parse_rerank_response(
+        self, adapter: "BaseAdapter", response_json: dict[str, Any]
+    ) -> list["RerankResult"]:
+        adapter.validate_response(response_json)
+        results = []
+        for item in response_json.get("results", []):
+            doc = item.get("document", {})
+            r_doc = (
+                RerankDocument(text=doc.get("text"), image=doc.get("image"))
+                if isinstance(doc, dict)
+                else RerankDocument(text=str(doc))
+            )
+            results.append(
+                RerankResult(
+                    index=item["index"],
+                    relevance_score=item["relevance_score"],
+                    document=r_doc,
+                )
+            )
+        return results
+
+
+class OpenAIAudioHandler(BaseAudioHandler):
+    """OpenAI 文本转语音处理器"""
+
+    def prepare_speech_request(
+        self,
+        adapter: "BaseAdapter",
+        model: "LLMModel",
+        api_key: str,
+        input_text: str,
+        voice: str,
+        config: "TTSConfig",
+    ) -> RequestData:
+        endpoint = "/v1/audio/speech"
+        url = adapter.get_api_url(model, endpoint)
+        headers = adapter.get_base_headers(api_key)
+        body = {
+            "model": model.model_name,
+            "input": input_text,
+            "voice": voice,
+            "response_format": config.response_format,
+            "speed": config.speed,
+        }
+        return RequestData(url=url, headers=headers, body=body)
+
+    async def parse_speech_response(
+        self, adapter: "BaseAdapter", model: "LLMModel", raw_response: Any
+    ) -> "AudioResponse":
+        from zhenxun.services.ai.core.messages import AudioResponse, UsageInfo
+
+        audio_bytes = await raw_response.aread()
+        return AudioResponse(
+            audio_bytes=audio_bytes,
+            audio_format="mp3",
+            usage=UsageInfo(),
+            model_name=model.model_name,
+        )
+
+
+class CompositeOpenAITextHandler(BaseTextHandler):
+    """
+    OpenAI 复合文本对话处理器 (Composite Pattern)。
+    内部包装标准协议与 responses 协议 Handler，根据模型配置在请求时动态路由，
+    从而保证 Adapter 层的绝对干净和无脑委派。
+    """
+
+    def __init__(self, api_type: str = "openai"):
+        self.api_type = api_type
+        self._standard_handler = OpenAITextHandler(api_type=api_type)
+        self._responses_handler = OpenAIResponsesTextHandler(
+            api_type="openai_responses"
+        )
+
+    def _get_active_handler(self, model: "LLMModel") -> BaseTextHandler:
+        current_api_type = model.model_detail.api_type or model.api_type
+        if current_api_type == "openai_responses":
+            return self._responses_handler
+        return self._standard_handler
+
+    async def prepare_text_request(
+        self,
+        adapter: "BaseAdapter",
+        model: "LLMModel",
+        api_key: str,
+        messages: list[LLMMessage],
+        config: GenerationConfig | None = None,
+        tools: list[Any] | None = None,
+        tool_choice: "ToolChoice | str | dict[str, Any] | None" = None,
+    ) -> RequestData:
+        handler = self._get_active_handler(model)
+        return await handler.prepare_text_request(
+            adapter, model, api_key, messages, config, tools, tool_choice
+        )
+
+    def parse_text_response(
+        self,
+        adapter: "BaseAdapter",
+        model: "LLMModel",
+        response_json: dict[str, Any],
+        is_advanced: bool = False,
+    ) -> ResponseData:
+        handler = self._get_active_handler(model)
+        return handler.parse_text_response(adapter, model, response_json, is_advanced)

@@ -2,10 +2,17 @@
 工具执行与管理协议定义
 """
 
-from collections.abc import Awaitable, Callable
-from typing import Any, Protocol, runtime_checkable
+from __future__ import annotations
 
-from zhenxun.services.ai.types.tools import ToolDefinition, ToolResult
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from zhenxun.services.ai.run import RunContext
+    from zhenxun.services.ai.tools.models import ResolvedToolPayload
+    from zhenxun.services.ai.tools.models import ToolDefinition, ToolResult
+else:
+    ToolDefinition = Any
+    ToolResult = Any
 
 
 class ToolExecutable(Protocol):
@@ -26,12 +33,15 @@ class ToolExecutable(Protocol):
         """
         ...
 
-    async def should_confirm(self, **kwargs: Any) -> str | None:
+    async def should_confirm(
+        self, context: Any | None = None, **kwargs: Any
+    ) -> str | None:
         """
         [可选] 异步判定工具执行前是否需要用户交互确认。
         如果需要确认，返回一段提示文本；否则返回 None。
         """
         ...
+
 
 @runtime_checkable
 class ToolResolvable(Protocol):
@@ -40,25 +50,7 @@ class ToolResolvable(Protocol):
     都可以直接被 Agent 或 LLM 的 tools 参数接收。
     """
 
-    async def __resolve_to_tools__(self) -> list[ToolExecutable]: ...
-
-
-ToolNextCall = Callable[[dict[str, Any], Any], Awaitable[ToolResult]]
-
-
-class ToolMiddleware(Protocol):
-    """
-    工具执行中间件协议。
-    洋葱模型：拦截执行、修改参数、修改上下文、校验权限、金币扣除或篡改返回值。
-    """
-
-    async def __call__(
-        self,
-        tool: ToolExecutable,
-        kwargs: dict[str, Any],
-        context: Any,
-        next_call: ToolNextCall,
-    ) -> ToolResult: ...
+    async def resolve(self, context: 'RunContext | None' = None) -> 'ResolvedToolPayload': ...
 
 
 class ToolProvider(Protocol):

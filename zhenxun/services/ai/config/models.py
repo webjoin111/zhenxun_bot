@@ -1,8 +1,6 @@
-from typing import Any
+from pydantic import BaseModel, Field
 
-from pydantic import BaseModel, ConfigDict, Field
-
-from zhenxun.services.ai.types.models import ModelDetail
+from zhenxun.services.ai.core.models import ModelDetail
 
 
 class DebugLogOptions(BaseModel):
@@ -68,7 +66,7 @@ class ProviderConfig(BaseModel):
     """是否强制使用 OpenAI 兼容模式"""
     temperature: float | None = 0.7
     """该提供商下模型的默认温度"""
-    max_tokens: int | None = None
+    generation_max_tokens: int | None = None
     """该提供商下模型的默认最大输出限制"""
     models: list[ModelDetail]
     """该提供商提供的具体模型列表"""
@@ -93,9 +91,13 @@ class LLMConfig(BaseModel):
         default_factory=ContextManagementSettings
     )
     """上下文管理相关配置"""
+    model_groups: dict[str, list[str]] = Field(default_factory=dict)
+    """虚拟模型路由组配置 (Virtual Router Groups)"""
 
     def validate_model_name(self, provider_model_name: str) -> bool:
         """验证模型名称在当前配置中是否存在"""
+        if "/" not in provider_model_name:
+            return provider_model_name.strip() in self.model_groups
         if not provider_model_name or "/" not in provider_model_name:
             return False
         parts = provider_model_name.split("/", 1)
@@ -106,3 +108,4 @@ class LLMConfig(BaseModel):
                     if m.model_name == m_name:
                         return True
         return False
+

@@ -9,9 +9,9 @@ from nonebot.utils import is_coroutine_callable
 from zhenxun.services.ai.protocols.tool import (
     ToolExecutable,
     ToolProvider,
-    ToolResolvable,
 )
-from zhenxun.services.ai.types.tools import MCPSource, ResolvedToolPayload
+from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
+from zhenxun.services.ai.tools.models import Query, ResolvedToolPayload
 from zhenxun.services.log import logger
 
 T = TypeVar("T", bound=ToolExecutable)
@@ -135,6 +135,139 @@ class ToolCollection(list[T], Generic[T]):
         return self._name_cache.items()
 
 
+class _StringResolver:
+    def __init__(self, name: str, manager: "ToolProviderManager", default_namespace: str):
+        self.name = name
+        self.manager = manager
+        self.default_namespace = default_namespace
+
+    async def resolve(self, context: Any | None = None) -> ResolvedToolPayload:
+        if self.name in self.manager._macro_resolvers:
+            resolver = self.manager._macro_resolvers[self.name]
+            resolved = (
+                await resolver() if is_coroutine_callable(resolver) else resolver()
+            )
+            return await self.manager._normalize_to_resolver(resolved, self.default_namespace).resolve(context)
+
+        s = self.name
+
+        # 1. 拆分命名空间和目标
+        if "." in s:
+            ns, target = s.split(".", 1)
+        else:
+            ns = self.default_namespace
+            target = s
+
+        from zhenxun.services.ai.tools.models import Query
+
+        # 2. 解析语法树
+        if target == "*":
+            query = Query(namespace=ns)
+        elif target.startswith("#"):
+            tags = [t for t in target.split("#") if t]
+            query = Query(tags=tags, namespace=ns)
+        else:
+            query = Query(name=target, namespace=ns)
+
+        logger.debug(f"🔍 [StringRouter] 语法解析: '{self.name}' -> {query}")
+        return await _QueryResolver(query, self.manager).resolve(context)
+
+
+class _QueryResolver:
+    def __init__(self, query: Query, manager: "ToolProviderManager"):
+        self.query = query
+        self.manager = manager
+
+    async def resolve(self, context: Any | None = None) -> ResolvedToolPayload:
+        payload = ResolvedToolPayload()
+        namespaces_to_search = []
+
+        if self.query.namespace == "global":
+            namespaces_to_search = list(self.manager._namespaced_tools.keys())
+        elif self.query.namespace:
+            namespaces_to_search = [self.query.namespace]
+        else:
+            raise ValueError(f"Query 对象必须显式指定 namespace 作用域: {self.query}")
+
+        # 1. 优先从本地/插件命名空间池中匹配
+        for ns in namespaces_to_search:
+            if ns in self.manager._namespaced_tools:
+                for tool in self.manager._namespaced_tools[ns]:
+                    if self.query.match(tool):
+                        if hasattr(tool, "resolve"):
+                            p = await tool.resolve(context)
+                            if p:
+                                payload.tools.extend(p.tools)
+                                payload.injected_prompts.extend(p.injected_prompts)
+                                payload.toolkits.extend(p.toolkits)
+                        else:
+                            payload.tools.append(tool)
+
+        # 2. 如果指定了名字且没找到，可能是在底层 Provider(如 MCP) 里，尝试回退发现
+        if self.query.name and not payload.tools and not self.query.tags:
+            specific = await self.manager.resolve_specific_tools([self.query.name])
+            for t in specific:
+                if self.query.match(t):
+                    payload.tools.append(t)
+
+        return payload
+
+
+class _CallableResolver:
+    def __init__(self, func: Callable, manager: "ToolProviderManager"):
+        self.func = func
+        self.manager = manager
+
+    async def resolve(self, context: Any | None = None) -> ResolvedToolPayload:
+        for candidate in (
+            getattr(self.func, "__tool_name__", None),
+            getattr(self.func, "__name__", None),
+        ):
+            if candidate:
+                for ns_tools in self.manager._namespaced_tools.values():
+                    if t := ns_tools.get(candidate):
+                        if hasattr(t, "resolve"):
+                            return await t.resolve(context)
+                        return ResolvedToolPayload(tools=[t])
+        from zhenxun.services.ai.tools.core.tool import FunctionTool
+
+        t = FunctionTool(func=self.func)
+        return await t.resolve(context)
+
+
+class _TypeAdapterResolver:
+    def __init__(
+        self, item: Any, resolver_func: Callable, manager: "ToolProviderManager", default_namespace: str
+    ):
+        self.item = item
+        self.resolver_func = resolver_func
+        self.manager = manager
+        self.default_namespace = default_namespace
+
+    async def resolve(self, context: Any | None = None) -> ResolvedToolPayload:
+        resolved = (
+            await self.resolver_func(self.item)
+            if is_coroutine_callable(self.resolver_func)
+            else self.resolver_func(self.item)
+        )
+        return await self.manager._normalize_to_resolver(resolved, self.default_namespace).resolve(context)
+
+
+class _LegacyExecutableResolver:
+    def __init__(self, executable: Any):
+        self.executable = executable
+
+    async def resolve(self, context: Any | None = None) -> ResolvedToolPayload:
+        import copy
+
+        if hasattr(self.executable, "get_definition"):
+            run_scoped_tool = copy.copy(self.executable)
+            if not hasattr(run_scoped_tool, "name"):
+                setattr(run_scoped_tool, "name", f"instance_{id(run_scoped_tool)}")
+            return ResolvedToolPayload(tools=[run_scoped_tool])
+        return ResolvedToolPayload(tools=[self.executable])
+
+
 class ToolProviderManager:
     """工具提供者的中心化管理器，采用单例模式。"""
 
@@ -150,7 +283,7 @@ class ToolProviderManager:
             return
 
         self._providers: list[ToolProvider] = []
-        self._global_tools: ToolCollection = ToolCollection()
+        self._namespaced_tools: dict[str, ToolCollection] = {}
         self._resolved_tools: ToolCollection | None = None
         self._init_lock = asyncio.Lock()
         self._init_promise: asyncio.Task | None = None
@@ -177,7 +310,23 @@ class ToolProviderManager:
         """注册由 @tool 生成的单一工具"""
         if not hasattr(tool, "name"):
             setattr(tool, "name", str(id(tool)))
-        self._global_tools.append(tool)
+        from zhenxun.utils.utils import infer_plugin_namespace
+        ns = infer_plugin_namespace()
+        if ns not in self._namespaced_tools:
+            self._namespaced_tools[ns] = ToolCollection()
+        self._namespaced_tools[ns].append(tool)
+        self._resolved_tools = None
+
+    def register_toolkit(self, toolkit: Any) -> None:
+        """
+        注册一个完整的 Toolkit 实例，使其可通过智能字符串路由（Tag或Name）被动态发现。
+        """
+        from zhenxun.utils.utils import infer_plugin_namespace
+
+        ns = infer_plugin_namespace()
+        if ns not in self._namespaced_tools:
+            self._namespaced_tools[ns] = ToolCollection()
+        self._namespaced_tools[ns].append(toolkit)
         self._resolved_tools = None
 
     async def initialize(self) -> None:
@@ -267,8 +416,9 @@ class ToolProviderManager:
                     f"提供者 '{provider_name}' 在发现工具时出错: {provider_result}"
                 )
 
-        for t in self._global_tools:
-            all_tools.append(t)
+        for ns_tools in self._namespaced_tools.values():
+            for t in ns_tools:
+                all_tools.append(t)
 
         if not has_filters:
             self._resolved_tools = all_tools
@@ -290,8 +440,13 @@ class ToolProviderManager:
         await self.initialize()
 
         for name in tool_names:
-            if t := self._global_tools.get(name):
-                resolved.append(t)
+            found_in_global = False
+            for ns_tools in self._namespaced_tools.values():
+                if t := ns_tools.get(name):
+                    resolved.append(t)
+                    found_in_global = True
+                    break
+            if found_in_global:
                 continue
 
             config: dict[str, Any] = {"name": name}
@@ -321,7 +476,10 @@ class ToolProviderManager:
         """
         仅从直接注册的游离工具中解析指定的工具。
         """
-        all_function_tools = ToolCollection(list(self._global_tools))
+        all_tools_list = []
+        for ns_tools in self._namespaced_tools.values():
+            all_tools_list.extend(list(ns_tools))
+        all_function_tools = ToolCollection(all_tools_list)
         if names is None:
             return all_function_tools
 
@@ -333,6 +491,20 @@ class ToolProviderManager:
                 logger.warning(f"全局工具 '{name}' 未通过 @tool 注册，将被忽略。")
         return resolved_tools
 
+    def _normalize_to_resolver(self, item: Any, default_ns: str) -> Any:
+        """将任意类型包装为含有 resolve() 方法的解析器对象"""
+        if hasattr(item, "resolve"):
+            return item
+        if isinstance(item, Query):
+            return _QueryResolver(item, self)
+        if isinstance(item, str):
+            return _StringResolver(item, self, default_ns)
+        if type(item) in self._type_resolvers:
+            return _TypeAdapterResolver(item, self._type_resolvers[type(item)], self, default_ns)
+        if callable(item):
+            return _CallableResolver(item, self)
+        return _LegacyExecutableResolver(item)
+
     async def resolve_tools(
         self,
         tool_definitions: Iterable[Any] | None,
@@ -340,174 +512,65 @@ class ToolProviderManager:
         context: Any | None = None,
     ) -> ResolvedToolPayload:
         """
-        统一解析工具配置，全面采用 ToolResolvable + 注册制解析器。
+        统一解析工具配置，全面采用多态解析器与并发聚合管线。
         """
-        _ = namespace
-        resolved_tools_map = ToolCollection()
-        injected_prompts: list[str] = []
-        resolved_toolkits: list[Any] = []
-
-        if tool_definitions is None:
-            return ResolvedToolPayload(
-                tools=resolved_tools_map,
-                injected_prompts=injected_prompts,
-                toolkits=resolved_toolkits,
-            )
-
         if not tool_definitions:
-            return ResolvedToolPayload(
-                tools=resolved_tools_map,
-                injected_prompts=injected_prompts,
-                toolkits=resolved_toolkits,
-            )
+            return ResolvedToolPayload()
 
-        from zhenxun.services.ai.types.tools import ToolOverride
+        if not namespace:
+            from zhenxun.utils.utils import infer_plugin_namespace
 
-        async def _process_resolved(res_obj: Any) -> None:
-            """通用提取并入库函数。"""
-            if res_obj is None:
-                return
+            namespace = infer_plugin_namespace()
+            logger.debug(f"🔍 [StringRouter] 自动推断当前调用者所在插件为: '{namespace}'")
 
-            if isinstance(res_obj, list):
-                for item in res_obj:
-                    await _process_resolved(item)
-                return
-            if hasattr(res_obj, "get_tool_declaration"):
-                decl = res_obj.get_tool_declaration()
-                if decl:
-                    name = next(iter(decl.keys()), f"platform_tool_{id(res_obj)}")
-                    try:
-                        if not hasattr(res_obj, "name"):
-                            setattr(res_obj, "name", name)
-                    except ValueError:
-                        pass
-                    resolved_tools_map.append(res_obj)
-                return
-            if hasattr(res_obj, "get_definition"):
-                import copy
-                try:
-                    run_scoped_tool = copy.copy(res_obj)
-                    definition = await run_scoped_tool.get_definition(context)
-                    if definition is None:
-                        logger.debug(f"工具 {getattr(run_scoped_tool, 'name', 'unknown')} 被 prepare 钩子隐藏")
-                        return
-                    run_scoped_tool._dynamic_def = definition
-                    if not hasattr(run_scoped_tool, "name"):
-                        setattr(run_scoped_tool, "name", definition.name)
-                    resolved_tools_map.append(run_scoped_tool)
-                except Exception:
-                    run_scoped_tool = copy.copy(res_obj)
-                    if not hasattr(run_scoped_tool, "name"):
-                        setattr(run_scoped_tool, "name", f"instance_{id(run_scoped_tool)}")
-                    resolved_tools_map.append(run_scoped_tool)
-                return
-            if callable(res_obj):
-                for candidate in (
-                    getattr(res_obj, "__tool_name__", None),
-                    getattr(res_obj, "__name__", None),
-                ):
-                    if candidate and (t := self._global_tools.get(candidate)):
-                        await _process_resolved(t)
-                        return
+        defs = []
 
-        local_tool_names = []
-
-        for t in tool_definitions:
-            if isinstance(t, ToolOverride):
-                found_tools = await self.resolve_specific_tools([t.name])
-                if found_tools:
-                    base_tool = found_tools[0]
-                    if hasattr(base_tool, "clone_with_options"):
-                        cloned_tool = base_tool.clone_with_options(t)
-                        await _process_resolved(cloned_tool)
-                    else:
-                        logger.warning(f"工具 {t.name} 不支持动态覆盖，将原样装配。")
-                        await _process_resolved(base_tool)
+        def _flatten(items):
+            for item in items:
+                if isinstance(item, list):
+                    _flatten(item)
                 else:
-                    logger.warning(f"ToolOverride 找不到目标基础工具: {t.name}")
-            elif isinstance(t, MCPSource):
-                from zhenxun.services.ai.tools.providers.mcp.provider import mcp_provider
+                    defs.append(item)
 
-                server_tools = await mcp_provider.get_tools_for_server(t.server_name)
-                if t.tool_whitelist:
-                    server_tools = {
-                        k: v
-                        for k, v in server_tools.items()
-                        if any(k.endswith(allowed) for allowed in t.tool_whitelist)
-                    }
-                await _process_resolved(list(server_tools.values()))
-            elif isinstance(t, ToolResolvable) or hasattr(t, "__resolve_to_tools__"):
-                tools_list = await t.__resolve_to_tools__()
-                await _process_resolved(tools_list)
+        _flatten(tool_definitions)
 
-                if hasattr(t, "enter_session") and hasattr(t, "exit_session"):
-                    resolved_toolkits.append(t)
-                if hasattr(t, "get_instructions") and (
-                    instructions := getattr(t, "get_instructions")()
-                ):
-                    injected_prompts.append(instructions)
-            elif isinstance(t, str):
-                if t == "__all__":
-                    pass
-                elif t in self._macro_resolvers:
-                    resolver = self._macro_resolvers[t]
-                    resolved = (
-                        await resolver()
-                        if is_coroutine_callable(resolver)
-                        else resolver()
-                    )
-                    await _process_resolved(resolved)
-                else:
-                    local_tool_names.append(t)
-            elif type(t) in self._type_resolvers:
-                resolver = self._type_resolvers[type(t)]
-                resolved = (
-                    await resolver(t)
-                    if is_coroutine_callable(resolver)
-                    else resolver(t)
-                )
-                await _process_resolved(resolved)
-            else:
-                await _process_resolved(t)
+        resolvers = [self._normalize_to_resolver(t, namespace) for t in defs]
 
-        if "__all__" in (tool_definitions or []):
-            await _process_resolved(list(self._global_tools))
-            for macro_name, resolver in self._macro_resolvers.items():
-                resolved = (
-                    await resolver() if is_coroutine_callable(resolver) else resolver()
-                )
-                await _process_resolved(resolved)
+        for i, r in enumerate(resolvers):
+            if asyncio.iscoroutine(r):
+                r = await r
+                resolvers[i] = self._normalize_to_resolver(r, namespace)
 
-        if local_tool_names:
-            local_tools = await self.resolve_specific_tools(local_tool_names)
-            await _process_resolved(list(local_tools))
+        tasks = [r.resolve(context) for r in resolvers]
+        payloads = await asyncio.gather(*tasks, return_exceptions=True)
 
-        return ResolvedToolPayload(
-            tools=resolved_tools_map,
-            injected_prompts=injected_prompts,
-            toolkits=resolved_toolkits,
-        )
+        final_payload = ResolvedToolPayload()
+        global_toolkit = BaseToolkit(prefix="")
+
+        for p in payloads:
+            if isinstance(p, BaseException):
+                logger.error(f"工具解析器流水线内部错误: {p}")
+                continue
+            if not p:
+                continue
+            p = cast(ResolvedToolPayload, p)
+
+            for t in p.tools:
+                if not getattr(t, "parent_toolkit", None):
+                    t.parent_toolkit = global_toolkit
+                final_payload.tools.append(t)
+
+            final_payload.injected_prompts.extend(p.injected_prompts)
+            final_payload.toolkits.extend(p.toolkits)
+
+        final_payload.tools = ToolCollection(final_payload.tools)
+        return final_payload
 
 
 tool_provider_manager = ToolProviderManager()
 
 
-from zhenxun.services.ai.types.exceptions import LLMErrorCode, LLMException
-from zhenxun.services.ai.types.tools import (
-    GeminiCodeExecution,
-    GeminiGoogleMaps,
-    GeminiGoogleSearch,
-    GeminiUrlContext,
-)
-
-tool_provider_manager.register_macro_resolver(
-    "google_search", lambda: GeminiGoogleSearch()
-)
-tool_provider_manager.register_macro_resolver(
-    "code_execution", lambda: GeminiCodeExecution()
-)
-tool_provider_manager.register_macro_resolver("google_map", lambda: GeminiGoogleMaps())
-tool_provider_manager.register_macro_resolver("url_context", lambda: GeminiUrlContext())
+from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
 
 
 async def _dict_ad_hoc_resolver(config: dict):
