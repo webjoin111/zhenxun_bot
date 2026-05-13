@@ -1,11 +1,10 @@
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from pydantic import BaseModel
 
 from zhenxun.services.ai.flow.agent.agent import Agent
 from zhenxun.services.ai.flow.agent.models import AgentRuntimeConfig
-from zhenxun.services.ai.llm.manager import get_global_default_model_name
-from zhenxun.services.ai.run import AgentRunResult, RunContext, Task
 from zhenxun.services.ai.flow.team.mode import TeamMode
 from zhenxun.services.ai.flow.team.strategy import (
     BaseTeamStrategy,
@@ -13,7 +12,9 @@ from zhenxun.services.ai.flow.team.strategy import (
     CoordinateStrategy,
     RouteStrategy,
 )
-from zhenxun.services.log import logger
+from zhenxun.services.ai.llm.manager import get_global_default_model_name
+from zhenxun.services.ai.run import AgentRunResult, RunContext, Task
+from zhenxun.services.ai.run.models import AgentRunError
 
 
 class RouteDecision(BaseModel):
@@ -39,6 +40,8 @@ class Team:
         mode: str | TeamMode | BaseTeamStrategy = TeamMode.COORDINATE,
         leader_model: str | None = None,
         custom_prompt: str | None = None,
+        state_flow: dict[str, list[str]] | Callable | None = None,
+        selector_func: Callable[..., str | None | Awaitable[str | None]] | None = None,
     ):
         self.name = name
         self.members = members
@@ -51,7 +54,9 @@ class Team:
         else:
             mode_str = mode.value if isinstance(mode, TeamMode) else mode.lower()
             if mode_str == "route":
-                self.strategy = RouteStrategy(custom_prompt)
+                self.strategy = RouteStrategy(
+                    custom_prompt, state_flow=state_flow, selector_func=selector_func
+                )
             elif mode_str == "broadcast":
                 self.strategy = BroadcastStrategy(custom_prompt)
             else:
@@ -60,6 +65,7 @@ class Team:
     def bind(self, **kwargs: Any) -> Any:
         """DI 注入语法糖"""
         from nonebot.params import Depends
+
         from zhenxun.services.ai.flow.agent.bridge import AgentRunner
 
         async def _dependency() -> AgentRunner[Any]:
@@ -118,8 +124,8 @@ class Team:
         if context is None:
             context = RunContext()
 
-        from zhenxun.services.ai.run import StreamedRunResult
         from zhenxun.services.ai.core.stream_events import EventStreamer
+        from zhenxun.services.ai.run import StreamedRunResult
 
         streamer = EventStreamer()
 
@@ -130,8 +136,6 @@ class Team:
                 ):
                     await streamer.send(event)
             except BaseException as e:
-                from zhenxun.services.ai.core.stream_events import AgentRunError
-
                 await streamer.send(AgentRunError(error=e))
             finally:
                 await streamer.end()
@@ -146,5 +150,3 @@ class Team:
         finally:
             if not task.done():
                 task.cancel()
-
-

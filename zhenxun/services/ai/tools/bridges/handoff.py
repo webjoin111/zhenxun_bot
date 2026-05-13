@@ -8,8 +8,10 @@ from zhenxun.services.ai.tools.models import ToolResult
 
 
 class HandoffArgs(BaseModel):
-    reason: str = Field(
-        ..., description="移交的原因、总结或需要传递给下一个负责人的上下文信息"
+    reason: str = Field(..., description="移交的原因或简要状态说明")
+    context_data: str = Field(
+        default="",
+        description="你需要传递给下一个负责人的所有核心数据",
     )
 
 
@@ -31,10 +33,11 @@ class HandoffTool(BaseTool):
         self, context: RunContext | None = None, **kwargs: Any
     ) -> ToolResult:
         reason = kwargs.get("reason", "")
+        context_data = kwargs.get("context_data", "")
         from zhenxun.services.ai.core.exceptions import HandoffException
 
         raise HandoffException(
             target=self.target_name,
-            payload={"reason": reason},
+            payload={"reason": reason, "context_data": context_data},
             display=f"🔄 正在将控制权移交给 {self.target_name}...",
         )
