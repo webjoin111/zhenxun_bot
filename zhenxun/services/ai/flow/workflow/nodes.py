@@ -103,12 +103,7 @@ class AgentNode(Step):
             prompt_data = copy.copy(prompt_data)
             if step_input.previous_step_content:
                 prev_content = str(step_input.previous_step_content)
-                if prompt_data.context:
-                    prompt_data.context = (
-                        f"{prompt_data.context}\n\n[上游节点执行输出]:\n{prev_content}"
-                    )
-                else:
-                    prompt_data.context = f"[上游节点执行输出]:\n{prev_content}"
+                prompt_data.description = f"### 🔙 [上游节点执行输出]\n{prev_content}\n\n### 🎯 [当前需执行的任务]\n{prompt_data.description}"
             context.run.user_input = prompt_data.description
         else:
             if step_input.previous_step_content:

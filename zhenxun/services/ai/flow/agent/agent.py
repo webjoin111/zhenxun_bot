@@ -544,19 +544,6 @@ class Agent(Generic[AgentDepsT, OutputDataT]):
                 f"### 📋 [任务指令]\n{task_obj.description}",
                 f"### 🎯 [预期产出要求]\n{task_obj.expected_output}",
             ]
-            if task_obj.context:
-                if isinstance(task_obj.context, str):
-                    prompt_parts.insert(
-                        0, f"### 📚 [前置背景上下文]\n{task_obj.context}"
-                    )
-                elif isinstance(task_obj.context, list):
-                    ctx_str = "\n".join(
-                        [
-                            f"- 任务 {r.task_id} 产出: {r.raw_response or r.output}"
-                            for r in task_obj.context
-                        ]
-                    )
-                    prompt_parts.insert(0, f"### 🔗 [前置依赖任务结果]\n{ctx_str}")
             final_prompt_text = "\n\n".join(prompt_parts)
         elif prompt is not None:
             final_prompt_text = str(prompt)

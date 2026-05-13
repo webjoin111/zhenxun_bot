@@ -185,7 +185,7 @@ class RouteStrategy(BaseTeamStrategy):
 
                     if isinstance(prompt, Task):
                         current_task_desc = copy.copy(prompt)
-                        current_task_desc.context = f"[来自上游的移交说明]\n{handoff_reason}\n\n[前置背景]\n{current_task_desc.context or ''}"
+                        current_task_desc.description = f"### 🔄 [来自上游的移交说明]\n{handoff_reason}\n\n### 🎯 [当前需执行的任务]\n{current_task_desc.description}"
                     else:
                         current_task_desc = f"[来自上一个处理节点的移交说明]\n{handoff_reason}\n\n[用户的原始诉求]\n{prompt}"
                 else:

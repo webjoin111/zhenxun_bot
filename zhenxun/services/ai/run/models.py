@@ -200,9 +200,6 @@ class Task(BaseModel):
     response_model: Any | None = None
     """强制要求返回的强类型结构 (Pydantic Model) 或 OutputDefinition，为空则返回普通文本"""
 
-    context: list[TaskResult] | str | None = None
-    """前置依赖上下文，可直接注入上游 TaskResult 的列表或纯文本背景"""
-
     tools: list[str | Any] | None = None
     """针对此特定任务动态追加或覆盖的工具列表"""
 
