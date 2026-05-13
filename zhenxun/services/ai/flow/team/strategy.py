@@ -1,10 +1,7 @@
 from abc import ABC, abstractmethod
 import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
-import inspect
-from typing import Any, cast
-
-from nonebot.utils import is_coroutine_callable
+from typing import Any
 
 from zhenxun.services.ai.core.events import EventCenter
 from zhenxun.services.ai.core.events.event_types import (
@@ -19,109 +16,12 @@ from zhenxun.services.ai.core.messages import LLMMessage
 from zhenxun.services.ai.core.stream_events import ToolStreamChunk
 from zhenxun.services.ai.core.templates import PromptTemplate
 from zhenxun.services.ai.flow.agent.agent import Agent
-from zhenxun.services.ai.protocols.capabilities import AbstractCapability
-from zhenxun.services.ai.run import DependencyInjector, RunContext, Task
+from zhenxun.services.ai.flow.team.capabilities import TeamRoutingCapability
+from zhenxun.services.ai.flow.team.router import BaseRouter
+from zhenxun.services.ai.run import RunContext, Task
 from zhenxun.services.ai.run.models import AgentRunEnd, AgentRunError
 from zhenxun.services.ai.tools.bridges.delegate import DelegateTool
-from zhenxun.services.ai.tools.bridges.handoff import HandoffTool
 from zhenxun.services.log import logger
-
-
-class TeamRoutingCapability(AbstractCapability):
-    """团队路由能力组件：动态向所有团队成员
-    （包括 Router 和 Expert）注入互相移交的工具及规则说明。
-    """
-
-    def __init__(
-        self,
-        team_name: str,
-        members: list[Any],
-        state_flow: dict[str, list[str]] | Callable | None = None,
-    ):
-        self.team_name = team_name
-        self.members = members
-        self.state_flow = state_flow
-
-    async def _get_allowed_targets(self, context: RunContext) -> list[str] | None:
-        """核心FSM解析：解析静态字典或动态执行函数获取允许的下游节点"""
-        if self.state_flow is None:
-            return None
-
-        current_speaker = context.run.agent_name or "unknown"
-
-        if isinstance(self.state_flow, dict):
-            return self.state_flow.get(
-                current_speaker,
-                [m.name for m in self.members if m.name != current_speaker],
-            )
-
-        if callable(self.state_flow):
-            from zhenxun.services.ai.run import DependencyInjector
-
-            sig = inspect.signature(self.state_flow)
-            kwargs = await DependencyInjector.resolve_all(
-                sig, call_kwargs={}, context=context
-            )
-
-            if is_coroutine_callable(self.state_flow):
-                return await cast(Callable, self.state_flow)(**kwargs)
-            return cast(Callable, self.state_flow)(**kwargs)
-
-        return None
-
-    async def get_tools(self, context: RunContext) -> list[Any]:
-        tools = []
-        allowed_targets = await self._get_allowed_targets(context)
-
-        for m in self.members:
-            if context.run.agent_name != m.name:
-                if allowed_targets is not None and m.name not in allowed_targets:
-                    continue
-
-                if getattr(m, "persona", None):
-                    desc = f"角色：{m.persona.role}，目标：{m.persona.goal}"
-                else:
-                    instr = getattr(m, "instruction", "")
-                    desc = str(instr)[:100] + "..." if instr else "领域专家"
-
-                tools.append(
-                    HandoffTool(
-                        target_name=m.name,
-                        target_description=desc,
-                    )
-                )
-        return tools
-
-    async def get_system_prompts(self, context: RunContext) -> list[str]:
-        if context.run.agent_name != f"{self.team_name}_Router":
-            base_prompt = (
-                "### 🤝 [团队协作规范]\n"
-                f"你是跨域协作团队 '{self.team_name}' 的一员。"
-                "如果你认为当前任务超出了你的职责范畴，"
-                "或你目前已经完成了前置处理但需要其他专家的处理结果进行下一步推进，"
-                "请务必使用移交工具 (transfer_to_...) 将控制权移交给合适的队友。\n"
-                "移交时必须在 `reason` 参数中详细说明你的移交原因，"
-                "并附带你已经处理好的上下文关键数据！"
-            )
-
-            allowed_targets = await self._get_allowed_targets(context)
-            if allowed_targets is not None:
-                if not allowed_targets:
-                    base_prompt += (
-                        "\n\n⚠️ **[系统状态机规则] 当前流程已到达终点！"
-                        "你没有任何可移交的对象。请直接输出最终总结并结束当前任务，"
-                        "严禁尝试移交。**"
-                    )
-                else:
-                    base_prompt += (
-                        "\n\n⚠️ **[系统状态机规则] 根据当前的状态流转限制，"
-                        "如果你需要移交控制权，你必须且只能从以下对象中选择："
-                        f"[{', '.join(allowed_targets)}]。"
-                        "禁止移交给除此之外的任何实体！**"
-                    )
-
-            return [base_prompt]
-        return []
 
 
 class BaseTeamStrategy(ABC):
@@ -152,15 +52,11 @@ class BaseTeamStrategy(ABC):
 
 
 class RouteStrategy(BaseTeamStrategy):
-    """路由策略：动态选择一个最合适的专家处理问题"""
+    """路由策略：基于挂载的 Router 进行最合适的专家分发"""
 
-    default_system_prompt = (
-        "## 角色与目标\n"
-        "你是一个高级任务路由器 (所在团队: {{ team_name }})。\n"
-        "请根据用户的输入意图，立刻调用相应的移交工具 (transfer_to_...) "
-        "将对话物理转移给合适的专员处理。\n"
-        "你必须且只能选择移交，不能自己作答。"
-    )
+    def __init__(self, router: BaseRouter):
+        self.router = router
+        self.custom_prompt = None
 
     async def run_stream(
         self, team: Any, prompt: str | Task | None, context: RunContext, **kwargs
@@ -175,28 +71,42 @@ class RouteStrategy(BaseTeamStrategy):
             )
         )
 
-        route_prompt = self.get_prompt(team_name=team.name)
-
         routing_cap = TeamRoutingCapability(
-            team_name=team.name, members=team.members, state_flow=self.state_flow
+            team_name=team.name,
+            members=team.members,
+            state_flow=getattr(team, "state_flow", None),
         )
-
-        router_agent = Agent(
-            name=f"{team.name}_Router",
-            instruction=route_prompt,
-            model=team.leader_model,
-            runtime_config=team.runtime_config,
-        )
-
-        current_agent = router_agent
-        final_result = None
-        handoff_history_messages: list[LLMMessage] = []
 
         cycle_count = 0
         exec_config = kwargs.get("config")
         max_cycles = getattr(exec_config, "max_cycles", 15) if exec_config else 15
 
-        logger.info(f"🛣️ [RouteStrategy] '{team.name}' 正在判定意图...")
+        logger.info(f"🛣️ [RouteStrategy] '{team.name}' 正在获取初始路由决策...")
+
+        decision = await self.router.route(context, [], prompt)
+        if not decision:
+            from zhenxun.services.ai.core.exceptions import AbortException
+
+            logger.warning(
+                f"🚨 [RouteStrategy] Team '{team.name}' 的所有路由策略未能命中目标。"
+            )
+            raise AbortException(
+                reason=f"Team '{team.name}' 无法找到合适的路由节点处理该任务",
+                display="🚨 团队协作失败，无法分配任务。",
+            )
+
+        from zhenxun.services.ai.core.exceptions import HandoffException
+
+        handoff_exception = HandoffException(
+            target=decision.target_name,
+            payload={"reason": decision.reason, "context_data": decision.context_data},
+            display=f"⚡ 初始路由分配至 {decision.target_name}...",
+        )
+
+        current_agent = None
+        final_result = None
+        handoff_history_messages: list[LLMMessage] = []
+
         while True:
             cycle_count += 1
             if cycle_count > max_cycles:
@@ -210,110 +120,6 @@ class RouteStrategy(BaseTeamStrategy):
                     reason=f"Team '{team.name}' 路由流转超过最大次数限制 ({max_cycles}次)，已强制熔断。",
                     display="🚨 团队协作陷入死循环，已被系统强制中断。",
                 )
-
-            is_router = current_agent == router_agent
-
-            selected_target = None
-            if is_router and self.selector_func is not None:
-                sig = inspect.signature(self.selector_func)
-                call_kwargs = {"prompt": prompt, "context": context}
-                if isinstance(prompt, Task):
-                    call_kwargs["task"] = prompt
-
-                kwargs_resolved = await DependencyInjector.resolve_all(
-                    sig, call_kwargs, context
-                )
-                filtered_kwargs = {
-                    k: v for k, v in kwargs_resolved.items() if k in sig.parameters
-                }
-
-                if is_coroutine_callable(self.selector_func):
-                    _async_func = cast(
-                        Callable[..., Awaitable[str | None]], self.selector_func
-                    )
-                    selected_target = await _async_func(**filtered_kwargs)
-                else:
-                    _sync_func = cast(Callable[..., str | None], self.selector_func)
-                    selected_target = _sync_func(**filtered_kwargs)
-
-                if selected_target is not None:
-                    if any(m.name == selected_target for m in team.members):
-                        logger.info(
-                            "⚡ [RouteStrategy] 短路选择器命中，"
-                            f"直接路由至: {selected_target}"
-                        )
-                    else:
-                        logger.warning(
-                            "⚠️ [RouteStrategy] 短路选择器返回了未知的成员 "
-                            f"'{selected_target}'，无缝回退至 LLM 路由。"
-                        )
-                        selected_target = None
-
-            sub_context = context.clone_for_member(current_agent.name)
-
-            sub_context.capabilities = list(sub_context.capabilities)
-            sub_context.capabilities.append(routing_cap)
-
-            if not is_router:
-                await EventCenter.publish(
-                    TeamMemberStartEvent(
-                        session_id=session_id,
-                        team_name=team.name,
-                        member_name=current_agent.name,
-                        task=str(
-                            prompt.description if isinstance(prompt, Task) else prompt
-                        )
-                        if prompt
-                        else "",
-                    )
-                )
-
-            run_result = None
-            handoff_exception = None
-
-            if selected_target is not None:
-                from zhenxun.services.ai.core.exceptions import HandoffException
-
-                handoff_exception = HandoffException(
-                    target=selected_target,
-                    payload={
-                        "reason": "由静态短路选择器确定的路由路径。",
-                        "context_data": "",
-                    },
-                    display=f"⚡ 命中极速静态路由，直达 {selected_target}...",
-                )
-            else:
-                try:
-                    async with current_agent.run_stream(
-                        prompt=prompt,
-                        context=sub_context,
-                        message_history=handoff_history_messages,
-                        **kwargs,
-                    ) as stream_result:
-                        async for event in stream_result.stream_events():
-                            if isinstance(event, AgentRunEnd):
-                                run_result = event.result
-                            elif isinstance(event, AgentRunError):
-                                from zhenxun.services.ai.core.exceptions import (
-                                    HandoffException,
-                                )
-
-                                if isinstance(event.error, HandoffException):
-                                    handoff_exception = event.error
-                                else:
-                                    raise event.error
-                            if not is_router:
-                                yield event
-                except BaseException as e:
-                    from zhenxun.services.ai.core.exceptions import HandoffException
-
-                    if isinstance(e, HandoffException):
-                        handoff_exception = e
-                    else:
-                        raise e
-
-            if not run_result and not handoff_exception:
-                raise RuntimeError(f"Agent {current_agent.name} 未能成功返回运行结果。")
 
             if handoff_exception:
                 target_name = handoff_exception.target
@@ -338,18 +144,17 @@ class RouteStrategy(BaseTeamStrategy):
 
                 if combined_info:
                     handoff_msg = LLMMessage.system(
-                        f"### 🔄 [来自上游节点 {current_agent.name} 的移交数据]\n"
-                        f"{combined_info}"
+                        f"### 🔄 [来自上游节点的移交数据]\n{combined_info}"
                     )
                     handoff_history_messages.append(handoff_msg)
 
-                if not is_router:
+                if current_agent is not None:
                     await EventCenter.publish(
                         TeamMemberEndEvent(
                             session_id=session_id,
                             team_name=team.name,
                             member_name=current_agent.name,
-                            result=f"Handoff to {target_name}",
+                            result=f"移交至 {target_name}",
                         )
                     )
 
@@ -373,23 +178,77 @@ class RouteStrategy(BaseTeamStrategy):
                     from zhenxun.services.ai.run import AgentRunResult
 
                     final_result = AgentRunResult(
-                        output=f"Handoff failed: {target_name} not found",
+                        output=f"移交失败：未找到目标成员 {target_name}",
                         usage=UsageInfo(),
                     )
                     break
 
                 current_agent = target_member
-            else:
-                final_result = run_result
-                if final_result and not is_router:
-                    await EventCenter.publish(
-                        TeamMemberEndEvent(
-                            session_id=session_id,
-                            team_name=team.name,
-                            member_name=current_agent.name,
-                            result=final_result.output,
-                        )
+                handoff_exception = None
+
+            if current_agent is None:
+                raise RuntimeError("系统错误：current_agent 未能成功解析。")
+
+            sub_context = context.clone_for_member(current_agent.name)
+            sub_context.capabilities = list(sub_context.capabilities)
+            sub_context.capabilities.append(routing_cap)
+
+            await EventCenter.publish(
+                TeamMemberStartEvent(
+                    session_id=session_id,
+                    team_name=team.name,
+                    member_name=current_agent.name,
+                    task=str(prompt.description if isinstance(prompt, Task) else prompt)
+                    if prompt
+                    else "",
+                )
+            )
+
+            run_result = None
+
+            try:
+                async with current_agent.run_stream(
+                    prompt=prompt,
+                    context=sub_context,
+                    message_history=handoff_history_messages,
+                    **kwargs,
+                ) as stream_result:
+                    async for event in stream_result.stream_events():
+                        if isinstance(event, AgentRunEnd):
+                            run_result = event.result
+                        elif isinstance(event, AgentRunError):
+                            from zhenxun.services.ai.core.exceptions import (
+                                HandoffException,
+                            )
+
+                            if isinstance(event.error, HandoffException):
+                                handoff_exception = event.error
+                            else:
+                                raise event.error
+                        yield event
+            except BaseException as e:
+                from zhenxun.services.ai.core.exceptions import HandoffException
+
+                if isinstance(e, HandoffException):
+                    handoff_exception = e
+                else:
+                    raise e
+
+            if not handoff_exception:
+                if not run_result:
+                    raise RuntimeError(
+                        f"Agent {current_agent.name} 未能成功返回运行结果。"
                     )
+
+                final_result = run_result
+                await EventCenter.publish(
+                    TeamMemberEndEvent(
+                        session_id=session_id,
+                        team_name=team.name,
+                        member_name=current_agent.name,
+                        result=final_result.output,
+                    )
+                )
                 break
 
         await EventCenter.publish(

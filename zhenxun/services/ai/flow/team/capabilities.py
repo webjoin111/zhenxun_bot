@@ -1,0 +1,104 @@
+from collections.abc import Callable
+import inspect
+from typing import Any, cast
+
+from nonebot.utils import is_coroutine_callable
+
+from zhenxun.services.ai.protocols.capabilities import AbstractCapability
+from zhenxun.services.ai.run import RunContext
+from zhenxun.services.ai.tools.bridges.handoff import HandoffTool
+
+
+class TeamRoutingCapability(AbstractCapability):
+    """团队路由能力组件：动态向所有团队成员"""
+
+    def __init__(
+        self,
+        team_name: str,
+        members: list[Any],
+        state_flow: dict[str, list[str]] | Callable | None = None,
+    ):
+        self.team_name = team_name
+        self.members = members
+        self.state_flow = state_flow
+
+    async def _get_allowed_targets(self, context: RunContext) -> list[str] | None:
+        """核心FSM解析：解析静态字典或动态执行函数获取允许的下游节点"""
+        if self.state_flow is None:
+            return None
+
+        current_speaker = context.run.agent_name or "unknown"
+
+        if isinstance(self.state_flow, dict):
+            return self.state_flow.get(
+                current_speaker,
+                [m.name for m in self.members if m.name != current_speaker],
+            )
+
+        if callable(self.state_flow):
+            from zhenxun.services.ai.run import DependencyInjector
+
+            sig = inspect.signature(self.state_flow)
+            kwargs = await DependencyInjector.resolve_all(
+                sig, call_kwargs={}, context=context
+            )
+
+            if is_coroutine_callable(self.state_flow):
+                return await cast(Callable, self.state_flow)(**kwargs)
+            return cast(Callable, self.state_flow)(**kwargs)
+
+        return None
+
+    async def get_tools(self, context: RunContext) -> list[Any]:
+        tools = []
+        allowed_targets = await self._get_allowed_targets(context)
+
+        for m in self.members:
+            if context.run.agent_name != m.name:
+                if allowed_targets is not None and m.name not in allowed_targets:
+                    continue
+
+                if getattr(m, "persona", None):
+                    desc = f"角色：{m.persona.role}，目标：{m.persona.goal}"
+                else:
+                    instr = getattr(m, "instruction", "")
+                    desc = str(instr)[:100] + "..." if instr else "领域专家"
+
+                tools.append(
+                    HandoffTool(
+                        target_name=m.name,
+                        target_description=desc,
+                    )
+                )
+        return tools
+
+    async def get_system_prompts(self, context: RunContext) -> list[str]:
+        if context.run.agent_name != f"{self.team_name}_Router":
+            base_prompt = (
+                "### 🤝 [团队协作规范]\n"
+                f"你是跨域协作团队 '{self.team_name}' 的一员。"
+                "如果你认为当前任务超出了你的职责范畴，"
+                "或你目前已经完成了前置处理但需要其他专家的处理结果进行下一步推进，"
+                "请务必使用移交工具 (transfer_to_...) 将控制权移交给合适的队友。\n"
+                "移交时必须在 `reason` 参数中详细说明你的移交原因，"
+                "并附带你已经处理好的上下文关键数据！"
+            )
+
+            allowed_targets = await self._get_allowed_targets(context)
+            if allowed_targets is not None:
+                if not allowed_targets:
+                    base_prompt += (
+                        "\n\n⚠️ **[系统状态机规则] 当前流程已到达终点！"
+                        "你没有任何可移交的对象。请直接输出最终总结并结束当前任务，"
+                        "严禁尝试移交。**"
+                    )
+                else:
+                    base_prompt += (
+                        "\n\n⚠️ **[系统状态机规则] 根据当前的状态流转限制，"
+                        "如果你需要移交控制权，你必须且只能从以下对象中选择："
+                        f"[{', '.join(allowed_targets)}]。"
+                        "禁止移交给除此之外的任何实体！**"
+                    )
+
+            return [base_prompt]
+        return []

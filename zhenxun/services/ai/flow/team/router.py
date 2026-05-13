@@ -1,0 +1,183 @@
+from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
+import inspect
+import re
+from typing import Any, cast
+
+from nonebot.utils import is_coroutine_callable
+
+from zhenxun.services.ai.core.messages import LLMMessage
+from zhenxun.services.ai.flow.team.models import RouteDecision
+from zhenxun.services.ai.run import DependencyInjector, RunContext, Task
+from zhenxun.services.log import logger
+
+
+class BaseRouter(ABC):
+    """团队多智能体路由器基类"""
+
+    @abstractmethod
+    async def route(
+        self,
+        context: RunContext,
+        history: list[LLMMessage],
+        prompt: str | Task | None = None,
+    ) -> RouteDecision | None:
+        """核心路由方法"""
+        pass
+
+
+class FunctionRouter(BaseRouter):
+    """基于纯函数的极速路由器"""
+
+    def __init__(
+        self, selector_func: Callable[..., str | None | Awaitable[str | None]]
+    ):
+        self.selector_func = selector_func
+
+    async def route(
+        self,
+        context: RunContext,
+        history: list[LLMMessage],
+        prompt: str | Task | None = None,
+    ) -> RouteDecision | None:
+        sig = inspect.signature(self.selector_func)
+        call_kwargs = {"prompt": prompt, "context": context, "history": history}
+        if isinstance(prompt, Task):
+            call_kwargs["task"] = prompt
+
+        kwargs_resolved = await DependencyInjector.resolve_all(
+            sig, call_kwargs, context
+        )
+        filtered_kwargs = {
+            k: v for k, v in kwargs_resolved.items() if k in sig.parameters
+        }
+
+        if is_coroutine_callable(self.selector_func):
+            _async_func = cast(Callable[..., Awaitable[str | None]], self.selector_func)
+            selected_target = await _async_func(**filtered_kwargs)
+        else:
+            _sync_func = cast(Callable[..., str | None], self.selector_func)
+            selected_target = _sync_func(**filtered_kwargs)
+
+        if selected_target is not None:
+            return RouteDecision(target_name=selected_target, reason="命中函数极速路由")
+        return None
+
+
+class RegexRouter(BaseRouter):
+    """基于正则表达式的极速路由器"""
+
+    def __init__(self, pattern: str, target: str):
+        self.pattern = re.compile(pattern)
+        self.target = target
+
+    async def route(
+        self,
+        context: RunContext,
+        history: list[LLMMessage],
+        prompt: str | Task | None = None,
+    ) -> RouteDecision | None:
+        text_to_match = (
+            prompt.description
+            if isinstance(prompt, Task)
+            else (prompt or context.run.user_input or "")
+        )
+
+        if self.pattern.search(text_to_match):
+            return RouteDecision(target_name=self.target, reason="命中正则极速路由")
+        return None
+
+
+class ChainRouter(BaseRouter):
+    """责任链路由器：按顺序执行，直到其中一个命中"""
+
+    def __init__(self, routers: list[BaseRouter]):
+        self.routers = routers
+
+    async def route(
+        self,
+        context: RunContext,
+        history: list[LLMMessage],
+        prompt: str | Task | None = None,
+    ) -> RouteDecision | None:
+        for router in self.routers:
+            decision = await router.route(context, history, prompt)
+            if decision is not None:
+                return decision
+        return None
+
+
+class LLMRouter(BaseRouter):
+    """基于大模型的意图路由器"""
+
+    def __init__(
+        self,
+        team_name: str,
+        members: list[Any],
+        leader_model: str | None = None,
+        state_flow: Any = None,
+        runtime_config: Any = None,
+        custom_prompt: str | None = None,
+    ):
+        self.team_name = team_name
+        self.members = members
+        self.leader_model = leader_model
+        self.state_flow = state_flow
+        self.runtime_config = runtime_config
+        self.custom_prompt = custom_prompt
+
+    async def route(
+        self,
+        context: RunContext,
+        history: list[LLMMessage],
+        prompt: str | Task | None = None,
+    ) -> RouteDecision | None:
+        from zhenxun.services.ai.core.exceptions import HandoffException
+        from zhenxun.services.ai.core.templates import PromptTemplate
+        from zhenxun.services.ai.flow.agent.agent import Agent
+        from zhenxun.services.ai.flow.team.capabilities import TeamRoutingCapability
+
+        default_system_prompt = (
+            "## 角色与目标\n"
+            "你是一个高级任务路由器 (所在团队: {{ team_name }})。\n"
+            "请根据用户的输入意图，立刻调用相应的移交工具 (transfer_to_...) "
+            "将对话物理转移给合适的专员处理。\n"
+            "你必须且只能选择移交，不能自己作答。"
+        )
+        template = self.custom_prompt or default_system_prompt
+        route_prompt = PromptTemplate(template).render(team_name=self.team_name)
+
+        routing_cap = TeamRoutingCapability(
+            team_name=self.team_name, members=self.members, state_flow=self.state_flow
+        )
+
+        router_agent = Agent(
+            name=f"{self.team_name}_Router",
+            instruction=route_prompt,
+            model=self.leader_model,
+            runtime_config=self.runtime_config,
+        )
+
+        sub_context = context.clone_for_member(router_agent.name)
+        sub_context.capabilities = list(sub_context.capabilities)
+        sub_context.capabilities.append(routing_cap)
+
+        try:
+            logger.debug("🤖 [LLMRouter] 启动 LLM 思考路由决策...")
+            await router_agent.run(
+                prompt=prompt,
+                context=sub_context,
+                message_history=history,
+            )
+            logger.warning("🤖 [LLMRouter] LLM 没有调用移交工具，放弃路由。")
+            return None
+        except HandoffException as e:
+            target_name = e.target
+            reason = e.payload.get("reason", "") if e.payload else ""
+            context_data = e.payload.get("context_data", "") if e.payload else ""
+            logger.debug(f"🤖 [LLMRouter] 决策完毕: 移交给 -> {target_name}")
+            return RouteDecision(
+                target_name=target_name,
+                reason=reason,
+                context_data=context_data,
+            )

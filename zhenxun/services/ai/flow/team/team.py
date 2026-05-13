@@ -1,11 +1,10 @@
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from pydantic import BaseModel
-
 from zhenxun.services.ai.flow.agent.agent import Agent
 from zhenxun.services.ai.flow.agent.models import AgentRuntimeConfig
-from zhenxun.services.ai.flow.team.mode import TeamMode
+from zhenxun.services.ai.flow.team.models import TeamMode
+from zhenxun.services.ai.flow.team.router import BaseRouter
 from zhenxun.services.ai.flow.team.strategy import (
     BaseTeamStrategy,
     BroadcastStrategy,
@@ -15,15 +14,6 @@ from zhenxun.services.ai.flow.team.strategy import (
 from zhenxun.services.ai.llm.manager import get_global_default_model_name
 from zhenxun.services.ai.run import AgentRunResult, RunContext, Task
 from zhenxun.services.ai.run.models import AgentRunError
-
-
-class RouteDecision(BaseModel):
-    """大模型动态路由决策的数据契约"""
-
-    selected_member_name: str
-    """选定的最合适的团队成员名称"""
-    reason: str
-    """选择该成员的详细理由"""
 
 
 class Team:
@@ -42,21 +32,41 @@ class Team:
         custom_prompt: str | None = None,
         state_flow: dict[str, list[str]] | Callable | None = None,
         selector_func: Callable[..., str | None | Awaitable[str | None]] | None = None,
+        router: "BaseRouter | None" = None,
     ):
         self.name = name
         self.members = members
         self.leader_model = leader_model or get_global_default_model_name()
 
         self.runtime_config = AgentRuntimeConfig(stateless=True, enable_hitl=False)
+        self.state_flow = state_flow
 
         if isinstance(mode, BaseTeamStrategy):
             self.strategy = mode
         else:
             mode_str = mode.value if isinstance(mode, TeamMode) else mode.lower()
             if mode_str == "route":
-                self.strategy = RouteStrategy(
-                    custom_prompt, state_flow=state_flow, selector_func=selector_func
-                )
+                if router is None:
+                    from .router import ChainRouter, FunctionRouter, LLMRouter
+
+                    routers = []
+                    if selector_func:
+                        routers.append(FunctionRouter(selector_func))
+
+                    routers.append(
+                        LLMRouter(
+                            team_name=name,
+                            members=members,
+                            leader_model=self.leader_model,
+                            state_flow=state_flow,
+                            runtime_config=self.runtime_config,
+                            custom_prompt=custom_prompt,
+                        )
+                    )
+                    resolved_router = ChainRouter(routers)
+                else:
+                    resolved_router = router
+                self.strategy = RouteStrategy(router=resolved_router)
             elif mode_str == "broadcast":
                 self.strategy = BroadcastStrategy(custom_prompt)
             else:
