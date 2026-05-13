@@ -763,6 +763,7 @@ class Agent(Generic[AgentDepsT, OutputDataT]):
                     config=AgentExecutorConfig(
                         max_cycles=exec_config.max_cycles,
                         reflexion_retries=exec_config.reflexion_retries,
+                        enable_fallback_summary=exec_config.enable_fallback_summary,
                     ),
                 )
 

@@ -160,6 +160,8 @@ class ExecutionConfig(BaseModel):
     """允许并行工具调用"""
     reflexion_retries: int = 1
     """反思重试次数"""
+    enable_fallback_summary: bool = True
+    """达到最大循环次数时，是否触发大模型兜底总结（而不是直接报错）"""
 
 
 class TaskResult(BaseModel):

@@ -46,6 +46,9 @@ class AgentExecutorConfig(BaseModel):
         default=1,
         description="当工具执行出错时，允许进行自我反思和修正的最大重试次数。",
     )
+    enable_fallback_summary: bool = Field(
+        default=True, description="达到最大循环次数时，是否触发大模型兜底总结（而不是直接报错）。"
+    )
 
 
 class AgentExecutor:
@@ -417,9 +420,68 @@ class AgentExecutor:
                         usage=cumulative_usage,
                     )
 
-            raise LLMException(
-                f"超过最大工具调用循环次数 ({self.config.max_cycles})。",
-                code=LLMErrorCode.GENERATION_FAILED,
+            if not self.config.enable_fallback_summary:
+                raise LLMException(
+                    f"超过最大工具调用循环次数 ({self.config.max_cycles})。",
+                    code=LLMErrorCode.GENERATION_FAILED,
+                )
+
+            logger.warning(f"AgentExecutor 达到最大循环次数 ({self.config.max_cycles})，触发兜底总结机制。")
+
+            if event_streamer:
+                from zhenxun.services.ai.core.stream_events import ToolStreamChunk
+                await event_streamer.send(
+                    ToolStreamChunk(
+                        tool_name="System",
+                        content="⏳ 思考过程过于复杂，正在强制生成最终总结...",
+                    )
+                )
+
+            fallback_msg = LLMMessage.system(
+                "### 🚨 [系统强制指令]\n"
+                "你的任务执行已达到最大循环次数上限。请根据以上所有收集到的信息，直接给出一个最终的总结性回复。\n"
+                "严禁再次尝试调用任何工具！请直接输出纯文本结果。"
+            )
+            execution_history.append(fallback_msg)
+
+            current_extra = run_context.state.copy()
+            if extra:
+                current_extra.update(extra)
+            current_extra["__sys_capabilities"] = getattr(run_context, "capabilities", [])
+            current_extra["run_context"] = run_context
+
+            fallback_response = await model_instance.generate_response(
+                messages=execution_history,
+                config=gen_config,
+                tools=None,
+                extra=current_extra,
+                cancellation_token=cancellation_token,
+            )
+
+            from zhenxun.services.ai.core.messages import AssistantContentUnion
+            assistant_message = AssistantMessage(
+                content=cast(list[AssistantContentUnion], fallback_response.content_parts)
+            )
+
+            usage_obj = parse_usage_info(fallback_response.usage_info)
+            if usage_obj.prompt_tokens > 0:
+                global_estimator.calibrate(
+                    usage_obj.prompt_tokens,
+                    execution_history,
+                    model_instance.model_name,
+                )
+            cumulative_usage += usage_obj
+            if usage_obj.completion_tokens > 0:
+                assistant_message.token_cost = usage_obj.completion_tokens
+
+            execution_history.append(assistant_message)
+
+            return model_construct(
+                AgentRunResult,
+                output=fallback_response.text,
+                messages=execution_history,
+                structured_data=None,
+                usage=cumulative_usage,
             )
         except Exception as e:
             raise e
