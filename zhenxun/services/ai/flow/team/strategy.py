@@ -4,7 +4,7 @@ from typing import Any
 
 from zhenxun.services.ai.core.templates import PromptTemplate
 from zhenxun.services.ai.flow.agent.agent import Agent
-from zhenxun.services.ai.flow.team.actions import (
+from zhenxun.services.ai.flow.team.models import (
     CallAction,
     ConcurrentCallAction,
     FinishAction,
@@ -238,6 +238,24 @@ class CoordinateStrategy(BaseTeamStrategy):
             runtime_config=team.runtime_config,
         )
 
+        session_id = context.session_id or "default_team_session"
+        from zhenxun.services.ai.core.events import EventCenter
+        from zhenxun.services.ai.core.events.event_types import TeamSynthesizeStartEvent
+
+        await EventCenter.publish(
+            TeamSynthesizeStartEvent(session_id=session_id, team_name=team.name)
+        )
+
+        if context.run.streamer:
+            from zhenxun.services.ai.core.stream_events import ToolStreamChunk
+
+            await context.run.streamer.send(
+                ToolStreamChunk(
+                    tool_name="Team Leader",
+                    content="✨ 团队 Leader 正在汇总各方报告...",
+                )
+            )
+
         logger.info(f"👨💼 [CoordinateStrategy] '{team.name}' 正在启动协调推理循环...")
 
         leader_res = yield CallAction(agent=leader_agent, task=prompt)
@@ -262,8 +280,37 @@ class BroadcastStrategy(BaseTeamStrategy):
             prompt.description if isinstance(prompt, Task) else (prompt or "")
         )
 
+        session_id = context.session_id or "default_team_session"
+
+        if context.run.streamer:
+            from zhenxun.services.ai.core.stream_events import ToolStreamChunk
+
+            await context.run.streamer.send(
+                ToolStreamChunk(
+                    tool_name="Team Broadcaster",
+                    content=f"🚀 正在并发广播任务给 {len(team.members)} 位专家...",
+                )
+            )
+
         actions = [CallAction(agent=m.name, task=task_desc_str) for m in team.members]
         results = yield ConcurrentCallAction(actions=actions)
+
+        if context.run.streamer:
+            from zhenxun.services.ai.core.stream_events import ToolStreamChunk
+
+            await context.run.streamer.send(
+                ToolStreamChunk(
+                    tool_name="Team Leader",
+                    content="✨ 所有专家汇报完毕，Leader 正在融合各方观点...",
+                )
+            )
+
+        from zhenxun.services.ai.core.events import EventCenter
+        from zhenxun.services.ai.core.events.event_types import TeamSynthesizeStartEvent
+
+        await EventCenter.publish(
+            TeamSynthesizeStartEvent(session_id=session_id, team_name=team.name)
+        )
 
         summary_text = "\n\n".join(
             [f"### 【{name} 的意见】:\n{res.output}" for name, res in results]

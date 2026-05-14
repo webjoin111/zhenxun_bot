@@ -15,8 +15,6 @@ from zhenxun.services.ai.run import AgentRunResult, RunContext, Task
 class Team:
     """
     多智能体动态编排与路由控制器 (Facade)。
-    极简门面模式：用户仅需通过 mode 指定协作方式，底层自动装配 Tool 与状态转移流。
-    也支持高阶开发者直接传入自定义的 BaseTeamStrategy 实例。
     """
 
     def __init__(
@@ -136,6 +134,7 @@ class Team:
         from zhenxun.services.ai.run import StreamedRunResult
 
         streamer = EventStreamer()
+        context.run.streamer = streamer
         runner = TeamRunner(self, self.strategy)
 
         async def _execution_task():

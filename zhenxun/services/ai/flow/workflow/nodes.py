@@ -6,7 +6,6 @@ from typing import Any, cast
 from nonebot.utils import is_coroutine_callable
 from pydantic import BaseModel, Field
 
-from zhenxun.services.ai.flow.agent.agent import Agent
 from zhenxun.services.ai.core.events import EventCenter
 from zhenxun.services.ai.core.events.event_types import (
     LoopExecutionCompletedEvent,
@@ -16,7 +15,7 @@ from zhenxun.services.ai.core.events.event_types import (
     ParallelExecutionCompletedEvent,
     ParallelExecutionStartedEvent,
 )
-from zhenxun.services.ai.run import DependencyInjector, RunContext
+from zhenxun.services.ai.flow.agent.agent import Agent
 from zhenxun.services.ai.flow.team.team import Team
 from zhenxun.services.ai.flow.workflow.base import BaseNode
 from zhenxun.services.ai.flow.workflow.types import (
@@ -25,6 +24,7 @@ from zhenxun.services.ai.flow.workflow.types import (
     StepOutput,
     StepType,
 )
+from zhenxun.services.ai.run import DependencyInjector, RunContext
 from zhenxun.services.log import logger
 
 

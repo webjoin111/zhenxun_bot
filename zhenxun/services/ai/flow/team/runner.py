@@ -12,12 +12,12 @@ from zhenxun.services.ai.core.events.event_types import (
 )
 from zhenxun.services.ai.core.exceptions import HandoffException
 from zhenxun.services.ai.core.messages import UsageInfo
-from zhenxun.services.ai.flow.team.actions import (
+from zhenxun.services.ai.flow.team.capabilities import TeamRoutingCapability
+from zhenxun.services.ai.flow.team.models import (
     CallAction,
     ConcurrentCallAction,
     FinishAction,
 )
-from zhenxun.services.ai.flow.team.capabilities import TeamRoutingCapability
 from zhenxun.services.ai.flow.team.strategy import BaseTeamStrategy
 from zhenxun.services.ai.run import AgentRunResult, RunContext
 from zhenxun.services.ai.run.models import AgentRunEnd, AgentRunError
@@ -27,7 +27,6 @@ from zhenxun.services.log import logger
 class TeamRunner:
     """
     多智能体团队核心执行引擎。
-    接管上下文切分 (Sandbox)、UI 事件广播与异常兜底，解释执行 Strategy 产出的计划。
     """
 
     def __init__(self, team: Any, strategy: BaseTeamStrategy):
@@ -36,6 +35,7 @@ class TeamRunner:
 
     async def _execute_call_action_to_queue(
         self,
+        index: int,
         action: CallAction,
         context: RunContext,
         session_id: str,
@@ -147,7 +147,7 @@ class TeamRunner:
             )
         )
 
-        await queue.put(("result", (target_agent.name, agent_res)))
+        await queue.put(("result", index, target_agent.name, agent_res))
 
     async def run_stream(
         self, prompt: Any, context: RunContext, **kwargs: Any
@@ -165,6 +165,7 @@ class TeamRunner:
 
         send_value = None
         final_result = None
+        cumulative_usage = UsageInfo()
 
         try:
             while True:
@@ -175,36 +176,54 @@ class TeamRunner:
 
                 if isinstance(action, CallAction):
                     queue = asyncio.Queue()
-                    asyncio.create_task(
+                    task = asyncio.create_task(
                         self._execute_call_action_to_queue(
-                            action, context, session_id, queue
+                            0, action, context, session_id, queue
                         )
                     )
-                    while True:
-                        msg_type, payload = await queue.get()
-                        if msg_type == "yield_event":
-                            yield payload
-                        elif msg_type == "result":
-                            send_value = payload[1]
-                            break
+                    try:
+                        while True:
+                            msg_type, *payload = await queue.get()
+                            if msg_type == "yield_event":
+                                yield payload[0]
+                            elif msg_type == "result":
+                                idx, agent_name, agent_res = payload
+                                send_value = agent_res
+                                cumulative_usage += agent_res.usage
+                                break
+                    finally:
+                        if not task.done():
+                            task.cancel()
 
                 elif isinstance(action, ConcurrentCallAction):
                     queue = asyncio.Queue()
-                    for act in action.actions:
-                        asyncio.create_task(
-                            self._execute_call_action_to_queue(
-                                act, context, session_id, queue
+                    tasks = []
+                    for i, act in enumerate(action.actions):
+                        tasks.append(
+                            asyncio.create_task(
+                                self._execute_call_action_to_queue(
+                                    i, act, context, session_id, queue
+                                )
                             )
                         )
 
-                    results = []
-                    while len(results) < len(action.actions):
-                        msg_type, payload = await queue.get()
-                        if msg_type == "yield_event":
-                            yield payload
-                        elif msg_type == "result":
-                            results.append(payload)
-                    send_value = results
+                    results_dict = {}
+                    try:
+                        while len(results_dict) < len(action.actions):
+                            msg_type, *payload = await queue.get()
+                            if msg_type == "yield_event":
+                                yield payload[0]
+                            elif msg_type == "result":
+                                idx, agent_name, agent_res = payload
+                                results_dict[idx] = (agent_name, agent_res)
+                                cumulative_usage += agent_res.usage
+                        send_value = [
+                            results_dict[i] for i in range(len(action.actions))
+                        ]
+                    finally:
+                        for task in tasks:
+                            if not task.done():
+                                task.cancel()
 
                 elif isinstance(action, FinishAction):
                     final_result = action.result
@@ -223,6 +242,8 @@ class TeamRunner:
         )
 
         if not isinstance(final_result, AgentRunResult):
-            final_result = AgentRunResult(output=final_result, usage=UsageInfo())
+            final_result = AgentRunResult(output=final_result, usage=cumulative_usage)
+        else:
+            final_result.usage += cumulative_usage
 
         yield AgentRunEnd(result=final_result)

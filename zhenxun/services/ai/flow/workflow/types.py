@@ -15,26 +15,7 @@ class StepType(str, Enum):
     ROUTER = "Router"
 
 
-class OnReject(str, Enum):
-    SKIP = "skip"
-    CANCEL = "cancel"
-    ELSE_BRANCH = "else"
 
-
-class OnError(str, Enum):
-    FAIL = "fail"
-    SKIP = "skip"
-    PAUSE = "pause"
-
-
-class WorkflowExecutionInput(BaseModel):
-    """工作流初始输入负载"""
-
-    input: Any = Field(default=None)
-    """初始输入，可以是字符串、字典或多模态列表"""
-
-    additional_data: dict[str, Any] = Field(default_factory=dict)
-    """附加元数据"""
 
 
 class StepInput(BaseModel):
@@ -81,94 +62,11 @@ class StepOutput(BaseModel):
     """嵌套步骤的输出结果集合（如复合节点 Loop、Parallel 的内部产出）"""
 
 
-class UserInputField(BaseModel):
-    """HITL 交互请求所需的自定义输入字段"""
 
-    name: str
-    """交互字段的参数名称"""
-    field_type: str = "str"
-    """交互字段的数据类型"""
-    description: str | None = None
-    """展示给用户的详细引导描述"""
-    value: Any | None = None
-    """用户实际填入的值"""
-    required: bool = True
-    """标记此交互字段是否必填"""
-    allowed_values: list[Any] | None = None
-    """允许选择的枚举值列表"""
-
-
-class StepRequirement(BaseModel):
-    """HITL 挂起状态的约束条件（如等待授权、等待输入等）"""
-
-    step_id: str
-    """引发挂起步骤的唯一标识"""
-    step_name: str | None = None
-    """引发挂起步骤的名称"""
-    step_index: int | None = None
-    """引发挂起步骤的排序索引"""
-    step_type: str | None = None
-    """引发挂起步骤的节点类型"""
-
-    requires_confirmation: bool = False
-    """标识是否处于等待人工确认授权阶段"""
-    confirmation_message: str | None = None
-    """展示给审批者的确认提示信息"""
-    confirmed: bool | None = None
-    """是否已同意授权"""
-    on_reject: OnReject | str = OnReject.CANCEL
-    """用户拒绝授权时执行的挽救策略"""
-
-    requires_user_input: bool = False
-    """标识是否处于等待用户补全字段信息阶段"""
-    user_input_message: str | None = None
-    """展示给用户的输入提示说明"""
-    user_input_schema: list[UserInputField] | None = None
-    """期望用户补全的字段定义数据结构"""
-    user_input: dict[str, Any] | None = None
-    """用户实际提交的输入内容字典"""
-
-    requires_route_selection: bool = False
-    """标识是否处于等待用户进行路由分支选择阶段"""
-    available_choices: list[str] | None = None
-    """提供给用户选择的路由分支名称"""
-    allow_multiple_selections: bool = False
-    """是否允许用户选中多个分支并发执行"""
-    selected_choices: list[str] | None = None
-    """用户实际选定的路由分支列表"""
-
-    @property
-    def is_resolved(self) -> bool:
-        if self.requires_confirmation and self.confirmed is None:
-            return False
-        if self.requires_user_input and not self.user_input:
-            return False
-        if self.requires_route_selection and not self.selected_choices:
-            return False
-        return True
-
-
-class ErrorRequirement(BaseModel):
-    """错误导致 HITL 挂起时的要求"""
-
-    step_id: str
-    """发生异常步骤的唯一标识"""
-    step_name: str | None = None
-    """发生异常步骤的名称"""
-    step_index: int | None = None
-    """发生异常步骤的排序索引"""
-    error_message: str = ""
-    """抛出的异常详情信息"""
-    error_type: str | None = None
-    """异常类型的分类标记"""
-    retry_count: int = 0
-    """此前已尝试过重试的次数"""
-    decision: str | None = None
-    """针对该错误进行处置的裁定指令"""
 
 
 class WorkflowRunResult(BaseModel):
-    """企业级工作流运行结果（包含断点快照状态）"""
+    """工作流运行结果（包含断点快照状态）"""
 
     workflow_id: str
     """工作流实例运行的唯一标识"""
