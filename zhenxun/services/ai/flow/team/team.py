@@ -30,7 +30,7 @@ class Team:
         mode: str | TeamMode | BaseTeamStrategy = TeamMode.COORDINATE,
         leader_model: str | None = None,
         custom_prompt: str | None = None,
-        state_flow: dict[str, list[str]] | Callable | None = None,
+        state_flow: dict[str, list[str | Any]] | Callable | None = None,
         selector_func: Callable[..., str | None | Awaitable[str | None]] | None = None,
         router: "BaseRouter | None" = None,
     ):
@@ -39,7 +39,22 @@ class Team:
         self.leader_model = leader_model or get_global_default_model_name()
 
         self.runtime_config = AgentRuntimeConfig(stateless=True, enable_hitl=False)
-        self.state_flow = state_flow
+
+        if isinstance(state_flow, dict):
+            from zhenxun.services.ai.flow.team.models import Transition
+
+            normalized_flow = {}
+            for k, targets in state_flow.items():
+                normalized_targets = []
+                for t in targets:
+                    if isinstance(t, str):
+                        normalized_targets.append(Transition(target=t))
+                    else:
+                        normalized_targets.append(t)
+                normalized_flow[k] = normalized_targets
+            self.state_flow = normalized_flow
+        else:
+            self.state_flow = state_flow
 
         if isinstance(mode, BaseTeamStrategy):
             self.strategy = mode

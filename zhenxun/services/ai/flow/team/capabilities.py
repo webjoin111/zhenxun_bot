@@ -22,18 +22,23 @@ class TeamRoutingCapability(AbstractCapability):
         self.members = members
         self.state_flow = state_flow
 
-    async def _get_allowed_targets(self, context: RunContext) -> list[str] | None:
-        """核心FSM解析：解析静态字典或动态执行函数获取允许的下游节点"""
+    async def _get_allowed_transitions(self, context: RunContext) -> list[Any] | None:
+        """核心FSM解析：解析静态字典或动态执行函数获取允许的 Transition 列表"""
         if self.state_flow is None:
             return None
 
         current_speaker = context.run.agent_name or "unknown"
 
         if isinstance(self.state_flow, dict):
-            return self.state_flow.get(
+            raw_targets = self.state_flow.get(
                 current_speaker,
                 [m.name for m in self.members if m.name != current_speaker],
             )
+            from zhenxun.services.ai.flow.team.models import Transition
+
+            return [
+                Transition(target=t) if isinstance(t, str) else t for t in raw_targets
+            ]
 
         if callable(self.state_flow):
             from zhenxun.services.ai.run import DependencyInjector
@@ -44,25 +49,45 @@ class TeamRoutingCapability(AbstractCapability):
             )
 
             if is_coroutine_callable(self.state_flow):
-                return await cast(Callable, self.state_flow)(**kwargs)
-            return cast(Callable, self.state_flow)(**kwargs)
+                result = await cast(Callable, self.state_flow)(**kwargs)
+            else:
+                result = cast(Callable, self.state_flow)(**kwargs)
+
+            if result is None:
+                return None
+            from zhenxun.services.ai.flow.team.models import Transition
+
+            return [Transition(target=t) if isinstance(t, str) else t for t in result]
 
         return None
 
     async def get_tools(self, context: RunContext) -> list[Any]:
         tools = []
-        allowed_targets = await self._get_allowed_targets(context)
+        allowed_transitions = await self._get_allowed_transitions(context)
 
         for m in self.members:
             if context.run.agent_name != m.name:
-                if allowed_targets is not None and m.name not in allowed_targets:
-                    continue
+                transition = None
+                if allowed_transitions is not None:
+                    transition = next(
+                        (
+                            t
+                            for t in allowed_transitions
+                            if getattr(t, "target", "") == m.name
+                        ),
+                        None,
+                    )
+                    if transition is None:
+                        continue
 
                 if getattr(m, "persona", None):
                     desc = f"角色：{m.persona.role}，目标：{m.persona.goal}"
                 else:
                     instr = getattr(m, "instruction", "")
                     desc = str(instr)[:100] + "..." if instr else "领域专家"
+
+                if transition and getattr(transition, "description", ""):
+                    desc += f" 【移交条件】：{transition.description}"
 
                 tools.append(
                     HandoffTool(
@@ -84,19 +109,22 @@ class TeamRoutingCapability(AbstractCapability):
                 "并附带你已经处理好的上下文关键数据！"
             )
 
-            allowed_targets = await self._get_allowed_targets(context)
-            if allowed_targets is not None:
-                if not allowed_targets:
+            allowed_transitions = await self._get_allowed_transitions(context)
+            if allowed_transitions is not None:
+                if not allowed_transitions:
                     base_prompt += (
                         "\n\n⚠️ **[系统状态机规则] 当前流程已到达终点！"
                         "你没有任何可移交的对象。请直接输出最终总结并结束当前任务，"
                         "严禁尝试移交。**"
                     )
                 else:
+                    targets = [
+                        getattr(t, "target", "unknown") for t in allowed_transitions
+                    ]
                     base_prompt += (
                         "\n\n⚠️ **[系统状态机规则] 根据当前的状态流转限制，"
                         "如果你需要移交控制权，你必须且只能从以下对象中选择："
-                        f"[{', '.join(allowed_targets)}]。"
+                        f"[{', '.join(targets)}]。"
                         "禁止移交给除此之外的任何实体！**"
                     )
 

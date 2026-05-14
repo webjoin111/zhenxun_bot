@@ -30,9 +30,10 @@ class FunctionRouter(BaseRouter):
     """基于纯函数的极速路由器"""
 
     def __init__(
-        self, selector_func: Callable[..., str | None | Awaitable[str | None]]
+        self, selector_func: Callable[..., Any], target: str | None = None
     ):
         self.selector_func = selector_func
+        self.target = target
 
     async def route(
         self,
@@ -53,14 +54,19 @@ class FunctionRouter(BaseRouter):
         }
 
         if is_coroutine_callable(self.selector_func):
-            _async_func = cast(Callable[..., Awaitable[str | None]], self.selector_func)
+            _async_func = cast(Callable[..., Awaitable[Any]], self.selector_func)
             selected_target = await _async_func(**filtered_kwargs)
         else:
-            _sync_func = cast(Callable[..., str | None], self.selector_func)
+            _sync_func = cast(Callable[..., Any], self.selector_func)
             selected_target = _sync_func(**filtered_kwargs)
 
-        if selected_target is not None:
-            return RouteDecision(target_name=selected_target, reason="命中函数极速路由")
+        if isinstance(selected_target, bool):
+            if selected_target and self.target:
+                logger.debug(f"命中函数极速路由 -> {self.target}")
+                return RouteDecision(target_name=self.target, reason="")
+        elif selected_target is not None and isinstance(selected_target, str):
+            logger.debug(f"命中函数动态路由 -> {selected_target}")
+            return RouteDecision(target_name=selected_target, reason="")
         return None
 
 
@@ -84,7 +90,8 @@ class RegexRouter(BaseRouter):
         )
 
         if self.pattern.search(text_to_match):
-            return RouteDecision(target_name=self.target, reason="命中正则极速路由")
+            logger.debug(f"命中正则极速路由 -> {self.target}")
+            return RouteDecision(target_name=self.target, reason="")
         return None
 
 
@@ -118,6 +125,7 @@ class LLMRouter(BaseRouter):
         state_flow: Any = None,
         runtime_config: Any = None,
         custom_prompt: str | None = None,
+        allowed_transitions: list[Any] | None = None,
     ):
         self.team_name = team_name
         self.members = members
@@ -125,6 +133,7 @@ class LLMRouter(BaseRouter):
         self.state_flow = state_flow
         self.runtime_config = runtime_config
         self.custom_prompt = custom_prompt
+        self.allowed_transitions = allowed_transitions
 
     async def route(
         self,
@@ -144,6 +153,14 @@ class LLMRouter(BaseRouter):
             "将对话物理转移给合适的专员处理。\n"
             "你必须且只能选择移交，不能自己作答。"
         )
+        
+        if self.allowed_transitions:
+            transitions_desc = "\n## 可用的移交目标及条件：\n"
+            for t in self.allowed_transitions:
+                desc = getattr(t, "description", "") or "无特定条件"
+                transitions_desc += f"- 移交至 [{getattr(t, 'target', 'unknown')}]：{desc}\n"
+            default_system_prompt += transitions_desc
+            
         template = self.custom_prompt or default_system_prompt
         route_prompt = PromptTemplate(template).render(team_name=self.team_name)
 

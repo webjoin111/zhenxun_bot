@@ -240,16 +240,60 @@ class RouteStrategy(BaseTeamStrategy):
                         f"Agent {current_agent.name} 未能成功返回运行结果。"
                     )
 
-                final_result = run_result
-                await EventCenter.publish(
-                    TeamMemberEndEvent(
-                        session_id=session_id,
-                        team_name=team.name,
-                        member_name=current_agent.name,
-                        result=final_result.output,
+                fast_routed = False
+                state_flow = getattr(team, "state_flow", None)
+                if isinstance(state_flow, dict) and current_agent.name in state_flow:
+                    agent_output = str(run_result.output)
+                    for t in state_flow[current_agent.name]:
+                        if getattr(t, "trigger_regex", None):
+                            import re
+
+                            if re.search(t.trigger_regex, agent_output):
+                                from zhenxun.services.ai.core.exceptions import (
+                                    HandoffException,
+                                )
+
+                                handoff_exception = HandoffException(
+                                    target=t.target,
+                                    payload={
+                                        "reason": "",
+                                        "context_data": agent_output,
+                                    },
+                                    display=f"⚡ 正则拦截，快速转移至 {t.target}...",
+                                )
+                                fast_routed = True
+                                break
+                        if getattr(t, "trigger_func", None):
+                            try:
+                                if t.trigger_func(agent_output):
+                                    from zhenxun.services.ai.core.exceptions import (
+                                        HandoffException,
+                                    )
+
+                                    handoff_exception = HandoffException(
+                                        target=t.target,
+                                        payload={
+                                            "reason": "",
+                                            "context_data": agent_output,
+                                        },
+                                        display=f"⚡ 函数拦截，快速转移至 {t.target}...",
+                                    )
+                                    fast_routed = True
+                                    break
+                            except Exception:
+                                pass
+
+                if not fast_routed:
+                    final_result = run_result
+                    await EventCenter.publish(
+                        TeamMemberEndEvent(
+                            session_id=session_id,
+                            team_name=team.name,
+                            member_name=current_agent.name,
+                            result=final_result.output,
+                        )
                     )
-                )
-                break
+                    break
 
         await EventCenter.publish(
             TeamRunEndEvent(

@@ -1,6 +1,7 @@
 from enum import Enum
+from typing import Any, Callable
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class TeamMode(str, Enum):
@@ -25,3 +26,20 @@ class RouteDecision(BaseModel):
     """选择该成员的详细理由"""
     context_data: str = ""
     """传递的上下文载荷"""
+
+
+class Transition(BaseModel):
+    """
+    声明式移交契约。
+    用于定义 Team 模式下，智能体之间转移控制权的条件和目标。
+    """
+    target: str
+    """目标智能体的名称"""
+    description: str = ""
+    """自然语言描述的移交条件（提供给大模型 LLMRouter 思考时使用）"""
+    trigger_regex: str | None = None
+    """(可选) 正则表达式。如果用户的输入匹配此正则，将触发极速硬路由，跳过大模型思考。"""
+    trigger_func: Callable[..., Any] | None = None
+    """(可选) 自定义校验函数。返回 True 或目标名称时触发硬路由。支持依赖注入。"""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
