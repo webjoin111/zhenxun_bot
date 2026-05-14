@@ -76,7 +76,7 @@ class DelegateTool(BaseTool):
         sub_context.run.add_system_prompt(preamble)
 
         try:
-            streamer = context.call.ui._streamer if context.call.ui else None
+            streamer = context.run.streamer
             response = None
 
             async with self.runnable.run_stream(

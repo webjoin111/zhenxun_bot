@@ -29,9 +29,7 @@ class BaseRouter(ABC):
 class FunctionRouter(BaseRouter):
     """基于纯函数的极速路由器"""
 
-    def __init__(
-        self, selector_func: Callable[..., Any], target: str | None = None
-    ):
+    def __init__(self, selector_func: Callable[..., Any], target: str | None = None):
         self.selector_func = selector_func
         self.target = target
 
@@ -153,14 +151,16 @@ class LLMRouter(BaseRouter):
             "将对话物理转移给合适的专员处理。\n"
             "你必须且只能选择移交，不能自己作答。"
         )
-        
+
         if self.allowed_transitions:
             transitions_desc = "\n## 可用的移交目标及条件：\n"
             for t in self.allowed_transitions:
                 desc = getattr(t, "description", "") or "无特定条件"
-                transitions_desc += f"- 移交至 [{getattr(t, 'target', 'unknown')}]：{desc}\n"
+                transitions_desc += (
+                    f"- 移交至 [{getattr(t, 'target', 'unknown')}]：{desc}\n"
+                )
             default_system_prompt += transitions_desc
-            
+
         template = self.custom_prompt or default_system_prompt
         route_prompt = PromptTemplate(template).render(team_name=self.team_name)
 

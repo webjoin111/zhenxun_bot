@@ -1,25 +1,18 @@
-from abc import ABC, abstractmethod
-import asyncio
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from abc import ABC
+from collections.abc import AsyncGenerator
 from typing import Any
 
-from zhenxun.services.ai.core.events import EventCenter
-from zhenxun.services.ai.core.events.event_types import (
-    TeamMemberEndEvent,
-    TeamMemberStartEvent,
-    TeamRouteDecisionEvent,
-    TeamRunEndEvent,
-    TeamRunStartEvent,
-    TeamSynthesizeStartEvent,
-)
-from zhenxun.services.ai.core.messages import LLMMessage
-from zhenxun.services.ai.core.stream_events import ToolStreamChunk
 from zhenxun.services.ai.core.templates import PromptTemplate
 from zhenxun.services.ai.flow.agent.agent import Agent
-from zhenxun.services.ai.flow.team.capabilities import TeamRoutingCapability
+from zhenxun.services.ai.flow.team.actions import (
+    CallAction,
+    ConcurrentCallAction,
+    FinishAction,
+    TeamAction,
+)
+from zhenxun.services.ai.flow.team.registry import team_strategy
 from zhenxun.services.ai.flow.team.router import BaseRouter
 from zhenxun.services.ai.run import RunContext, Task
-from zhenxun.services.ai.run.models import AgentRunEnd, AgentRunError
 from zhenxun.services.ai.tools.bridges.delegate import DelegateTool
 from zhenxun.services.log import logger
 
@@ -29,53 +22,67 @@ class BaseTeamStrategy(ABC):
 
     default_system_prompt: str = ""
 
-    def __init__(
-        self,
-        custom_prompt: str | None = None,
-        state_flow: Any = None,
-        selector_func: Callable[..., str | None | Awaitable[str | None]] | None = None,
-    ):
+    def __init__(self, custom_prompt: str | None = None, **kwargs):
         self.custom_prompt = custom_prompt
-        self.state_flow = state_flow
-        self.selector_func = selector_func
+        self.kwargs = kwargs
 
     def get_prompt(self, **kwargs) -> str:
         template = self.custom_prompt or self.default_system_prompt
         return PromptTemplate(template).render(**kwargs)
 
-    @abstractmethod
-    async def run_stream(
+    async def generate_plan(
         self, team: Any, prompt: str | Task | None, context: RunContext, **kwargs
-    ) -> AsyncGenerator[Any, None]:
-        """核心执行流"""
-        yield None
+    ) -> AsyncGenerator[TeamAction, Any]:
+        """
+        核心决策生成器 (Action Yielding Pattern)。
+
+        第三方开发者只需重写此方法：
+        1. 使用 `yield CallAction(...)` 派发任务，系统会自动拦截并执行，
+           然后将 `AgentRunResult` 通过 .asend() 传回。
+        2. 使用 `yield FinishAction(...)` 结束团队协作。
+
+        不再需要手动处理 EventCenter、上下文隔离和异常兜底。
+        """
+        yield FinishAction(
+            result="The Strategy has not implemented generate_plan() yet."
+        )
 
 
+@team_strategy("route", namespace="builtin")
 class RouteStrategy(BaseTeamStrategy):
     """路由策略：基于挂载的 Router 进行最合适的专家分发"""
 
-    def __init__(self, router: BaseRouter):
+    def __init__(
+        self,
+        router: BaseRouter | None = None,
+        custom_prompt: str | None = None,
+        **kwargs,
+    ):
+        super().__init__(custom_prompt=custom_prompt, **kwargs)
         self.router = router
-        self.custom_prompt = None
 
-    async def run_stream(
+    async def generate_plan(
         self, team: Any, prompt: str | Task | None, context: RunContext, **kwargs
-    ) -> AsyncGenerator:
-        task_desc_str = (
-            prompt.description if isinstance(prompt, Task) else (prompt or "")
-        )
-        session_id = context.session_id or "default_team_session"
-        await EventCenter.publish(
-            TeamRunStartEvent(
-                session_id=session_id, team_name=team.name, task=task_desc_str
-            )
-        )
+    ):
+        router = self.router
+        if not router:
+            from .router import ChainRouter, FunctionRouter, LLMRouter
 
-        routing_cap = TeamRoutingCapability(
-            team_name=team.name,
-            members=team.members,
-            state_flow=getattr(team, "state_flow", None),
-        )
+            routers = []
+            selector_func = getattr(team, "selector_func", None)
+            if selector_func:
+                routers.append(FunctionRouter(selector_func))
+            routers.append(
+                LLMRouter(
+                    team_name=team.name,
+                    members=team.members,
+                    leader_model=getattr(team, "leader_model", None),
+                    state_flow=getattr(team, "state_flow", None),
+                    runtime_config=getattr(team, "runtime_config", None),
+                    custom_prompt=self.custom_prompt,
+                )
+            )
+            router = ChainRouter(routers)
 
         cycle_count = 0
         exec_config = kwargs.get("config")
@@ -83,7 +90,7 @@ class RouteStrategy(BaseTeamStrategy):
 
         logger.info(f"🛣️ [RouteStrategy] '{team.name}' 正在获取初始路由决策...")
 
-        decision = await self.router.route(context, [], prompt)
+        decision = await router.route(context, [], prompt)
         if not decision:
             from zhenxun.services.ai.core.exceptions import AbortException
 
@@ -95,17 +102,9 @@ class RouteStrategy(BaseTeamStrategy):
                 display="🚨 团队协作失败，无法分配任务。",
             )
 
-        from zhenxun.services.ai.core.exceptions import HandoffException
-
-        handoff_exception = HandoffException(
-            target=decision.target_name,
-            payload={"reason": decision.reason, "context_data": decision.context_data},
-            display=f"⚡ 初始路由分配至 {decision.target_name}...",
-        )
-
-        current_agent = None
-        final_result = None
-        handoff_history_messages: list[LLMMessage] = []
+        current_target = decision.target_name
+        handoff_reason = decision.reason
+        context_data = decision.context_data
 
         while True:
             cycle_count += 1
@@ -121,192 +120,83 @@ class RouteStrategy(BaseTeamStrategy):
                     display="🚨 团队协作陷入死循环，已被系统强制中断。",
                 )
 
-            if handoff_exception:
-                target_name = handoff_exception.target
-                handoff_reason = (
-                    handoff_exception.payload.get("reason", "")
-                    if handoff_exception.payload
-                    else ""
+            handoff_history_messages = []
+            upstream_info = []
+            if handoff_reason:
+                upstream_info.append(f"【移交说明】\n{handoff_reason}")
+            if context_data:
+                upstream_info.append(f"【核心上下文数据】\n{context_data}")
+            combined_info = "\n\n".join(upstream_info)
+
+            if combined_info:
+                from zhenxun.services.ai.core.messages import LLMMessage
+
+                handoff_msg = LLMMessage.system(
+                    f"### 🔄 [来自上游节点的移交数据]\n{combined_info}"
                 )
-                context_data = (
-                    handoff_exception.payload.get("context_data", "")
-                    if handoff_exception.payload
-                    else ""
+                handoff_history_messages.append(handoff_msg)
+
+            run_result = yield CallAction(
+                agent=current_target,
+                task=prompt,
+                history=handoff_history_messages,
+                kwargs=kwargs,
+            )
+
+            output_str = str(run_result.output)
+
+            if output_str.startswith("__HANDOFF__:"):
+                parts = output_str[len("__HANDOFF__:") :].split("|", 2)
+                current_target = parts[0]
+                handoff_reason = parts[1] if len(parts) > 1 else ""
+                context_data = parts[2] if len(parts) > 2 else ""
+                continue
+
+            fast_routed = False
+            state_flow = getattr(team, "state_flow", None)
+            if isinstance(state_flow, dict) and current_target in state_flow:
+                for t in state_flow[current_target]:
+                    if getattr(t, "trigger_regex", None):
+                        import re
+
+                        if re.search(t.trigger_regex, output_str):
+                            current_target = t.target
+                            handoff_reason = ""
+                            context_data = output_str
+                            fast_routed = True
+                            break
+                    if getattr(t, "trigger_func", None):
+                        try:
+                            if t.trigger_func(output_str):
+                                current_target = t.target
+                                handoff_reason = ""
+                                context_data = output_str
+                                fast_routed = True
+                                break
+                        except Exception:
+                            pass
+
+            if fast_routed:
+                from zhenxun.services.ai.core.events import (
+                    EventCenter,
+                    TeamRouteDecisionEvent,
                 )
-
-                upstream_info = []
-                if handoff_reason:
-                    upstream_info.append(f"【移交说明】\n{handoff_reason}")
-                if context_data:
-                    upstream_info.append(f"【核心上下文数据】\n{context_data}")
-
-                combined_info = "\n\n".join(upstream_info)
-
-                if combined_info:
-                    handoff_msg = LLMMessage.system(
-                        f"### 🔄 [来自上游节点的移交数据]\n{combined_info}"
-                    )
-                    handoff_history_messages.append(handoff_msg)
-
-                if current_agent is not None:
-                    await EventCenter.publish(
-                        TeamMemberEndEvent(
-                            session_id=session_id,
-                            team_name=team.name,
-                            member_name=current_agent.name,
-                            result=f"移交至 {target_name}",
-                        )
-                    )
 
                 await EventCenter.publish(
                     TeamRouteDecisionEvent(
-                        session_id=session_id,
+                        session_id=context.session_id or "default_team_session",
                         team_name=team.name,
-                        selected_member=target_name,
-                        reason=handoff_reason,
+                        selected_member=current_target,
+                        reason="[系统拦截：正则/函数状态流发生转移]",
                     )
                 )
+                continue
 
-                target_member = next(
-                    (m for m in team.members if m.name == target_name), None
-                )
-                if not target_member:
-                    logger.warning(
-                        f"状态机断链：未找到名为 {target_name} 的成员，移交循环结束。"
-                    )
-                    from zhenxun.services.ai.core.messages import UsageInfo
-                    from zhenxun.services.ai.run import AgentRunResult
-
-                    final_result = AgentRunResult(
-                        output=f"移交失败：未找到目标成员 {target_name}",
-                        usage=UsageInfo(),
-                    )
-                    break
-
-                current_agent = target_member
-                handoff_exception = None
-
-            if current_agent is None:
-                raise RuntimeError("系统错误：current_agent 未能成功解析。")
-
-            sub_context = context.clone_for_member(current_agent.name)
-            sub_context.capabilities = list(sub_context.capabilities)
-            sub_context.capabilities.append(routing_cap)
-
-            await EventCenter.publish(
-                TeamMemberStartEvent(
-                    session_id=session_id,
-                    team_name=team.name,
-                    member_name=current_agent.name,
-                    task=str(prompt.description if isinstance(prompt, Task) else prompt)
-                    if prompt
-                    else "",
-                )
-            )
-
-            run_result = None
-
-            try:
-                async with current_agent.run_stream(
-                    prompt=prompt,
-                    context=sub_context,
-                    message_history=handoff_history_messages,
-                    **kwargs,
-                ) as stream_result:
-                    async for event in stream_result.stream_events():
-                        if isinstance(event, AgentRunEnd):
-                            run_result = event.result
-                        elif isinstance(event, AgentRunError):
-                            from zhenxun.services.ai.core.exceptions import (
-                                HandoffException,
-                            )
-
-                            if isinstance(event.error, HandoffException):
-                                handoff_exception = event.error
-                            else:
-                                raise event.error
-                        yield event
-            except BaseException as e:
-                from zhenxun.services.ai.core.exceptions import HandoffException
-
-                if isinstance(e, HandoffException):
-                    handoff_exception = e
-                else:
-                    raise e
-
-            if not handoff_exception:
-                if not run_result:
-                    raise RuntimeError(
-                        f"Agent {current_agent.name} 未能成功返回运行结果。"
-                    )
-
-                fast_routed = False
-                state_flow = getattr(team, "state_flow", None)
-                if isinstance(state_flow, dict) and current_agent.name in state_flow:
-                    agent_output = str(run_result.output)
-                    for t in state_flow[current_agent.name]:
-                        if getattr(t, "trigger_regex", None):
-                            import re
-
-                            if re.search(t.trigger_regex, agent_output):
-                                from zhenxun.services.ai.core.exceptions import (
-                                    HandoffException,
-                                )
-
-                                handoff_exception = HandoffException(
-                                    target=t.target,
-                                    payload={
-                                        "reason": "",
-                                        "context_data": agent_output,
-                                    },
-                                    display=f"⚡ 正则拦截，快速转移至 {t.target}...",
-                                )
-                                fast_routed = True
-                                break
-                        if getattr(t, "trigger_func", None):
-                            try:
-                                if t.trigger_func(agent_output):
-                                    from zhenxun.services.ai.core.exceptions import (
-                                        HandoffException,
-                                    )
-
-                                    handoff_exception = HandoffException(
-                                        target=t.target,
-                                        payload={
-                                            "reason": "",
-                                            "context_data": agent_output,
-                                        },
-                                        display=f"⚡ 函数拦截，快速转移至 {t.target}...",
-                                    )
-                                    fast_routed = True
-                                    break
-                            except Exception:
-                                pass
-
-                if not fast_routed:
-                    final_result = run_result
-                    await EventCenter.publish(
-                        TeamMemberEndEvent(
-                            session_id=session_id,
-                            team_name=team.name,
-                            member_name=current_agent.name,
-                            result=final_result.output,
-                        )
-                    )
-                    break
-
-        await EventCenter.publish(
-            TeamRunEndEvent(
-                session_id=session_id,
-                team_name=team.name,
-                result=final_result.output if final_result else None,
-            )
-        )
-
-        if final_result:
-            yield AgentRunEnd(result=final_result)
+            yield FinishAction(result=run_result.output)
+            break
 
 
+@team_strategy("coordinate", namespace="builtin")
 class CoordinateStrategy(BaseTeamStrategy):
     """协作策略：Leader 自主规划，委派任务给 Sub-Agents 并汇总结果"""
 
@@ -317,17 +207,11 @@ class CoordinateStrategy(BaseTeamStrategy):
         "当你收集齐所有需要的专员报告后，请汇总生成最终回复向用户汇报。如果你能自己解答，也可以不调用专员。"
     )
 
-    async def run_stream(
+    async def generate_plan(
         self, team: Any, prompt: str | Task | None, context: RunContext, **kwargs
-    ) -> AsyncGenerator:
+    ):
         task_desc_str = (
             prompt.description if isinstance(prompt, Task) else (prompt or "")
-        )
-        session_id = context.session_id or "default_team_session"
-        await EventCenter.publish(
-            TeamRunStartEvent(
-                session_id=session_id, team_name=team.name, task=task_desc_str
-            )
         )
 
         delegation_tools = []
@@ -354,28 +238,14 @@ class CoordinateStrategy(BaseTeamStrategy):
             runtime_config=team.runtime_config,
         )
 
-        logger.info(f"👨‍💼 [CoordinateStrategy] '{team.name}' 正在启动协调推理循环...")
-        await EventCenter.publish(
-            TeamSynthesizeStartEvent(session_id=session_id, team_name=team.name)
-        )
+        logger.info(f"👨💼 [CoordinateStrategy] '{team.name}' 正在启动协调推理循环...")
 
-        final_result = None
-        async with leader_agent.run_stream(
-            prompt=prompt, context=context, **kwargs
-        ) as stream_result:
-            async for event in stream_result.stream_events():
-                if isinstance(event, AgentRunEnd):
-                    final_result = event.result.output
-                    await EventCenter.publish(
-                        TeamRunEndEvent(
-                            session_id=session_id,
-                            team_name=team.name,
-                            result=final_result,
-                        )
-                    )
-                yield event
+        leader_res = yield CallAction(agent=leader_agent, task=prompt)
+
+        yield FinishAction(result=leader_res.output)
 
 
+@team_strategy("broadcast", namespace="builtin")
 class BroadcastStrategy(BaseTeamStrategy):
     """广播策略：并发让所有成员处理同一个任务，最后由 Leader 总结"""
 
@@ -385,84 +255,24 @@ class BroadcastStrategy(BaseTeamStrategy):
         "以下是各位专家的独立处理结果，请融合各方观点，取长补短，给出一份最终的总结报告。"
     )
 
-    async def run_stream(
+    async def generate_plan(
         self, team: Any, prompt: str | Task | None, context: RunContext, **kwargs
-    ) -> AsyncGenerator:
+    ):
         task_desc_str = (
             prompt.description if isinstance(prompt, Task) else (prompt or "")
         )
-        session_id = context.session_id or "default_team_session"
-        await EventCenter.publish(
-            TeamRunStartEvent(
-                session_id=session_id, team_name=team.name, task=task_desc_str
-            )
-        )
 
-        event_streamer = kwargs.get("event_streamer")
-        if event_streamer:
-            await event_streamer.send(
-                ToolStreamChunk(
-                    tool_name="Team Broadcaster",
-                    content=f"🚀 正在并发广播任务给 {len(team.members)} 位专家...",
-                )
-            )
-
-        async def _run_member(m: Agent):
-            sub_ctx = context.clone_for_member(f"bc_{m.name}")
-
-            await EventCenter.publish(
-                TeamMemberStartEvent(
-                    session_id=session_id,
-                    team_name=team.name,
-                    member_name=m.name,
-                    task=task_desc_str,
-                )
-            )
-
-            try:
-                res = await m.run(prompt=prompt, context=sub_ctx, **kwargs)
-                await EventCenter.publish(
-                    TeamMemberEndEvent(
-                        session_id=session_id,
-                        team_name=team.name,
-                        member_name=m.name,
-                        result="Success",
-                    )
-                )
-                return m.name, res.output
-            except Exception as e:
-                await EventCenter.publish(
-                    TeamMemberEndEvent(
-                        session_id=session_id,
-                        team_name=team.name,
-                        member_name=m.name,
-                        result=f"Error: {e}",
-                    )
-                )
-                return m.name, f"执行失败: {e}"
-
-        tasks = [_run_member(m) for m in team.members]
-        results = await asyncio.gather(*tasks)
-
-        if event_streamer:
-            await event_streamer.send(
-                ToolStreamChunk(
-                    tool_name="Team Leader",
-                    content="✨ 所有专家汇报完毕，Leader 正在融合各方观点...",
-                )
-            )
+        actions = [CallAction(agent=m.name, task=task_desc_str) for m in team.members]
+        results = yield ConcurrentCallAction(actions=actions)
 
         summary_text = "\n\n".join(
-            [f"### 【{name} 的意见】:\n{out}" for name, out in results]
+            [f"### 【{name} 的意见】:\n{res.output}" for name, res in results]
         )
+
         synthesize_prompt = (
             f"**用户原始任务**: {task_desc_str}\n\n"
             f"以下是各位专家的独立处理结果，请融合各方观点，给出一份最终的总结报告：\n\n"
             f"{summary_text}"
-        )
-
-        await EventCenter.publish(
-            TeamSynthesizeStartEvent(session_id=session_id, team_name=team.name)
         )
 
         leader_agent = Agent(
@@ -472,18 +282,6 @@ class BroadcastStrategy(BaseTeamStrategy):
             runtime_config=team.runtime_config,
         )
 
-        final_result = None
-        async with leader_agent.run_stream(
-            prompt=synthesize_prompt, context=context, **kwargs
-        ) as stream_result:
-            async for event in stream_result.stream_events():
-                if isinstance(event, AgentRunEnd):
-                    final_result = event.result.output
-                    await EventCenter.publish(
-                        TeamRunEndEvent(
-                            session_id=session_id,
-                            team_name=team.name,
-                            result=final_result,
-                        )
-                    )
-                yield event
+        leader_res = yield CallAction(agent=leader_agent, task=synthesize_prompt)
+
+        yield FinishAction(result=leader_res.output)

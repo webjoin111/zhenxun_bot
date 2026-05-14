@@ -7,13 +7,9 @@ from zhenxun.services.ai.flow.team.models import TeamMode
 from zhenxun.services.ai.flow.team.router import BaseRouter
 from zhenxun.services.ai.flow.team.strategy import (
     BaseTeamStrategy,
-    BroadcastStrategy,
-    CoordinateStrategy,
-    RouteStrategy,
 )
 from zhenxun.services.ai.llm.manager import get_global_default_model_name
 from zhenxun.services.ai.run import AgentRunResult, RunContext, Task
-from zhenxun.services.ai.run.models import AgentRunError
 
 
 class Team:
@@ -56,36 +52,22 @@ class Team:
         else:
             self.state_flow = state_flow
 
+        self.selector_func = selector_func
+
         if isinstance(mode, BaseTeamStrategy):
             self.strategy = mode
         else:
             mode_str = mode.value if isinstance(mode, TeamMode) else mode.lower()
-            if mode_str == "route":
-                if router is None:
-                    from .router import ChainRouter, FunctionRouter, LLMRouter
+            from zhenxun.services.ai.flow.team.registry import TeamStrategyRegistry
 
-                    routers = []
-                    if selector_func:
-                        routers.append(FunctionRouter(selector_func))
+            strategy_cls = TeamStrategyRegistry.get(mode_str)
+            if not strategy_cls:
+                raise ValueError(f"未找到指定的 Team 模式: {mode_str}")
 
-                    routers.append(
-                        LLMRouter(
-                            team_name=name,
-                            members=members,
-                            leader_model=self.leader_model,
-                            state_flow=state_flow,
-                            runtime_config=self.runtime_config,
-                            custom_prompt=custom_prompt,
-                        )
-                    )
-                    resolved_router = ChainRouter(routers)
-                else:
-                    resolved_router = router
-                self.strategy = RouteStrategy(router=resolved_router)
-            elif mode_str == "broadcast":
-                self.strategy = BroadcastStrategy(custom_prompt)
-            else:
-                self.strategy = CoordinateStrategy(custom_prompt)
+            self.strategy = strategy_cls(
+                custom_prompt=custom_prompt,
+                router=router,
+            )
 
     def bind(self, **kwargs: Any) -> Any:
         """DI 注入语法糖"""
@@ -150,17 +132,19 @@ class Team:
             context = RunContext()
 
         from zhenxun.services.ai.core.stream_events import EventStreamer
+        from zhenxun.services.ai.flow.team.runner import TeamRunner
         from zhenxun.services.ai.run import StreamedRunResult
 
         streamer = EventStreamer()
+        runner = TeamRunner(self, self.strategy)
 
         async def _execution_task():
             try:
-                async for event in self.strategy.run_stream(
-                    self, prompt, context, **kwargs
-                ):
+                async for event in runner.run_stream(prompt, context, **kwargs):
                     await streamer.send(event)
             except BaseException as e:
+                from zhenxun.services.ai.run.models import AgentRunError
+
                 await streamer.send(AgentRunError(error=e))
             finally:
                 await streamer.end()

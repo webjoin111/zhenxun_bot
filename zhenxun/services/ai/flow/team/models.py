@@ -1,5 +1,6 @@
+from collections.abc import Callable
 from enum import Enum
-from typing import Any, Callable
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -33,6 +34,7 @@ class Transition(BaseModel):
     声明式移交契约。
     用于定义 Team 模式下，智能体之间转移控制权的条件和目标。
     """
+
     target: str
     """目标智能体的名称"""
     description: str = ""
