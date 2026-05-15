@@ -3,6 +3,7 @@ from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
+from zhenxun.services.ai.core.configs import BaseOutputDefinition
 
 from zhenxun.services.ai.core.messages import LLMMessage
 
@@ -27,7 +28,7 @@ class RouteDecision(BaseModel):
     """选定的最合适的团队成员名称"""
     reason: str = ""
     """选择该成员的详细理由"""
-    context_data: str = ""
+    context_data: Any = ""
     """传递的上下文载荷"""
 
 
@@ -41,6 +42,8 @@ class Transition(BaseModel):
     """目标智能体的名称"""
     description: str = ""
     """自然语言描述的移交条件（提供给大模型 LLMRouter 思考时使用）"""
+    input_schema: type[BaseModel] | BaseOutputDefinition | None = None
+    """(可选) 强类型的输入约束。如果设置，LLMRouter 决定移交时必须且只能生成符合该 Schema 的 JSON 参数，并作为 context_data 传递。"""
     trigger_regex: str | None = None
     """(可选) 正则表达式。如果用户的输入匹配此正则，将触发极速硬路由，跳过大模型思考。"""
     trigger_func: Callable[..., Any] | None = None

@@ -206,13 +206,6 @@ class BaseToolkit:
             final_tool_name = f"{self.config.prefix}{original_tool_name}"
 
             final_desc = original_desc
-            if (
-                getattr(self, "_inferred_namespace", None)
-                and self._inferred_namespace != "unknown"
-            ):
-                ns_prefix = f"[所属插件: {self._inferred_namespace}] "
-                if not final_desc.startswith(ns_prefix):
-                    final_desc = f"{ns_prefix}{final_desc}"
 
             settings = self._apply_global_settings(original_tool_name, settings)
 

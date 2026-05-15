@@ -89,10 +89,15 @@ class TeamRoutingCapability(AbstractCapability):
                 if transition and getattr(transition, "description", ""):
                     desc += f" 【移交条件】：{transition.description}"
 
+                input_schema = (
+                    getattr(transition, "input_schema", None) if transition else None
+                )
+
                 tools.append(
                     HandoffTool(
                         target_name=m.name,
                         target_description=desc,
+                        input_schema=input_schema,
                     )
                 )
         return tools

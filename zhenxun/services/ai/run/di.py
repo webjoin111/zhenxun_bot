@@ -52,6 +52,7 @@ CurrentSharedState = Annotated[dict[str, Any], Hidden(), _InjectMarker("shared_s
 CurrentOriginalInput = Annotated[str, Hidden(), _InjectMarker("original_input")]
 UpstreamResults = Annotated[dict[str, Any], Hidden(), _InjectMarker("upstream_results")]
 ToolkitState = Annotated[Any, Hidden(), _InjectMarker("toolkit_state")]
+CurrentBlackboard = Annotated[Any, Hidden(), _InjectMarker("blackboard")]
 
 
 class Inject:
@@ -149,6 +150,9 @@ class Inject:
 
     ToolkitState = ToolkitState
     """自动注入：当前 GroupSharedToolkit 的物理隔离状态实例"""
+
+    Blackboard = CurrentBlackboard
+    """自动注入：当前工作流/团队挂载的强类型黑板 (BlackboardManager) 实例"""
 
 
 class BaseParamResolver:
@@ -308,6 +312,16 @@ Inject.register_provider("original_input", lambda ctx: ctx.run.user_input)
 Inject.register_provider("state", lambda ctx: ctx.state)
 Inject.register_provider("upstream_results", lambda ctx: ctx.upstream_results)
 Inject.register_provider("shared_state", lambda ctx: ctx.session.shared_state)
+
+
+def _resolve_blackboard(ctx: RunContext):
+    bb = ctx.session.blackboard
+    if bb is None:
+        raise ValueError("Inject.Blackboard 注入失败：当前会话上下文中未挂载 BlackboardManager 实例。")
+    return bb
+
+
+Inject.register_provider("blackboard", _resolve_blackboard)
 
 
 def _resolve_session(ctx):

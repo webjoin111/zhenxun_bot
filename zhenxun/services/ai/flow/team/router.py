@@ -120,6 +120,7 @@ class LLMRouter(BaseRouter):
         team_name: str,
         members: list[Any],
         leader_model: str | None = None,
+        leader_tools: list[Any] | None = None,
         state_flow: Any = None,
         runtime_config: Any = None,
         custom_prompt: str | None = None,
@@ -128,6 +129,7 @@ class LLMRouter(BaseRouter):
         self.team_name = team_name
         self.members = members
         self.leader_model = leader_model
+        self.leader_tools = leader_tools or []
         self.state_flow = state_flow
         self.runtime_config = runtime_config
         self.custom_prompt = custom_prompt
@@ -172,6 +174,7 @@ class LLMRouter(BaseRouter):
             name=f"{self.team_name}_Router",
             instruction=route_prompt,
             model=self.leader_model,
+            tools=self.leader_tools,
             runtime_config=self.runtime_config,
         )
 

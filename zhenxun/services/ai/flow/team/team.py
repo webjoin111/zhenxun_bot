@@ -1,6 +1,8 @@
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from pydantic import BaseModel
+
 from zhenxun.services.ai.flow.agent.agent import Agent
 from zhenxun.services.ai.flow.agent.models import AgentRuntimeConfig
 from zhenxun.services.ai.flow.team.models import TeamMode
@@ -23,6 +25,9 @@ class Team:
         members: list[Agent],
         mode: str | TeamMode | BaseTeamStrategy = TeamMode.COORDINATE,
         leader_model: str | None = None,
+        leader_tools: list[Any] | None = None,
+        blackboard_schema: type[BaseModel] | None = None,
+        initial_blackboard_state: BaseModel | None = None,
         custom_prompt: str | None = None,
         state_flow: dict[str, list[str | Any]] | Callable | None = None,
         selector_func: Callable[..., str | None | Awaitable[str | None]] | None = None,
@@ -31,6 +36,7 @@ class Team:
         self.name = name
         self.members = members
         self.leader_model = leader_model or get_global_default_model_name()
+        self.leader_tools = leader_tools or []
 
         self.runtime_config = AgentRuntimeConfig(stateless=True, enable_hitl=False)
 
@@ -66,6 +72,27 @@ class Team:
                 custom_prompt=custom_prompt,
                 router=router,
             )
+
+        self.blackboard = None
+        if blackboard_schema is not None:
+            from zhenxun.services.ai.run.blackboard import (
+                BlackboardManager,
+                create_blackboard_tools,
+            )
+
+            self.blackboard = BlackboardManager(
+                schema=blackboard_schema, initial_state=initial_blackboard_state
+            )
+            bb_tools = create_blackboard_tools(self.blackboard)
+
+            if not self.leader_tools:
+                self.leader_tools = []
+            self.leader_tools.extend(bb_tools)
+
+            for member in self.members:
+                if not member.tool_definitions:
+                    member.tool_definitions = []
+                member.tool_definitions.extend(bb_tools)
 
     def bind(self, **kwargs: Any) -> Any:
         """DI 注入语法糖"""
@@ -128,6 +155,9 @@ class Team:
     ):
         if context is None:
             context = RunContext()
+
+        if self.blackboard is not None:
+            context.session.blackboard = self.blackboard
 
         from zhenxun.services.ai.core.stream_events import EventStreamer
         from zhenxun.services.ai.flow.team.runner import TeamRunner

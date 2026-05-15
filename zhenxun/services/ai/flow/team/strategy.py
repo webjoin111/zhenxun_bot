@@ -77,6 +77,7 @@ class RouteStrategy(BaseTeamStrategy):
                     team_name=team.name,
                     members=team.members,
                     leader_model=getattr(team, "leader_model", None),
+                    leader_tools=getattr(team, "leader_tools", []),
                     state_flow=getattr(team, "state_flow", None),
                     runtime_config=getattr(team, "runtime_config", None),
                     custom_prompt=self.custom_prompt,
@@ -125,7 +126,17 @@ class RouteStrategy(BaseTeamStrategy):
             if handoff_reason:
                 upstream_info.append(f"【移交说明】\n{handoff_reason}")
             if context_data:
-                upstream_info.append(f"【核心上下文数据】\n{context_data}")
+                if isinstance(context_data, dict):
+                    import json
+
+                    formatted_data = json.dumps(
+                        context_data, ensure_ascii=False, indent=2
+                    )
+                    upstream_info.append(
+                        f"【结构化上下文载荷】\n```json\n{formatted_data}\n```"
+                    )
+                else:
+                    upstream_info.append(f"【核心上下文数据】\n{context_data}")
             combined_info = "\n\n".join(upstream_info)
 
             if combined_info:
@@ -203,17 +214,13 @@ class CoordinateStrategy(BaseTeamStrategy):
     default_system_prompt = (
         "## 角色与目标\n"
         "你是一个多智能体团队的协调者（Leader）。\n"
-        "请分析用户的目标，将其拆解为逻辑连贯的子任务，并委派给合适的下属专员。\n"
-        "当你收集齐所有需要的专员报告后，请汇总生成最终回复向用户汇报。如果你能自己解答，也可以不调用专员。"
+        "你可以使用你自身携带的工具先查阅、收集资料；也可以分析用户的目标将其拆解为子任务，并委派给合适的下属专员。\n"
+        "当你收集齐所有需要的信息或专员报告后，请汇总生成最终回复向用户汇报。"
     )
 
     async def generate_plan(
         self, team: Any, prompt: str | Task | None, context: RunContext, **kwargs
     ):
-        task_desc_str = (
-            prompt.description if isinstance(prompt, Task) else (prompt or "")
-        )
-
         delegation_tools = []
         for m in team.members:
             if getattr(m, "persona", None):
@@ -230,11 +237,14 @@ class CoordinateStrategy(BaseTeamStrategy):
                 )
             )
 
+        leader_tools = getattr(team, "leader_tools", []).copy()
+        leader_tools.extend(delegation_tools)
+
         leader_agent = Agent(
             name=f"{team.name}_Leader",
             instruction=self.get_prompt(),
             model=team.leader_model,
-            tools=delegation_tools,
+            tools=leader_tools,
             runtime_config=team.runtime_config,
         )
 
@@ -326,6 +336,7 @@ class BroadcastStrategy(BaseTeamStrategy):
             name=f"{team.name}_Leader",
             instruction=self.get_prompt(),
             model=team.leader_model,
+            tools=getattr(team, "leader_tools", []),
             runtime_config=team.runtime_config,
         )
 

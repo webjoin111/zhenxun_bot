@@ -1,3 +1,4 @@
+from .blackboard import BlackboardManager, create_blackboard_tools
 from .context import (
     AgentDepsT,
     AgentRunContext,
@@ -29,7 +30,9 @@ __all__ = [
     "AgentDepsT",
     "AgentRunContext",
     "AgentRunResult",
+    "BlackboardManager",
     "CancellationToken",
+    "create_blackboard_tools",
     "DependencyInjector",
     "ExecutionConfig",
     "HITLController",

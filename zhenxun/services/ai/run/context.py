@@ -63,6 +63,8 @@ class SessionContext(Generic[AgentDepsT]):
     """共享状态字典：全局引用穿透，用于主智能体与嵌套子智能体之间的数据通信。"""
     auth_tokens: dict[str, str] = dataclasses.field(default_factory=dict)
     """授权凭证字典：保存用户针对各 Provider 的 OAuth 或 API Token。"""
+    blackboard: Any | None = None
+    """结构化黑板管理器，作为共享状态的高级替代方案，提供并发锁和强类型校验。"""
 
 
 @dataclasses.dataclass
