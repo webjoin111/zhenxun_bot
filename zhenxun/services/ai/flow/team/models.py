@@ -20,6 +20,9 @@ class TeamMode(str, Enum):
     BROADCAST = "broadcast"
     """并发广播模式：Leader 将同一问题同时分发给所有 Member 处理，最终整合多方观点。"""
 
+    TASKS = "tasks"
+    """自主任务模式：Leader 在共享黑板上拆解目标为子任务，处理前置依赖，并驱动 Member 执行，直至达成目标。"""
+
 
 class RouteDecision(BaseModel):
     """大模型动态路由决策的数据契约"""

@@ -67,12 +67,14 @@ class TeamRunner:
         sub_context = context.clone_for_member(target_agent.name)
         sub_context.capabilities = list(sub_context.capabilities)
 
-        routing_cap = TeamRoutingCapability(
-            team_name=self.team.name,
-            members=self.team.members,
-            state_flow=getattr(self.team, "state_flow", None),
-        )
-        sub_context.capabilities.append(routing_cap)
+        team_mode = getattr(self.team, "mode", None)
+        if team_mode and getattr(team_mode, "value", str(team_mode)) != "tasks":
+            routing_cap = TeamRoutingCapability(
+                team_name=self.team.name,
+                members=self.team.members,
+                state_flow=getattr(self.team, "state_flow", None),
+            )
+            sub_context.capabilities.append(routing_cap)
 
         await EventCenter.publish(
             TeamMemberStartEvent(

@@ -342,3 +342,55 @@ class BroadcastStrategy(BaseTeamStrategy):
         leader_res = yield CallAction(agent=leader_agent, task=synthesize_prompt)
 
         yield FinishAction(result=leader_res.output)
+
+
+@team_strategy("tasks", namespace="builtin")
+class TaskStrategy(BaseTeamStrategy):
+    """任务规划策略：Leader 利用工具箱在黑板上拆解任务、管理依赖并驱动 Member 执行"""
+
+    default_system_prompt = (
+        "<how_to_respond>\n"
+        "你是一个多智能体团队的任务规划与协调者（Team Leader），运行在自主任务模式（Autonomous Task Mode）。\n"
+        "请仔细阅读用户的请求，将其拆解为一个个具体的子任务，并利用工具箱将任务分配给合适的团队专家（Member）。\n"
+        "规划阶段：先使用 `create_task` 建立所有任务和依赖关系（注意 `assignee` 必须严格从下方的团队成员中选择）。\n"
+        "执行阶段：使用 `execute_task`（串行）或 `execute_tasks_parallel`（并行）驱动专家执行没有被阻塞的任务。\n"
+        "汇报阶段：专家执行完后，结果会自动更新到看板中。请观察最新的看板状态，如果所有任务都已到达终结状态，最终使用 `mark_all_complete` 工具进行汇报。\n"
+        "</how_to_respond>"
+    )
+
+    async def generate_plan(
+        self, team: Any, prompt: str | Task | None, context: RunContext, **kwargs
+    ):
+        from zhenxun.services.ai.flow.team.task_tools import TaskManagementToolkit
+
+        member_infos = []
+        for m in team.members:
+            desc = getattr(m, "description", "")
+            if getattr(m, "persona", None):
+                desc = f"角色：{m.persona.role}，目标：{m.persona.goal}"
+            member_infos.append(
+                f'<member id="{m.name}" name="{m.name}">\n  Description: {desc}\n</member>'
+            )
+
+        members_xml = "<team_members>\n" + "\n".join(member_infos) + "\n</team_members>"
+
+        final_instruction = self.get_prompt() + "\n\n" + members_xml
+
+        task_toolkit = TaskManagementToolkit(members=team.members)
+
+        leader_tools = getattr(team, "leader_tools", []).copy()
+        leader_tools.append(task_toolkit)
+
+        leader_agent = Agent(
+            name=f"{team.name}_Leader",
+            instruction=final_instruction,
+            model=team.leader_model,
+            tools=leader_tools,
+            runtime_config=team.runtime_config,
+        )
+
+        logger.info(f"📋 [TaskStrategy] '{team.name}' 正在启动自主任务规划循环...")
+
+        leader_res = yield CallAction(agent=leader_agent, task=prompt)
+
+        yield FinishAction(result=leader_res.output)

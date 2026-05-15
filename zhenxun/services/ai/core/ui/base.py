@@ -137,23 +137,39 @@ class MarkdownUIStreamer(BaseUIStreamer):
     """默认的 Markdown 战报渲染器实现"""
 
     def on_tool_call(self, event: ToolCallEvent) -> None:
-        if "🗣️" in event.tool_name:
-            self.lines.append(f"🔄 正在并发指派: {event.tool_name}")
-        else:
-            self.lines.append(f"🔄 正在调用: `{event.tool_name}`")
-
-    def on_tool_result(self, event: ToolResultEvent) -> None:
-        if event.error or (event.result and event.result.is_error):
-            self.lines.append(f"❌ 调用失败: `{event.tool_name}`")
+        if event.tool_name in (
+            "create_task",
+            "update_task_status",
+            "execute_task",
+            "mark_all_complete",
+        ):
+            pass
         else:
             if "🗣️" in event.tool_name:
-                self.lines.append(
-                    f"✅ 执行完毕: {event.tool_name} ({event.duration_ms:.0f}ms)"
-                )
+                self.lines.append(f"🔄 正在并发指派: {event.tool_name}")
             else:
-                self.lines.append(
-                    f"✅ 调用成功: `{event.tool_name}` ({event.duration_ms:.0f}ms)"
-                )
+                self.lines.append(f"🔄 正在调用: `{event.tool_name}`")
+
+    def on_tool_result(self, event: ToolResultEvent) -> None:
+        if event.tool_name in (
+            "create_task",
+            "update_task_status",
+            "execute_task",
+            "mark_all_complete",
+        ):
+            pass
+        else:
+            if event.error or (event.result and event.result.is_error):
+                self.lines.append(f"❌ 调用失败: `{event.tool_name}`")
+            else:
+                if "🗣️" in event.tool_name:
+                    self.lines.append(
+                        f"✅ 执行完毕: {event.tool_name} ({event.duration_ms:.0f}ms)"
+                    )
+                else:
+                    self.lines.append(
+                        f"✅ 调用成功: `{event.tool_name}` ({event.duration_ms:.0f}ms)"
+                    )
 
     def on_tool_stream(self, event: ToolStreamEvent) -> None:
         self.lines.append(f"  └ ⏳ {event.chunk.content}")

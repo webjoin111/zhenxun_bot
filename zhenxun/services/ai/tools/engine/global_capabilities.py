@@ -392,6 +392,10 @@ class EventDispatcherCapability(AbstractCapability):
             )
             return result
         except Exception as e:
+            from zhenxun.services.ai.core.exceptions import ControlFlowException
+            if isinstance(e, ControlFlowException):
+                raise e
+
             dur = (time.monotonic() - start_t) * 1000
             await EventCenter.publish(
                 ToolErrorEvent(

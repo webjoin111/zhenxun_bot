@@ -213,7 +213,7 @@ class AgentExecutor:
                     hasattr(run_context.run, "dynamic_prompts")
                     and run_context.run.dynamic_prompts
                 ):
-                    dynamic_text = "\n\n".join(run_context.run.dynamic_prompts.keys())
+                    dynamic_text = "\n\n".join(run_context.run.dynamic_prompts.values())
                     injected = False
                     for i, msg in enumerate(messages_to_send):
                         if msg.role == "system":

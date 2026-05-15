@@ -97,13 +97,14 @@ class AgentRunContext(Generic[AgentDepsT]):
     streamer: Any | None = None
     """底层的事件流发射器 (EventStreamer)，由执行引擎在运行时挂载。"""
 
-    dynamic_prompts: dict[str, None] = dataclasses.field(default_factory=dict)
+    dynamic_prompts: dict[str, str] = dataclasses.field(default_factory=dict)
     """动态提示词字典（保持插入顺序并去重）。仅在 HTTP 请求前 JIT 渲染，不会污染持久化的上下文对话历史。"""
 
-    def add_system_prompt(self, prompt: str) -> None:
+    def add_system_prompt(self, prompt: str, key: str | None = None) -> None:
         """动态追加临时系统提示词到大模型上下文中（实时生效且不污染历史）。"""
+        dict_key = key or prompt
         if prompt:
-            self.dynamic_prompts[prompt] = None
+            self.dynamic_prompts[dict_key] = prompt
 
 
 @dataclasses.dataclass
