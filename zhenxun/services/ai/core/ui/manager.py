@@ -28,6 +28,8 @@ from zhenxun.services.ai.core.events.event_types import (
     TaskRunEndEvent,
     TaskRunErrorEvent,
     TaskRunStartEvent,
+    TeamTaskCreatedEvent,
+    TeamTaskUpdatedEvent,
     WorkflowCompletedEvent,
     WorkflowErrorEvent,
     WorkflowStartedEvent,
@@ -127,6 +129,16 @@ async def _on_task_run_end(event):
 @EventCenter.subscribe(TaskRunErrorEvent, priority=10)
 async def _on_task_run_error(event):
     _dispatch(event, "on_task_run_error")
+
+
+@EventCenter.subscribe(TeamTaskCreatedEvent, priority=10)
+async def _on_team_task_created(event):
+    _dispatch(event, "on_team_task_created")
+
+
+@EventCenter.subscribe(TeamTaskUpdatedEvent, priority=10)
+async def _on_team_task_updated(event):
+    _dispatch(event, "on_team_task_updated")
 
 
 @EventCenter.subscribe(WorkflowStartedEvent, priority=10)

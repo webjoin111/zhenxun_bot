@@ -21,7 +21,6 @@ from zhenxun.services.ai.core.messages import (
 )
 from zhenxun.services.ai.core.stream_events import EventStreamer
 from zhenxun.services.ai.flow.agent.engine.builders import ContextBuilder, ToolBuilder
-from zhenxun.services.ai.flow.base import BaseRunnable
 from zhenxun.services.ai.flow.agent.engine.executor import (
     AgentExecutor,
     AgentExecutorConfig,
@@ -31,6 +30,7 @@ from zhenxun.services.ai.flow.agent.models import (
     AgentRuntimeConfig,
     Persona,
 )
+from zhenxun.services.ai.flow.base import BaseRunnable
 from zhenxun.services.ai.llm.config.generation import IntentBuilder
 from zhenxun.services.ai.llm.manager import get_model_instance
 from zhenxun.services.ai.memory.scope import MemoryScope
@@ -65,7 +65,9 @@ if TYPE_CHECKING:
     from zhenxun.services.ai.flow.agent.models import AgentSpec
 
 
-class Agent(BaseRunnable[AgentRunResult[OutputDataT]], Generic[AgentDepsT, OutputDataT]):
+class Agent(
+    BaseRunnable[AgentRunResult[OutputDataT]], Generic[AgentDepsT, OutputDataT]
+):
     """
     Agent 运行时封装。
     负责组织模型、工具、记忆、护栏与能力插件，并驱动单轮或流式执行。
@@ -107,7 +109,7 @@ class Agent(BaseRunnable[AgentRunResult[OutputDataT]], Generic[AgentDepsT, Outpu
             guardrails: 护栏定义列表，支持可调用对象、规则字符串或护栏实例。
         """
         self.name = name
-        
+
         if description:
             self.description = description
         elif persona:
@@ -705,6 +707,15 @@ class Agent(BaseRunnable[AgentRunResult[OutputDataT]], Generic[AgentDepsT, Outpu
         model_name_resolved = (
             self.model_name() if callable(self.model_name) else self.model_name
         )
+
+        if not model_name_resolved and context and context.run.current_model:
+            model_name_resolved = context.run.current_model
+
+        if not model_name_resolved:
+            from zhenxun.services.ai.llm.manager import get_global_default_model_name
+
+            model_name_resolved = get_global_default_model_name()
+
         context.run.current_model = (
             str(model_name_resolved) if model_name_resolved else ""
         )

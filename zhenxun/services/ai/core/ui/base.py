@@ -24,6 +24,8 @@ from zhenxun.services.ai.core.events.event_types import (
     TeamRunEndEvent,
     TeamRunStartEvent,
     TeamSynthesizeStartEvent,
+    TeamTaskCreatedEvent,
+    TeamTaskUpdatedEvent,
     ToolCallEvent,
     ToolResultEvent,
     ToolStreamEvent,
@@ -74,6 +76,12 @@ class BaseUIStreamer(ABC):
         pass
 
     def on_task_run_error(self, event: TaskRunErrorEvent) -> None:
+        pass
+
+    def on_team_task_created(self, event: TeamTaskCreatedEvent) -> None:
+        pass
+
+    def on_team_task_updated(self, event: TeamTaskUpdatedEvent) -> None:
         pass
 
     def on_workflow_started(self, event: WorkflowStartedEvent) -> None:
@@ -205,6 +213,21 @@ class MarkdownUIStreamer(BaseUIStreamer):
 
     def on_task_run_error(self, event: TaskRunErrorEvent) -> None:
         self.lines.append(f"❌ **任务失败**: `{event.task_name}` - {event.error}")
+
+    def on_team_task_created(self, event: TeamTaskCreatedEvent) -> None:
+        assignee_str = f" -> 👨💼{event.assignee}" if event.assignee else ""
+        self.lines.append(f"  ┣ 🆕 [新建任务] `{event.title}`{assignee_str}")
+
+    def on_team_task_updated(self, event: TeamTaskUpdatedEvent) -> None:
+        if event.status == "in_progress":
+            self.lines.append(f"  ┣ 🚀 [开始执行] `{event.title}`")
+        elif event.status == "completed":
+            self.lines.append(f"  ┣ ✅ [任务完成] `{event.title}`")
+        elif event.status == "failed":
+            err_msg = str(event.result)[:50] + "..." if event.result else "未知错误"
+            self.lines.append(f"  ┣ ❌ [任务失败] `{event.title}` (原因: {err_msg})")
+        elif event.status == "pending":
+            self.lines.append(f"  ┣ 🔄 [任务重置] `{event.title}` 被打回队列等待重试")
 
     def on_workflow_started(self, event: WorkflowStartedEvent) -> None:
         self.lines.append(f"🏭 **工作流 [{event.workflow_name}] 启动**")

@@ -350,18 +350,21 @@ class TaskStrategy(BaseTeamStrategy):
 
     default_system_prompt = (
         "<how_to_respond>\n"
-        "你是一个多智能体团队的任务规划与协调者（Team Leader），运行在自主任务模式（Autonomous Task Mode）。\n"
-        "请仔细阅读用户的请求，将其拆解为一个个具体的子任务，并利用工具箱将任务分配给合适的团队专家（Member）。\n"
-        "规划阶段：先使用 `create_task` 建立所有任务和依赖关系（注意 `assignee` 必须严格从下方的团队成员中选择）。\n"
-        "执行阶段：使用 `execute_task`（串行）或 `execute_tasks_parallel`（并行）驱动专家执行没有被阻塞的任务。\n"
-        "汇报阶段：专家执行完后，结果会自动更新到看板中。请观察最新的看板状态，如果所有任务都已到达终结状态，最终使用 `mark_all_complete` 工具进行汇报。\n"
+        "你是一个多智能体团队的项目经理（Planner）。\n"
+        "请仔细阅读用户的请求，将其拆解为一个个具体的子任务，并利用 `create_task` 建立所有任务和依赖关系（注意 `assignee` 必须严格从下方的团队成员中选择）。\n"
+        "【⚠️核心执行流规范】\n"
+        "1. 分配完毕后，**必须立刻停止调用任何工具，并直接输出纯文本回复**（如：'任务已分配，等待执行'），从而结束你的当前回合。\n"
+        "2. 当底层自动执行完毕后，系统会再次唤醒你并提供最新的看板结果。请根据结果决定是下发新任务、要求重做，还是调用 `mark_all_complete` 汇报总结。\n"
         "</how_to_respond>"
     )
 
     async def generate_plan(
         self, team: Any, prompt: str | Task | None, context: RunContext, **kwargs
-    ):
-        from zhenxun.services.ai.flow.team.task_tools import TaskManagementToolkit
+    ) -> AsyncGenerator[TeamAction, Any]:
+        from zhenxun.services.ai.core.events import EventCenter
+        from zhenxun.services.ai.core.events.event_types import TeamTaskUpdatedEvent
+        from zhenxun.services.ai.flow.team.models import TaskBoardState, TaskNodeStatus
+        from zhenxun.services.ai.flow.team.task_tools import TaskPlanningToolkit
 
         member_infos = []
         for m in team.members:
@@ -376,21 +379,146 @@ class TaskStrategy(BaseTeamStrategy):
 
         final_instruction = self.get_prompt() + "\n\n" + members_xml
 
-        task_toolkit = TaskManagementToolkit(members=team.members)
+        task_toolkit = TaskPlanningToolkit(members=team.members)
 
         leader_tools = getattr(team, "leader_tools", []).copy()
         leader_tools.append(task_toolkit)
 
         leader_agent = Agent(
-            name=f"{team.name}_Leader",
+            name=f"{team.name}_Planner",
             instruction=final_instruction,
             model=team.leader_model,
             tools=leader_tools,
             runtime_config=team.runtime_config,
         )
 
-        logger.info(f"📋 [TaskStrategy] '{team.name}' 正在启动自主任务规划循环...")
+        logger.info(
+            f"📋 [TaskStrategy] '{team.name}' 正在启动 Engine-Driven 状态机循环..."
+        )
 
-        leader_res = yield CallAction(agent=leader_agent, task=prompt)
+        if "__task_board__" not in context.session.shared_state:
+            context.session.shared_state["__task_board__"] = TaskBoardState()
+        board: TaskBoardState = context.session.shared_state["__task_board__"]
 
-        yield FinishAction(result=leader_res.output)
+        max_iterations = getattr(team, "max_iterations", 15)
+        planner_prompt = prompt
+
+        for iteration in range(max_iterations):
+            if board.is_goal_complete:
+                yield FinishAction(result=board.final_summary or "目标已标记完成。")
+                return
+
+            available_tasks = board.get_available_tasks()
+
+            if not available_tasks:
+                if iteration > 0:
+                    board_str = board.render_board_to_string()
+                    planner_prompt = (
+                        f"### 📋 当前看板最新状态\n{board_str}\n\n"
+                        "**系统指令**：底层执行引擎的回合已结束。当前没有可立即执行的 pending 任务。\n"
+                        "请检查是否有 failed 的任务需要修复重新指派？或者如果所有任务均已 completed，请立刻调用 `mark_all_complete` 汇报结果。"
+                    )
+
+                logger.info(f"🧠 [TaskStrategy] 唤醒 Planner (Iter: {iteration})")
+                leader_res = yield CallAction(agent=leader_agent, task=planner_prompt)
+
+                if board.is_goal_complete:
+                    yield FinishAction(result=board.final_summary or leader_res.output)
+                    return
+                continue
+
+            logger.info(
+                f"🚀 [TaskStrategy] 引擎接管：并发执行 {len(available_tasks)} 个任务..."
+            )
+            actions = []
+            valid_tasks = []
+
+            for task in available_tasks:
+                member_agent = next(
+                    (m for m in team.members if m.name == task.assignee), None
+                )
+                if not member_agent:
+                    board.update_task_status(
+                        task.id,
+                        TaskNodeStatus.failed,
+                        f"执行异常: 找不到名为 '{task.assignee}' 的专家。",
+                    )
+                    continue
+
+                board.update_task_status(task.id, TaskNodeStatus.in_progress)
+                await EventCenter.publish(
+                    TeamTaskUpdatedEvent(
+                        session_id=context.session_id,
+                        team_name=team.name,
+                        task_id=task.id,
+                        title=task.title,
+                        status="in_progress",
+                    )
+                )
+
+                task_prompt = f"### 🎯 你被指派的任务目标：\n{task.description}"
+
+                if task.result:
+                    task_prompt += (
+                        f"\n\n### 💡 项目经理的补充建议/历史反馈：\n{task.result}"
+                    )
+                if task.dependencies:
+                    dep_results = []
+                    for dep_id in task.dependencies:
+                        dep_task = board.get_task(dep_id)
+                        if dep_task and dep_task.result:
+                            dep_results.append(
+                                f"【前置任务 [{dep_task.title}] 的产出】:\n{dep_task.result}"
+                            )
+                    if dep_results:
+                        task_prompt += (
+                            "\n\n### 📦 你的任务依赖以下前置结果，请基于此进行处理：\n"
+                            + "\n\n".join(dep_results)
+                        )
+
+                if task.metadata:
+                    import json
+
+                    meta_str = json.dumps(task.metadata, ensure_ascii=False)
+                    task_prompt += f"\n\n### ⚙️ 附加系统元数据约束：\n{meta_str}"
+
+                actions.append(CallAction(agent=member_agent.name, task=task_prompt))
+                valid_tasks.append(task)
+
+            if not actions:
+                continue
+
+            results = yield ConcurrentCallAction(actions=actions)
+
+            for task, (agent_name, agent_res) in zip(valid_tasks, results):
+                if isinstance(agent_res, BaseException):
+                    output_str = f"❌ 专家框架级崩溃: {agent_res}"
+                    board.update_task_status(task.id, TaskNodeStatus.failed, output_str)
+                    final_status = "failed"
+                else:
+                    output_str = str(agent_res.output)
+                    if output_str.startswith("Error:") or output_str.startswith("❌"):
+                        board.update_task_status(
+                            task.id, TaskNodeStatus.failed, output_str
+                        )
+                        final_status = "failed"
+                    else:
+                        board.update_task_status(
+                            task.id, TaskNodeStatus.completed, output_str
+                        )
+                        final_status = "completed"
+
+                await EventCenter.publish(
+                    TeamTaskUpdatedEvent(
+                        session_id=context.session_id,
+                        team_name=team.name,
+                        task_id=task.id,
+                        title=task.title,
+                        status=final_status,
+                        result=output_str,
+                    )
+                )
+
+        yield FinishAction(
+            result=f"达到最大迭代次数 ({max_iterations})，任务未能在限定步数内完成。"
+        )

@@ -21,7 +21,13 @@ from zhenxun.services.ai.tools.models import (
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_dump, model_validate
 
-from .schema import _parse_docstring, build_schema_hint, build_tool_model, prune_schema_by_permissions, check_field_permissions
+from .schema import (
+    _parse_docstring,
+    build_schema_hint,
+    build_tool_model,
+    check_field_permissions,
+    prune_schema_by_permissions,
+)
 
 
 class BaseTool:
@@ -174,7 +180,9 @@ class BaseTool:
                 from zhenxun.utils.pydantic_compat import model_json_schema
 
                 base_schema = model_json_schema(args_schema)
-                schema = await prune_schema_by_permissions(args_schema, context, base_schema)
+                schema = await prune_schema_by_permissions(
+                    args_schema, context, base_schema
+                )
             else:
                 from zhenxun.utils.pydantic_compat import model_json_schema
 
@@ -257,7 +265,10 @@ class BaseTool:
         try:
             return await self._core_execution(context_to_pass, **kwargs)
         except Exception as e:
-            logger.error(f"工具 {self.name} 执行抛出异常，将交由底层引擎处理: {e}")
+            from zhenxun.services.ai.core.exceptions import ControlFlowException
+
+            if not isinstance(e, ControlFlowException):
+                logger.error(f"工具 {self.name} 执行抛出异常，将交由底层引擎处理: {e}")
             raise
 
     async def _core_execution(self, context: RunContext, **kwargs: Any) -> ToolResult:

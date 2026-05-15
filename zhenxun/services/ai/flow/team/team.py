@@ -10,7 +10,6 @@ from zhenxun.services.ai.flow.team.router import BaseRouter
 from zhenxun.services.ai.flow.team.strategy import (
     BaseTeamStrategy,
 )
-from zhenxun.services.ai.llm.manager import get_global_default_model_name
 from zhenxun.services.ai.run import AgentRunResult, RunContext, Task
 
 
@@ -35,18 +34,34 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         state_flow: dict[str, list[str | Any]] | Callable | None = None,
         selector_func: Callable[..., str | None | Awaitable[str | None]] | None = None,
         router: "BaseRouter | None" = None,
+        runtime_config: AgentRuntimeConfig | dict | None = None,
     ):
         self.name = name
+        self.mode = mode
         self.members = members
         self.description = (
             description
             or f"一个名为 {self.name} 的协作团队，包含 {len(self.members)} 个处理节点。"
         )
         self.persona = persona
-        self.leader_model = leader_model or get_global_default_model_name()
+
+        if leader_model is None and members:
+            for m in members:
+                m_model = getattr(m, "model_name", None) or getattr(
+                    m, "leader_model", None
+                )
+                if m_model:
+                    leader_model = m_model
+                    break
+
+        self.leader_model = leader_model
         self.leader_tools = leader_tools or []
 
-        self.runtime_config = AgentRuntimeConfig(stateless=True, enable_hitl=False)
+        if isinstance(runtime_config, dict):
+            runtime_config = AgentRuntimeConfig(**runtime_config)
+        self.runtime_config = runtime_config or AgentRuntimeConfig(
+            stateless=True, enable_hitl=False
+        )
 
         if isinstance(state_flow, dict):
             from zhenxun.services.ai.flow.team.models import Transition

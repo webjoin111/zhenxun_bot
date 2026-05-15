@@ -10,7 +10,10 @@ from zhenxun.services.ai.core.events.event_types import (
     TeamRunEndEvent,
     TeamRunStartEvent,
 )
-from zhenxun.services.ai.core.exceptions import HandoffException
+from zhenxun.services.ai.core.exceptions import (
+    ControlFlowException,
+    HandoffException,
+)
 from zhenxun.services.ai.core.messages import UsageInfo
 from zhenxun.services.ai.flow.team.capabilities import TeamRoutingCapability
 from zhenxun.services.ai.flow.team.models import (
@@ -68,7 +71,8 @@ class TeamRunner:
         sub_context.capabilities = list(sub_context.capabilities)
 
         team_mode = getattr(self.team, "mode", None)
-        if team_mode and getattr(team_mode, "value", str(team_mode)) != "tasks":
+        mode_str = getattr(team_mode, "value", str(team_mode)) if team_mode else ""
+        if mode_str != "tasks":
             routing_cap = TeamRoutingCapability(
                 team_name=self.team.name,
                 members=self.team.members,
@@ -107,6 +111,17 @@ class TeamRunner:
                         await queue.put(("yield_event", event))
         except HandoffException as he:
             handoff_exc = he
+        except ControlFlowException as cfe:
+            from zhenxun.services.ai.core.exceptions import AbortException
+
+            if isinstance(cfe, AbortException):
+                await queue.put(("control_flow_error", cfe))
+                return
+            else:
+                logger.debug(
+                    f"Agent {target_agent.name} 触发局部控制流: {type(cfe).__name__} - {cfe}"
+                )
+                agent_res = AgentRunResult(output=str(cfe), usage=UsageInfo())
         except Exception as e:
             logger.error(f"Agent {target_agent.name} 执行崩溃: {e}")
             agent_res = AgentRunResult(output=f"Error: {e}", usage=UsageInfo())
@@ -188,6 +203,8 @@ class TeamRunner:
                             msg_type, *payload = await queue.get()
                             if msg_type == "yield_event":
                                 yield payload[0]
+                            elif msg_type == "control_flow_error":
+                                raise payload[0]
                             elif msg_type == "result":
                                 idx, agent_name, agent_res = payload
                                 send_value = agent_res
@@ -215,6 +232,10 @@ class TeamRunner:
                             msg_type, *payload = await queue.get()
                             if msg_type == "yield_event":
                                 yield payload[0]
+                            elif msg_type == "control_flow_error":
+                                for t in tasks:
+                                    t.cancel()
+                                raise payload[0]
                             elif msg_type == "result":
                                 idx, agent_name, agent_res = payload
                                 results_dict[idx] = (agent_name, agent_res)

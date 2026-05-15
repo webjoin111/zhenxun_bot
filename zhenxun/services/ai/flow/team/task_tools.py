@@ -1,35 +1,33 @@
 import asyncio
-from typing import Annotated
+from typing import Annotated, Any
 
 from pydantic import Field
 
-from zhenxun.services.ai.core.exceptions import ControlFlowException, EndRunException
-from zhenxun.services.ai.core.stream_events import ToolCallStart, ToolStreamChunk
+from zhenxun.services.ai.core.exceptions import EndRunException
 from zhenxun.services.ai.flow.base import BaseRunnable
 from zhenxun.services.ai.run.context import RunContext
-from zhenxun.services.ai.run.models import AgentRunEnd
 from zhenxun.services.ai.tools.core.decorators import tool
 from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
 from zhenxun.services.ai.tools.models import ToolResult
-from zhenxun.services.log import logger
 
-from .task_board import TaskBoardState, TaskNodeStatus
+from .models import TaskBoardState, TaskNodeStatus
 
 
-class TaskManagementToolkit(BaseToolkit):
+class TaskPlanningToolkit(BaseToolkit):
     """
-    自主任务管理工具箱。
-    提供给 Team Leader 用于操作黑板状态并调度 Member Agent。
+    任务规划工具箱 (Planner Toolkit)。
+    大模型专用的黑板操作工具。大模型被剥夺了执行权，仅能拆解、指派和总结任务。
     """
 
     default_instructions = (
         "<instructions>\n"
-        "## 🛠️ 自主任务工作流指南\n"
-        "你目前处于自主任务模式。你需要将用户的庞大目标拆解为具体的任务，并指派给专家。\n"
+        "## 🛠️ 任务规划工作流指南\n"
+        "你现在的角色是**项目经理 (Planner)**。你的唯一职责是拆解任务、分配人员并监控看板状态，**系统底层会自动拉起专家执行任务**。\n"
         "1. **规划**：使用 `create_task` 拆解任务，设定 `assignee`（专家名称）和 `depends_on`（依赖的其它任务ID）。\n"
-        "2. **执行**：使用 `execute_task`（单个）或 `execute_tasks_parallel`（并发）驱动专家执行没有被阻塞的 pending 任务。\n"
-        "3. **看板**：每次调用工具后，你会收到最新的看板快照，请以此决定下一步行动。\n"
-        "4. **终结**：当你认为所有任务都已经完成，或目标已达成时，调用 `mark_all_complete` 并附上最终总结。\n"
+        "2. **等待与监控**：每次你创建或更新任务后，请立刻停止工具调用，系统引擎会自动并发执行 pending 任务并再次唤醒你。\n"
+        "3. **🩹 智能自愈与重试**：如果你被唤醒后，看到看板上有任务处于 `failed` 状态，请仔细阅读失败结果 (result)。你可以通过 `update_task_status` 将该任务的状态重新修改为 `pending` 以触发重新执行（可以附带修改建议在 result 里），或者创建新任务替代它。\n"
+        "4. **终结**：当你确认所有目标已达成时，调用 `mark_all_complete` 附上最终总结，正式结束整个流水线。\n"
+        "⚠️ 警告：你没有任何执行具体业务代码或查询的工具，你只能操作任务看板！\n"
         "</instructions>"
     )
 
@@ -56,14 +54,19 @@ class TaskManagementToolkit(BaseToolkit):
                 description="负责执行此任务的专家名称，必须完全匹配 <team_members> 中提供的 id，严禁捏造"
             ),
         ],
+        context: RunContext,
         depends_on: Annotated[
-            list[str],
+            list[str] | None,
             Field(
-                default_factory=list,
                 description="该任务依赖的前置任务 ID 列表。如果该任务可独立执行，请留空数组 []",
             ),
-        ],
-        context: RunContext,
+        ] = None,
+        metadata: Annotated[
+            dict[str, Any] | None,
+            Field(
+                description="可选的附加字典，用于向执行专家传递额外的结构化约束或参数"
+            ),
+        ] = None,
     ) -> ToolResult:
         board = self._get_board(context)
 
@@ -78,7 +81,24 @@ class TaskManagementToolkit(BaseToolkit):
             description=description,
             assignee=assignee,
             dependencies=depends_on,
+            metadata=metadata,
         )
+
+        from zhenxun.services.ai.core.events import EventCenter
+        from zhenxun.services.ai.core.events.event_types import TeamTaskCreatedEvent
+
+        asyncio.create_task(
+            EventCenter.publish(
+                TeamTaskCreatedEvent(
+                    session_id=context.session_id,
+                    team_name=getattr(context.run, "agent_name", "Team"),
+                    task_id=task.id,
+                    title=task.title,
+                    assignee=task.assignee,
+                )
+            )
+        )
+
         board_str = board.render_board_to_string()
         return ToolResult(
             output=f"✅ 任务创建成功！任务 ID: [{task.id}]，状态: {task.status.value}\n\n{board_str}"
@@ -91,17 +111,43 @@ class TaskManagementToolkit(BaseToolkit):
         self,
         task_id: Annotated[str, Field(description="要更新的任务的唯一 ID")],
         status: Annotated[
-            TaskNodeStatus, Field(description="新的任务状态，如 completed, failed")
+            TaskNodeStatus,
+            Field(
+                description="新的任务状态，支持: pending(用于重试), completed, failed 等"
+            ),
         ],
         context: RunContext,
         result: Annotated[
-            str, Field(description="如果任务已完成或失败，提供对应的结果或原因说明")
+            str,
+            Field(
+                description="提供结果、失败原因，或在设为 pending 重试时给执行专家的建议"
+            ),
         ] = "",
     ) -> ToolResult:
         board = self._get_board(context)
         updated = board.update_task_status(task_id, status, result if result else None)
         if not updated:
             return ToolResult(output=f"❌ 找不到 ID 为 '{task_id}' 的任务。").as_error()
+
+        from zhenxun.services.ai.core.events import EventCenter
+        from zhenxun.services.ai.core.events.event_types import TeamTaskUpdatedEvent
+
+        task_obj = board.get_task(task_id)
+        task_title = task_obj.title if task_obj else "Unknown"
+
+        asyncio.create_task(
+            EventCenter.publish(
+                TeamTaskUpdatedEvent(
+                    session_id=context.session_id,
+                    team_name=getattr(context.run, "agent_name", "Team"),
+                    task_id=task_id,
+                    title=task_title,
+                    status=status.value,
+                    result=result,
+                )
+            )
+        )
+
         board_str = board.render_board_to_string()
         return ToolResult(
             output=f"✅ 任务 [{task_id}] 已更新为 {status.value}。\n\n{board_str}"
@@ -122,240 +168,3 @@ class TaskManagementToolkit(BaseToolkit):
         board.final_summary = summary
 
         raise EndRunException(result_output=summary, display=None)
-
-    @tool(
-        description="执行一个处于 pending 状态的任务。系统会自动调用对应的专家来完成它。"
-    )
-    async def execute_task(
-        self,
-        task_id: Annotated[str, Field(description="要执行的任务 ID")],
-        context: RunContext,
-    ) -> ToolResult:
-        board = self._get_board(context)
-        task = board.get_task(task_id)
-
-        if not task:
-            return ToolResult(output=f"❌ 找不到任务 '{task_id}'。").as_error()
-        if task.status != TaskNodeStatus.pending:
-            return ToolResult(
-                output=f"❌ 任务 [{task_id}] 的状态为 {task.status.value}，不可执行。必须为 pending。"
-            ).as_error()
-        if not task.assignee:
-            return ToolResult(
-                output=f"❌ 任务 [{task_id}] 尚未指派 assignee。"
-            ).as_error()
-
-        member_agent = next((m for m in self.members if m.name == task.assignee), None)
-        if not member_agent:
-            return ToolResult(
-                output=f"❌ 找不到分配的专家 '{task.assignee}'。"
-            ).as_error()
-
-        board.update_task_status(task_id, TaskNodeStatus.in_progress)
-        streamer = context.run.streamer
-        if streamer:
-            await streamer.send(
-                ToolStreamChunk(
-                    tool_name="TaskManager",
-                    content=f"🚀 正在委派 [{task.assignee}] 执行任务: {task.title}...",
-                )
-            )
-
-        logger.info(
-            f"🔄 [ExecuteTask] 正在启动子专家 {member_agent.name} 处理任务 {task_id}"
-        )
-        sub_context = context.clone_for_member(member_agent.name)
-
-        try:
-            task_prompt = f"### 🎯 你被指派的任务目标：\n{task.description}"
-
-            if task.dependencies:
-                dep_results = []
-                for dep_id in task.dependencies:
-                    dep_task = board.get_task(dep_id)
-                    if dep_task and dep_task.result:
-                        dep_results.append(
-                            f"【前置任务 [{dep_task.title}] 的产出】:\n{dep_task.result}"
-                        )
-                if dep_results:
-                    task_prompt += (
-                        "\n\n### 📦 你的任务依赖以下前置结果，请基于此进行处理：\n"
-                        + "\n\n".join(dep_results)
-                    )
-
-            response = None
-            async with member_agent.run_stream(
-                prompt=task_prompt, context=sub_context
-            ) as stream_result:
-                async for event in stream_result.stream_events():
-
-                    if isinstance(event, AgentRunEnd):
-                        response = event.result
-                    elif streamer:
-                        if isinstance(event, ToolStreamChunk):
-                            await streamer.send(event)
-                        elif isinstance(event, ToolCallStart):
-                            await streamer.send(
-                                ToolStreamChunk(
-                                    tool_name=member_agent.name,
-                                    content=f"🔁 正在调用其专属工具: {event.tool_name}...",
-                                )
-                            )
-
-            if response is None:
-                raise RuntimeError(f"专家 {member_agent.name} 未返回任何响应。")
-
-            final_output = str(response.output)
-
-            board.update_task_status(task_id, TaskNodeStatus.completed, final_output)
-            board_str = board.render_board_to_string()
-
-            if streamer:
-                await streamer.send(
-                    ToolStreamChunk(
-                        tool_name="TaskManager",
-                        content=f"✅ [{task.assignee}] 已完成任务: {task.title}！",
-                    )
-                )
-
-            return ToolResult(
-                output=f"✅ 任务执行成功。专家返回结果:\n{final_output}\n\n{board_str}"
-            )
-
-        except Exception as e:
-            if isinstance(e, ControlFlowException):
-                raise e
-            logger.error(f"执行子任务失败: {e}", e=e)
-            board.update_task_status(task_id, TaskNodeStatus.failed, f"执行异常: {e}")
-            board_str = board.render_board_to_string()
-            if streamer:
-                await streamer.send(
-                    ToolStreamChunk(
-                        tool_name="TaskManager",
-                        content=f"❌ [{task.assignee}] 执行任务 {task.title} 失败！",
-                    )
-                )
-            return ToolResult(
-                output=f"❌ 任务执行失败，异常信息: {e}\n\n{board_str}"
-            ).as_error()
-
-    @tool(description="并行执行多个互不依赖的 pending 任务。利用并发最大化执行效率。")
-    async def execute_tasks_parallel(
-        self,
-        task_ids: Annotated[list[str], Field(description="要并行执行的任务 ID 列表")],
-        context: RunContext,
-    ) -> ToolResult:
-        board = self._get_board(context)
-
-        tasks_to_run = []
-        for tid in task_ids:
-            task = board.get_task(tid)
-            if not task:
-                return ToolResult(output=f"❌ 找不到任务 '{tid}'。").as_error()
-            if task.status != TaskNodeStatus.pending:
-                return ToolResult(
-                    output=f"❌ 任务 [{tid}] 状态为 {task.status.value}，不可执行。必须为 pending。"
-                ).as_error()
-            if not task.assignee:
-                return ToolResult(
-                    output=f"❌ 任务 [{tid}] 尚未指派 assignee。"
-                ).as_error()
-            member_agent = next(
-                (m for m in self.members if m.name == task.assignee), None
-            )
-            if not member_agent:
-                return ToolResult(
-                    output=f"❌ 找不到分配的专家 '{task.assignee}'。"
-                ).as_error()
-            tasks_to_run.append((task, member_agent))
-
-        if not tasks_to_run:
-            return ToolResult(output="❌ 提供的任务列表均不可执行。").as_error()
-
-        streamer = context.run.streamer
-        if streamer:
-            await streamer.send(
-                ToolStreamChunk(
-                    tool_name="TaskManager",
-                    content=f"🚀 正在并发委派执行 {len(tasks_to_run)} 个任务...",
-                )
-            )
-
-        for task, _ in tasks_to_run:
-            board.update_task_status(task.id, TaskNodeStatus.in_progress)
-
-        async def _run_single(task, member_agent):
-            logger.info(
-                f"🔄 [Parallel] 启动专家 {member_agent.name} 处理任务 {task.id}"
-            )
-            sub_context = context.clone_for_member(member_agent.name)
-            task_prompt = f"### 🎯 你被指派的任务目标：\n{task.description}"
-
-            if task.dependencies:
-                dep_results = []
-                for dep_id in task.dependencies:
-                    dep_task = board.get_task(dep_id)
-                    if dep_task and dep_task.result:
-                        dep_results.append(
-                            f"【前置任务 [{dep_task.title}] 的产出】:\n{dep_task.result}"
-                        )
-                if dep_results:
-                    task_prompt += (
-                        "\n\n### 📦 你的任务依赖以下前置结果，请基于此进行处理：\n"
-                        + "\n\n".join(dep_results)
-                    )
-
-            try:
-                response = None
-                async with member_agent.run_stream(
-                    prompt=task_prompt, context=sub_context
-                ) as stream_result:
-                    async for event in stream_result.stream_events():
-
-                        if isinstance(event, AgentRunEnd):
-                            response = event.result
-                        elif streamer:
-                            if isinstance(event, ToolStreamChunk):
-                                await streamer.send(event)
-                            elif isinstance(event, ToolCallStart):
-                                await streamer.send(
-                                    ToolStreamChunk(
-                                        tool_name=member_agent.name,
-                                        content=f"🔁 正在调用其专属工具: {event.tool_name}...",
-                                    )
-                                )
-                if response is None:
-                    raise RuntimeError(f"专家 {member_agent.name} 未返回任何响应。")
-                return (task.id, True, str(response.output))
-            except Exception as e:
-                if isinstance(e, ControlFlowException):
-                    raise e
-                logger.error(f"并行任务 {task.id} 失败: {e}", e=e)
-                return (task.id, False, str(e))
-
-        results = await asyncio.gather(*[_run_single(t, m) for t, m in tasks_to_run])
-
-        result_outputs = []
-        for tid, success, res_text in results:
-            if success:
-                board.update_task_status(tid, TaskNodeStatus.completed, res_text)
-                result_outputs.append(f"✅ 任务 [{tid}] 成功: {res_text}")
-            else:
-                board.update_task_status(
-                    tid, TaskNodeStatus.failed, f"执行异常: {res_text}"
-                )
-                result_outputs.append(f"❌ 任务 [{tid}] 失败: {res_text}")
-
-        if streamer:
-            await streamer.send(
-                ToolStreamChunk(
-                    tool_name="TaskManager",
-                    content=f"🏁 并发执行完毕，成功 {sum(1 for _, s, _ in results if s)} 个，失败 {sum(1 for _, s, _ in results if not s)} 个。",
-                )
-            )
-
-        board_str = board.render_board_to_string()
-        final_output_str = "\n".join(result_outputs)
-        return ToolResult(
-            output=f"并行执行结束。结果摘要:\n{final_output_str}\n\n{board_str}"
-        )

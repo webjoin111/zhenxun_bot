@@ -47,7 +47,8 @@ class AgentExecutorConfig(BaseModel):
         description="当工具执行出错时，允许进行自我反思和修正的最大重试次数。",
     )
     enable_fallback_summary: bool = Field(
-        default=True, description="达到最大循环次数时，是否触发大模型兜底总结（而不是直接报错）。"
+        default=True,
+        description="达到最大循环次数时，是否触发大模型兜底总结（而不是直接报错）。",
     )
 
 
@@ -331,10 +332,6 @@ class AgentExecutor:
                                     f"🛑 [中断执行] 工具 {original_call.tool_name} 触发了直接返回结果信号。"
                                 )
                             else:
-                                display_msg = getattr(res_or_exc, "display", None)
-                                if display_msg:
-                                    ui = UIController(run_context)
-                                    await ui.send_display(display_msg)
                                 raise res_or_exc
 
                             if display_msg:
@@ -426,10 +423,13 @@ class AgentExecutor:
                     code=LLMErrorCode.GENERATION_FAILED,
                 )
 
-            logger.warning(f"AgentExecutor 达到最大循环次数 ({self.config.max_cycles})，触发兜底总结机制。")
+            logger.warning(
+                f"AgentExecutor 达到最大循环次数 ({self.config.max_cycles})，触发兜底总结机制。"
+            )
 
             if event_streamer:
                 from zhenxun.services.ai.core.stream_events import ToolStreamChunk
+
                 await event_streamer.send(
                     ToolStreamChunk(
                         tool_name="System",
@@ -447,7 +447,9 @@ class AgentExecutor:
             current_extra = run_context.state.copy()
             if extra:
                 current_extra.update(extra)
-            current_extra["__sys_capabilities"] = getattr(run_context, "capabilities", [])
+            current_extra["__sys_capabilities"] = getattr(
+                run_context, "capabilities", []
+            )
             current_extra["run_context"] = run_context
 
             fallback_response = await model_instance.generate_response(
@@ -459,8 +461,11 @@ class AgentExecutor:
             )
 
             from zhenxun.services.ai.core.messages import AssistantContentUnion
+
             assistant_message = AssistantMessage(
-                content=cast(list[AssistantContentUnion], fallback_response.content_parts)
+                content=cast(
+                    list[AssistantContentUnion], fallback_response.content_parts
+                )
             )
 
             usage_obj = parse_usage_info(fallback_response.usage_info)

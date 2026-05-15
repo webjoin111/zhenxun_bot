@@ -137,6 +137,23 @@ class TaskRunErrorEvent(AIEvent):
     error: Exception
 
 
+class TeamTaskCreatedEvent(AIEvent):
+    """团队自主任务：创建子任务"""
+    team_name: str
+    task_id: str
+    title: str
+    assignee: str | None
+
+
+class TeamTaskUpdatedEvent(AIEvent):
+    """团队自主任务：子任务状态变更"""
+    team_name: str
+    task_id: str
+    title: str
+    status: str
+    result: str | None = None
+
+
 class WorkflowStartedEvent(AIEvent):
     """工作流开始"""
 

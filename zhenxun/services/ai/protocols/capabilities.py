@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING, Any, cast
 from zhenxun.services.log import logger
 
 if TYPE_CHECKING:
-    from zhenxun.services.ai.flow.agent.models import CapabilitySpec
     from zhenxun.services.ai.core.configs import GenerationConfig
     from zhenxun.services.ai.core.messages import LLMResponse
+    from zhenxun.services.ai.flow.agent.models import CapabilitySpec
     from zhenxun.services.ai.protocols.middleware import LLMContext
     from zhenxun.services.ai.run import AgentRunResult, RunContext
 
@@ -238,7 +238,9 @@ class ReflexionCapability(AbstractCapability):
             return await handler(llm_context)
 
         max_retries = llm_context.extra.get("max_retries", 3)
-        error_template = output_processor.error_template if output_processor else "{error_msg}"
+        error_template = (
+            output_processor.error_template if output_processor else "{error_msg}"
+        )
 
         ivr_messages = list(llm_context.messages)
         last_exception: Exception | None = None
@@ -337,6 +339,7 @@ class ReflexionCapability(AbstractCapability):
                         GuardrailViolationError,
                         SchemaParseError,
                     )
+
                     if isinstance(e, SchemaParseError):
                         feedback_prompt = (
                             "### ❌ [格式解析失败]\n"
@@ -361,7 +364,9 @@ class ReflexionCapability(AbstractCapability):
                                 DEFAULT_IVR_TEMPLATE,
                             )
 
-                            feedback_prompt = DEFAULT_IVR_TEMPLATE.format(error_msg=error_msg)
+                            feedback_prompt = DEFAULT_IVR_TEMPLATE.format(
+                                error_msg=error_msg
+                            )
                     ivr_messages.append(
                         cast(LLMMessage, LLMMessage.user(feedback_prompt))
                     )
@@ -475,7 +480,13 @@ class CombinedCapability(AbstractCapability):
     """
 
     def __init__(self, capabilities: list[AbstractCapability]):
-        self.capabilities = capabilities
+        deduped = []
+        seen = set()
+        for c in capabilities:
+            if id(c) not in seen:
+                seen.add(id(c))
+                deduped.append(c)
+        self.capabilities = deduped
 
     async def for_run(self, context: RunContext) -> "AbstractCapability":
         new_caps = []
@@ -696,4 +707,3 @@ class CombinedCapability(AbstractCapability):
             except Exception as new_error:
                 error = new_error
         raise error
-
