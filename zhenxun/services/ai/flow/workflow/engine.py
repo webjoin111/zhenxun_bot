@@ -1,6 +1,9 @@
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, TYPE_CHECKING
 import uuid
+
+if TYPE_CHECKING:
+    from zhenxun.services.ai.run import StreamedRunResult
 
 from zhenxun.services.ai.core.events import EventCenter
 from zhenxun.services.ai.core.events.event_types import (
@@ -8,6 +11,7 @@ from zhenxun.services.ai.core.events.event_types import (
     WorkflowErrorEvent,
     WorkflowStartedEvent,
 )
+from zhenxun.services.ai.flow.base import BaseRunnable
 from zhenxun.services.ai.flow.workflow.nodes import Steps
 from zhenxun.services.ai.flow.workflow.types import (
     StepInput,
@@ -19,9 +23,10 @@ from zhenxun.services.ai.tools.core.tool import FunctionTool
 from zhenxun.services.log import logger
 
 
-class Workflow:
+class Workflow(BaseRunnable[WorkflowRunResult]):
     """
     工作流顶层容器 (The Workflow Facade)。
+    继承自 BaseRunnable，支持被作为节点嵌套在 Team 或 其他工作流中。
     """
 
     def __init__(self, name: str, steps: list[Any], description: str = ""):
@@ -30,6 +35,8 @@ class Workflow:
         self.id = uuid.uuid4().hex
 
         self.root_steps = Steps(steps=steps, name=f"{self.name}_Root")
+        self.runtime_config = None  # 满足 BaseRunnable 接口
+        self.persona = None
 
     def _build_result(
         self,
@@ -74,7 +81,7 @@ class Workflow:
             paused_step_name=paused_step,
         )
 
-    def bind(self) -> Any:
+    def bind(self, **kwargs: Any) -> Any:
         """DI 注入语法糖"""
         from nonebot.params import Depends
 
@@ -126,7 +133,7 @@ class Workflow:
         return res
 
     async def run(
-        self, prompt: Any = None, context: RunContext | None = None, **kwargs: Any
+        self, prompt: Any = None, *, context: RunContext | None = None, **kwargs: Any
     ) -> WorkflowRunResult:
         """
         工作流单次运行阻塞核心入口，遍历所有图元节点直至终止。
@@ -172,9 +179,41 @@ class Workflow:
             )
             raise e
 
-    async def arun_stream(
+    import contextlib
+    @contextlib.asynccontextmanager
+    async def run_stream(
+        self, prompt: Any = None, *, context: RunContext | None = None, **kwargs: Any
+    ) -> AsyncIterator["StreamedRunResult[Any]"]:
+        """对齐 BaseRunnable 接口的流式上下文管理器"""
+        from zhenxun.services.ai.core.stream_events import EventStreamer
+        from zhenxun.services.ai.run import StreamedRunResult
+        from zhenxun.services.ai.run.models import AgentRunError
+        import asyncio
+        
+        streamer = EventStreamer()
+        if context:
+            context.run.streamer = streamer
+            
+        async def _execution_task():
+            try:
+                async for event in self._internal_stream(prompt, context, **kwargs):
+                    await streamer.send(event)
+            except BaseException as e:
+                await streamer.send(AgentRunError(error=e))
+            finally:
+                await streamer.end()
+
+        task = asyncio.create_task(_execution_task())
+        try:
+            yield StreamedRunResult[Any](streamer)
+        finally:
+            if not task.done():
+                task.cancel()
+                
+    async def _internal_stream(
         self, prompt: Any = None, context: RunContext | None = None, **kwargs: Any
     ) -> AsyncIterator[Any]:
+        """原 arun_stream 逻辑改名，供内部 _execution_task 调用"""
         session_id = (
             context.session_id if context and context.session_id else f"wf_{self.id}"
         )
@@ -206,7 +245,15 @@ class Workflow:
                 )
                 await EventCenter.publish(comp_event)
                 yield comp_event
-                yield self._build_result(initial_input, safe_context, final_output)
+                
+                # 转换为标准 AgentRunEnd 以兼容 AgentRunner
+                from zhenxun.services.ai.run import AgentRunResult
+                from zhenxun.services.ai.run.models import AgentRunEnd
+                from zhenxun.services.ai.core.messages import UsageInfo
+                
+                wf_result = self._build_result(initial_input, safe_context, final_output)
+                agent_res = AgentRunResult(output=wf_result.last_step_content, structured_data=wf_result, usage=UsageInfo())
+                yield AgentRunEnd(result=agent_res)
         except Exception as e:
             logger.error(f"Workflow '{self.name}' 流式执行崩溃: {e}", e=e)
             yield WorkflowErrorEvent(

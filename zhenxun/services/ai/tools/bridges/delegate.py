@@ -3,11 +3,16 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from zhenxun.services.ai.core.exceptions import ControlFlowException
 from zhenxun.services.ai.run import RunContext
 from zhenxun.services.ai.tools.core.tool import BaseTool
 from zhenxun.services.ai.tools.models import ToolResult
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_dump
+
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from zhenxun.services.ai.flow.base import BaseRunnable
 
 STRUCTURED_INPUT_PREAMBLE = (
     "\n\n### 🛠️ [嵌套调用前置语境]\n"
@@ -31,11 +36,11 @@ class DelegateTool(BaseTool):
     """
 
     def __init__(
-        self, runnable: Any, name: str | None = None, description: str | None = None
+        self, runnable: "BaseRunnable[Any]", name: str | None = None, description: str | None = None
     ):
         resolved_name = name or getattr(runnable, "name", "SubRunnable")
         resolved_desc = description or getattr(
-            runnable, "instruction", f"将子任务委派给 {resolved_name} 执行"
+            runnable, "description", f"将子任务委派给 {resolved_name} 执行"
         )
         final_name = (
             f"delegate_to_{resolved_name}"
@@ -134,6 +139,9 @@ class DelegateTool(BaseTool):
                 output=final_output,
                 usage=usage,
             ).show_to_user(f"🧠 实体 {self.name} 执行完毕")
+        except ControlFlowException as e:
+            # 核心修复：放行移交、提交等控制流异常，不要将其拦截为报错
+            raise e
         except Exception as e:
             logger.error(f"委派实体 {self.name} 执行失败: {e}", e=e)
             from zhenxun.services.ai.core.exceptions import AbortException

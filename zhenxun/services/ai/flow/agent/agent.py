@@ -21,6 +21,7 @@ from zhenxun.services.ai.core.messages import (
 )
 from zhenxun.services.ai.core.stream_events import EventStreamer
 from zhenxun.services.ai.flow.agent.engine.builders import ContextBuilder, ToolBuilder
+from zhenxun.services.ai.flow.base import BaseRunnable
 from zhenxun.services.ai.flow.agent.engine.executor import (
     AgentExecutor,
     AgentExecutorConfig,
@@ -64,7 +65,7 @@ if TYPE_CHECKING:
     from zhenxun.services.ai.flow.agent.models import AgentSpec
 
 
-class Agent(Generic[AgentDepsT, OutputDataT]):
+class Agent(BaseRunnable[AgentRunResult[OutputDataT]], Generic[AgentDepsT, OutputDataT]):
     """
     Agent 运行时封装。
     负责组织模型、工具、记忆、护栏与能力插件，并驱动单轮或流式执行。
@@ -74,6 +75,7 @@ class Agent(Generic[AgentDepsT, OutputDataT]):
         self,
         name: str,
         instruction: str | TemplateStr = "",
+        description: str | None = None,
         persona: Persona | dict | None = None,
         model: str | Callable[[], str] | None = None,
         tools: list | None = None,
@@ -105,6 +107,14 @@ class Agent(Generic[AgentDepsT, OutputDataT]):
             guardrails: 护栏定义列表，支持可调用对象、规则字符串或护栏实例。
         """
         self.name = name
+        
+        if description:
+            self.description = description
+        elif persona:
+            p_obj = persona if isinstance(persona, Persona) else Persona(**persona)
+            self.description = f"角色：{p_obj.role}，目标：{p_obj.goal}"
+        else:
+            self.description = str(instruction)[:150] if instruction else "AI Agent"
 
         self.instruction = instruction
 

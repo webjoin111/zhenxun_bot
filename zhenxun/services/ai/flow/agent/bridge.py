@@ -7,6 +7,7 @@ from nonebot_plugin_alconna.uniseg import UniMessage
 from zhenxun.services.ai.core.exceptions import ControlFlowException
 from zhenxun.services.ai.core.messages import UsageInfo
 from zhenxun.services.ai.core.stream_events import ToolStreamChunk
+from zhenxun.services.ai.flow.base import BaseRunnable
 from zhenxun.services.ai.run import AgentRunResult, RunContext
 from zhenxun.services.ai.run.models import AgentRunEnd, AgentRunError
 from zhenxun.services.log import logger
@@ -25,7 +26,7 @@ class AgentRunner(Generic[T_Out]):
 
     def __init__(
         self,
-        runnable: Any,
+        runnable: BaseRunnable,
         context: RunContext | None = None,
         **kwargs: Any,
     ):

@@ -83,8 +83,7 @@ class TeamRoutingCapability(AbstractCapability):
                 if getattr(m, "persona", None):
                     desc = f"角色：{m.persona.role}，目标：{m.persona.goal}"
                 else:
-                    instr = getattr(m, "instruction", "")
-                    desc = str(instr)[:100] + "..." if instr else "领域专家"
+                    desc = getattr(m, "description", "") or "处理节点"
 
                 if transition and getattr(transition, "description", ""):
                     desc += f" 【移交条件】：{transition.description}"

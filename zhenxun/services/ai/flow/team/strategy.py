@@ -226,8 +226,7 @@ class CoordinateStrategy(BaseTeamStrategy):
             if getattr(m, "persona", None):
                 desc = f"角色：{m.persona.role}，目标：{m.persona.goal}"
             else:
-                instr = getattr(m, "instruction", "")
-                desc = str(instr)[:100] + "..." if instr else "无特殊说明"
+                desc = getattr(m, "description", "") or "处理节点"
 
             delegation_tools.append(
                 DelegateTool(

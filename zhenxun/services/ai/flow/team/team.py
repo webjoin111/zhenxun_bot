@@ -1,10 +1,10 @@
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel
 
-from zhenxun.services.ai.flow.agent.agent import Agent
 from zhenxun.services.ai.flow.agent.models import AgentRuntimeConfig
+from zhenxun.services.ai.flow.base import BaseRunnable
 from zhenxun.services.ai.flow.team.models import TeamMode
 from zhenxun.services.ai.flow.team.router import BaseRouter
 from zhenxun.services.ai.flow.team.strategy import (
@@ -14,15 +14,18 @@ from zhenxun.services.ai.llm.manager import get_global_default_model_name
 from zhenxun.services.ai.run import AgentRunResult, RunContext, Task
 
 
-class Team:
+class Team(BaseRunnable[AgentRunResult[Any]]):
     """
     多智能体动态编排与路由控制器 (Facade)。
+    继承自 BaseRunnable，支持被嵌套在其他 Team 或 Workflow 中。
     """
 
     def __init__(
         self,
         name: str,
-        members: list[Agent],
+        members: list[BaseRunnable[Any]],
+        description: str | None = None,
+        persona: Any | None = None,
         mode: str | TeamMode | BaseTeamStrategy = TeamMode.COORDINATE,
         leader_model: str | None = None,
         leader_tools: list[Any] | None = None,
@@ -35,6 +38,11 @@ class Team:
     ):
         self.name = name
         self.members = members
+        self.description = (
+            description
+            or f"一个名为 {self.name} 的协作团队，包含 {len(self.members)} 个处理节点。"
+        )
+        self.persona = persona
         self.leader_model = leader_model or get_global_default_model_name()
         self.leader_tools = leader_tools or []
 
@@ -90,9 +98,10 @@ class Team:
             self.leader_tools.extend(bb_tools)
 
             for member in self.members:
-                if not member.tool_definitions:
-                    member.tool_definitions = []
-                member.tool_definitions.extend(bb_tools)
+                m = cast(Any, member)
+                if not getattr(m, "tool_definitions", None):
+                    m.tool_definitions = []
+                m.tool_definitions.extend(bb_tools)
 
     def bind(self, **kwargs: Any) -> Any:
         """DI 注入语法糖"""
@@ -127,6 +136,7 @@ class Team:
     async def run(
         self,
         prompt: str | Task | None = None,
+        *,
         context: RunContext | None = None,
         **kwargs: Any,
     ) -> AgentRunResult[Any]:
@@ -141,7 +151,7 @@ class Team:
         返回:
             AgentRunResult[Any]: 包含最终融合输出、消息历史和用量统计的运行结果对象。
         """
-        async with self.run_stream(prompt, context, **kwargs) as stream_result:
+        async with self.run_stream(prompt, context=context, **kwargs) as stream_result:
             return await stream_result.get_run_result()
 
     import contextlib
@@ -150,6 +160,7 @@ class Team:
     async def run_stream(
         self,
         prompt: str | Task | None = None,
+        *,
         context: RunContext | None = None,
         **kwargs: Any,
     ):

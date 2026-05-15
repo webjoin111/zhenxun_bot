@@ -15,6 +15,7 @@ from zhenxun.services.ai.core.events.event_types import (
     ParallelExecutionCompletedEvent,
     ParallelExecutionStartedEvent,
 )
+from zhenxun.services.ai.flow.base import BaseRunnable
 from zhenxun.services.ai.flow.agent.agent import Agent
 from zhenxun.services.ai.flow.team.team import Team
 from zhenxun.services.ai.flow.workflow.base import BaseNode
@@ -45,8 +46,8 @@ class Step(BaseNode):
         failure_policy: BaseFailurePolicy | None = None,
     ):
         if cls is Step:
-            if isinstance(executor, (Agent, Team)):
-                return object.__new__(AgentNode)
+            if isinstance(executor, BaseRunnable):
+                return object.__new__(RunnableNode)
             if callable(executor):
                 return object.__new__(FunctionNode)
             raise ValueError(f"Step '{name}' 的执行器类型不支持: {type(executor)}")
@@ -87,8 +88,8 @@ class Step(BaseNode):
         )
 
 
-class AgentNode(Step):
-    """专门处理 Agent/Team 状态机执行的私有节点"""
+class RunnableNode(Step):
+    """专门处理 Agent/Team/Workflow 等 BaseRunnable 状态机执行的私有节点"""
 
     async def run_stream(
         self, step_input: StepInput, context: RunContext
@@ -603,7 +604,7 @@ class NodeFactory:
                 item.name = name
             return item
 
-        if isinstance(item, (Agent, Team)) or callable(item):
+        if isinstance(item, BaseRunnable) or callable(item):
             cond_meta = getattr(item, "__workflow_condition_meta__", None)
             if cond_meta:
                 final_name = name or cond_meta.name or "ConditionGroup"
@@ -637,7 +638,7 @@ class NodeFactory:
             return Step(executor=item, name=name)
 
         raise ValueError(
-            f"无法将类型 {type(item)} 装配为工作流节点。支持的类型：Agent, Team, Callable 或 BaseNode。"
+            f"无法将类型 {type(item)} 装配为工作流节点。支持的类型：BaseRunnable, Callable 或 BaseNode。"
         )
 
 
