@@ -50,11 +50,11 @@ class AgentRunner(Generic[T_Out]):
 
     @property
     def _bot(self) -> Bot | None:
-        return getattr(self.context.deps, "bot", None) if self.context.deps else None
+        return self.context.get_bot()
 
     @property
     def _event(self) -> Event | None:
-        return getattr(self.context.deps, "event", None) if self.context.deps else None
+        return self.context.get_event()
 
     async def reply(
         self, prompt: Any = None, reply_to: bool = False, **kwargs: Any

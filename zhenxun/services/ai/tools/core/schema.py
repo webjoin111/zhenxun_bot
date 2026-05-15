@@ -12,7 +12,6 @@ from pydantic.fields import FieldInfo
 
 from zhenxun.services.ai.run import DependencyInjector
 from zhenxun.services.ai.run.context import RunContext
-from zhenxun.services.ai.utils.runtime_utils import ContextUtils
 from zhenxun.services.cache.runtime_cache import LevelUserMemoryCache
 from zhenxun.utils.pydantic_compat import model_json_schema
 
@@ -30,9 +29,9 @@ class RequireSuperUser(FieldPermission):
     """仅限超级管理员可见的字段参数"""
 
     async def check(self, context: RunContext) -> bool:
-        bot = getattr(context.deps, "bot", None)
-        event = getattr(context.deps, "event", None)
-        if isinstance(bot, Bot) and isinstance(event, Event):
+        bot = context.get_bot()
+        event = context.get_event()
+        if bot and event:
             return await SUPERUSER(bot, event)
         return False
 
@@ -44,14 +43,14 @@ class RequireAdminLevel(FieldPermission):
         self.min_level = min_level
 
     async def check(self, context: RunContext) -> bool:
-        bot = getattr(context.deps, "bot", None)
-        event = getattr(context.deps, "event", None)
+        bot = context.get_bot()
+        event = context.get_event()
 
-        if isinstance(bot, Bot) and isinstance(event, Event) and await SUPERUSER(bot, event):
+        if bot and event and await SUPERUSER(bot, event):
             return True
 
-        user_id = ContextUtils.extract_user_id(context.deps)
-        group_id = ContextUtils.extract_group_id(context.deps)
+        user_id = context.get_user_id()
+        group_id = context.get_group_id()
 
         if not user_id or not group_id:
             return False

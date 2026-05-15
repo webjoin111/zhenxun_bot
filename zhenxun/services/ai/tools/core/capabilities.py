@@ -2,10 +2,9 @@ from collections.abc import Callable
 import inspect
 from typing import Any
 
-from nonebot.adapters import Bot, Event
 from nonebot.permission import SUPERUSER
 from nonebot.utils import is_coroutine_callable
-
+from zhenxun.services.cache.runtime_cache import LevelUserMemoryCache
 from zhenxun.services.ai.protocols.capabilities import (
     AbstractCapability,
     WrapToolExecuteHandler,
@@ -229,9 +228,9 @@ class SuperuserCapability(AbstractCapability):
     async def prepare_tools(
         self, context: RunContext, tool_defs: list[Any]
     ) -> list[Any]:
-        bot = getattr(context.deps, "bot", None)
-        event = getattr(context.deps, "event", None)
-        if not isinstance(bot, Bot) or not isinstance(event, Event):
+        bot = context.get_bot()
+        event = context.get_event()
+        if not bot or not event:
             return []
         if await SUPERUSER(bot, event):
             return tool_defs
@@ -247,19 +246,12 @@ class AdminLevelCapability(AbstractCapability):
     async def prepare_tools(
         self, context: RunContext, tool_defs: list[Any]
     ) -> list[Any]:
-        from zhenxun.services.ai.utils.runtime_utils import ContextUtils
-        from zhenxun.services.cache.runtime_cache import LevelUserMemoryCache
+        user_id = context.get_user_id()
+        group_id = context.get_group_id()
+        bot = context.get_bot()
+        event = context.get_event()
 
-        user_id = ContextUtils.extract_user_id(context.deps)
-        group_id = ContextUtils.extract_group_id(context.deps)
-        bot = getattr(context.deps, "bot", None)
-        event = getattr(context.deps, "event", None)
-
-        if (
-            isinstance(bot, Bot)
-            and isinstance(event, Event)
-            and await SUPERUSER(bot, event)
-        ):
+        if bot and event and await SUPERUSER(bot, event):
             return tool_defs
 
         if not user_id or not group_id:
@@ -282,9 +274,7 @@ class GroupOnlyCapability(AbstractCapability):
     async def prepare_tools(
         self, context: RunContext, tool_defs: list[Any]
     ) -> list[Any]:
-        from zhenxun.services.ai.utils.runtime_utils import ContextUtils
-
-        if ContextUtils.extract_group_id(context.deps):
+        if context.get_group_id():
             return tool_defs
         return []
 
@@ -330,10 +320,10 @@ class InteractiveCapability(AbstractCapability):
             try:
                 return await handler(current_kwargs)
             except NeedsInputException as e:
-                bot = getattr(context.deps, "bot", None)
-                event = getattr(context.deps, "event", None)
+                bot = context.get_bot()
+                event = context.get_event()
 
-                if not isinstance(bot, Bot) or not isinstance(event, Event):
+                if not bot or not event:
                     logger.warning(
                         f"交互式工具 {getattr(tool, 'name', 'unknown')} 缺少参数，但处于非交互环境。"
                     )

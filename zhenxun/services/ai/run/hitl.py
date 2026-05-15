@@ -8,7 +8,6 @@ from nonebot.permission import SUPERUSER
 from nonebot_plugin_waiter import waiter
 
 from zhenxun.services.ai.core.exceptions import AbortException, ToolFatalError
-from zhenxun.services.ai.utils.runtime_utils import ContextUtils
 from zhenxun.services.log import logger
 
 if TYPE_CHECKING:
@@ -38,9 +37,8 @@ class HITLController:
         """
         底层交互方法：进行严格群组与用户隔离的挂起等待。
         """
-        deps = self.context.deps
-        bot = getattr(deps, "bot", None)
-        event = getattr(deps, "event", None)
+        bot = self.context.get_bot()
+        event = self.context.get_event()
 
         if not bot or not event:
             logger.warning("HITLController: 当前环境无 Bot/Event 实例，无法发起交互。")
@@ -49,8 +47,8 @@ class HITLController:
         if prompt_msg:
             await bot.send(event, prompt_msg)
 
-        orig_user_id = ContextUtils.extract_user_id(deps)
-        orig_group_id = ContextUtils.extract_group_id(deps)
+        orig_user_id = self.context.get_user_id()
+        orig_group_id = self.context.get_group_id()
 
         @waiter(waits=["message"], keep_session=False)
         async def event_waiter(e: Event):
@@ -102,9 +100,8 @@ class HITLController:
         高阶交互：发起 Y/N 确认审批。
         支持超管越权代批。用户拒绝或超时自动抛出异常切断循环。
         """
-        deps = self.context.deps
-        orig_user_id = ContextUtils.extract_user_id(deps)
-        bot = getattr(deps, "bot", None)
+        orig_user_id = self.context.get_user_id()
+        bot = self.context.get_bot()
 
         if not bot:
             raise ToolFatalError("非交互环境无法发起人工审批。")

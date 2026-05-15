@@ -13,11 +13,11 @@ T_RunResult = TypeVar("T_RunResult")
 
 class BaseRuntimeConfig(BaseModel):
     """所有可执行实体（Agent/Team/Workflow）的通用基础运行时配置"""
+
     stateless: bool = Field(default=True)
     """是否使用临时会话，不持久化历史记录"""
     ui_streamer: str | None = Field(default=None)
     """自动绑定的前端UI渲染器标识符（如 'markdown'）"""
-
 
 
 class BaseRunnable(ABC, Generic[T_RunResult]):
@@ -38,12 +38,17 @@ class BaseRunnable(ABC, Generic[T_RunResult]):
     runtime_config: BaseRuntimeConfig
     """运行时配置，如是否无状态、UI输出模式等"""
 
-    @abstractmethod
     def bind(self, **kwargs: Any) -> Any:
         """DI 注入语法糖：返回 Depends，自动绑定当前上下文"""
-        pass
+        from nonebot.params import Depends
 
-    @abstractmethod
+        from zhenxun.services.ai.flow.agent.bridge import AgentRunner
+
+        async def _dependency() -> AgentRunner[Any]:
+            return AgentRunner[Any](self, **kwargs)
+
+        return Depends(_dependency)
+
     async def reply(
         self,
         prompt: Any = None,
@@ -53,14 +58,19 @@ class BaseRunnable(ABC, Generic[T_RunResult]):
         **kwargs: Any,
     ) -> T_RunResult:
         """交互执行语法糖，自动渲染流式进度并最终将结果回复给终端用户"""
-        pass
+        from zhenxun.services.ai.flow.agent.bridge import AgentRunner
 
-    @abstractmethod
+        runner = AgentRunner(self, context=context, **kwargs)
+        return cast(T_RunResult, await runner.reply(prompt=prompt, reply_to=reply_to))
+
     async def run(
         self, prompt: Any = None, *, context: Any = None, **kwargs: Any
     ) -> T_RunResult:
-        """阻塞式核心运行入口，等待整个实体执行完毕并返回最终结果"""
-        pass
+        """阻塞式核心运行入口，默认通过 run_stream 消费提取结果"""
+        async with self.run_stream(
+            prompt=prompt, context=context, **kwargs
+        ) as stream_result:
+            return cast(T_RunResult, await stream_result.get_run_result())
 
     @abstractmethod
     @contextlib.asynccontextmanager

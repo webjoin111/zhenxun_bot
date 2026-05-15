@@ -135,9 +135,12 @@ class ToolExecutor:
         async def inner_validate(args_inner):
             if isinstance(args_inner, dict) and hasattr(executable, "validate_args"):
                 import inspect
+
                 sig = inspect.signature(executable.validate_args)
                 if "context" in sig.parameters:
-                    return await executable.validate_args(args_inner, context=safe_context)
+                    return await executable.validate_args(
+                        args_inner, context=safe_context
+                    )
                 return await executable.validate_args(args_inner)
             return args_inner
 
@@ -223,12 +226,6 @@ class ToolExecutor:
         call_event = ToolCallStart(tool_name=tool_name, arguments=arguments)
         if event_streamer:
             await event_streamer.send(call_event)
-
-        validated.call.args = (
-            json.dumps(arguments, ensure_ascii=False)
-            if isinstance(arguments, dict)
-            else str(arguments)
-        )
 
         from zhenxun.services.ai.protocols.capabilities import CombinedCapability
         from zhenxun.services.ai.run import set_run_context

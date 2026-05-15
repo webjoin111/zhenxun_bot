@@ -385,36 +385,6 @@ class Agent(
         spec = AgentSpec.model_validate(yaml_data)
         return await cls.from_spec(spec, **kwargs)
 
-    def bind(self, **kwargs: Any) -> Any:
-        """DI 注入语法糖：返回 Depends，自动绑定当前上下文。"""
-        from nonebot.params import Depends
-
-        from zhenxun.services.ai.flow.agent.bridge import AgentRunner
-
-        async def _dependency() -> AgentRunner[OutputDataT]:
-            return AgentRunner[OutputDataT](self, **kwargs)
-
-        return Depends(_dependency)
-
-    async def reply(
-        self, prompt: Any = None, reply_to: bool = False, **kwargs: Any
-    ) -> AgentRunResult[OutputDataT]:
-        """
-        交互执行语法糖，隐式推导上下文，自动渲染流式进度并最终将结果回复给终端用户。
-
-        参数:
-            prompt: 用户输入的消息内容或任务描述。
-            reply_to: 是否将结果作为回复消息发送 (at用户或引用原消息)。
-            kwargs: 传递给底层 AgentRunner 的附加执行参数。
-
-        返回:
-            AgentRunResult[OutputDataT]: 包含最终输出数据、消息历史和用量统计的运行结果对象。
-        """
-        from zhenxun.services.ai.flow.agent.bridge import AgentRunner
-
-        runner = AgentRunner[OutputDataT](self, **kwargs)
-        return await runner.reply(prompt=prompt, reply_to=reply_to)
-
     async def run(
         self,
         prompt: str | Task | None = None,
@@ -433,7 +403,7 @@ class Agent(
         智能体单次运行阻塞核心入口，内部使用上下文管理器静默消费事件流直至执行结束。
 
         参数:
-            prompt: 用户输入的消息内容或标准数据契约任务对象 (Task)。
+            prompt: 用户输入的消息内容 or 标准数据契约任务对象 (Task)。
             deps: 强类型的外部依赖注入对象 (如 Bot, Event)。
             context: 显式传入的会话与运行上下文。
             message_history: 初始化的底层对话历史记录。
@@ -447,27 +417,19 @@ class Agent(
         返回:
             AgentRunResult[OutputDataT]: 包含最终输出数据、消息历史和用量统计的运行结果对象。
         """
-        if context is None:
-            explicit_session_id = kwargs.get("session_id")
-            safe_context = RunContext[AgentDepsT](session_id=explicit_session_id)
-            safe_context.deps = cast(AgentDepsT, deps)
-        else:
-            safe_context = context
-            if deps is not None and safe_context.deps is None:
-                safe_context.deps = cast(AgentDepsT, deps)
-
-        async with self.run_stream(
+        return await super().run(
             prompt=prompt,
-            context=safe_context,
+            deps=deps,
+            context=context,
             message_history=message_history,
             tool_filter=tool_filter,
             config=config,
             working_memory=working_memory,
             long_term_memory=long_term_memory,
             generation_config=generation_config,
-            **kwargs,
-        ) as stream_result:
-            return await stream_result.get_run_result()
+            **kwargs
+        )
+
 
     @contextlib.asynccontextmanager
     async def run_stream(
@@ -495,7 +457,8 @@ class Agent(
         if context is None:
             explicit_session_id = kwargs.get("session_id")
             safe_context = RunContext[AgentDepsT](session_id=explicit_session_id)
-            safe_context.deps = cast(AgentDepsT, deps)
+            if deps is not None:
+                safe_context.deps = cast(AgentDepsT, deps)
         else:
             safe_context = context
             if deps is not None and safe_context.deps is None:
@@ -592,8 +555,8 @@ class Agent(
 
         is_stateless = getattr(self.runtime_config, "stateless", True)
         if not is_stateless and getattr(context, "_is_auto_session_id", False):
-            bot = getattr(context.deps, "bot", None)
-            event = getattr(context.deps, "event", None)
+            bot = context.get_bot()
+            event = context.get_event()
             if bot and event:
                 from zhenxun.services.ai.protocols.memory import generate_session_meta
 

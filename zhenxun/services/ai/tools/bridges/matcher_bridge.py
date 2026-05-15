@@ -336,13 +336,13 @@ class MatcherTool(BaseTool):
     async def execute(
         self, context: RunContext | None = None, **kwargs: Any
     ) -> ToolResult:
-        if not context or not context.deps:
+        if not context:
             return ToolResult(
                 output="缺少 RunContext 依赖，无法执行 Matcher"
             ).as_error()
 
-        bot = getattr(context.deps, "bot", None)
-        event = getattr(context.deps, "event", None)
+        bot = context.get_bot()
+        event = context.get_event()
 
         if not bot or not event:
             return ToolResult(

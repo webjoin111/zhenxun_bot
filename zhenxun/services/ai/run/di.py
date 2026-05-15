@@ -6,8 +6,6 @@ from nonebot.matcher import Matcher
 from nonebot.utils import is_coroutine_callable
 from nonebot_plugin_session import EventSession, extract_session
 
-from zhenxun.services.ai.utils.runtime_utils import ContextUtils
-
 from .context import ProviderFunc, RunContext, _is_run_context_type
 from .hitl import HITLController
 from .ui_controller import UIController
@@ -292,16 +290,12 @@ class DependencyInjector:
 DependencyInjector.register(RunContextResolver())
 DependencyInjector.register(TypeSugarResolver())
 
-Inject.register_provider("user_id", lambda ctx: ContextUtils.extract_user_id(ctx.deps))
-Inject.register_provider(
-    "group_id", lambda ctx: ContextUtils.extract_group_id(ctx.deps)
-)
-Inject.register_provider(
-    "platform", lambda ctx: ContextUtils.extract_platform(ctx.deps)
-)
-Inject.register_provider("bot", lambda ctx: getattr(ctx.deps, "bot", None))
-Inject.register_provider("event", lambda ctx: getattr(ctx.deps, "event", None))
-Inject.register_provider("matcher", lambda ctx: getattr(ctx.deps, "matcher", None))
+Inject.register_provider("user_id", lambda ctx: ctx.get_user_id())
+Inject.register_provider("group_id", lambda ctx: ctx.get_group_id())
+Inject.register_provider("platform", lambda ctx: ctx.get_platform())
+Inject.register_provider("bot", lambda ctx: ctx.get_bot())
+Inject.register_provider("event", lambda ctx: ctx.get_event())
+Inject.register_provider("matcher", lambda ctx: ctx.get_matcher())
 
 Inject.register_provider("hitl", lambda ctx: HITLController(ctx))
 Inject.register_provider("model_name", lambda ctx: ctx.run.current_model)
@@ -325,8 +319,8 @@ Inject.register_provider("blackboard", _resolve_blackboard)
 
 
 def _resolve_session(ctx):
-    bot = getattr(ctx.deps, "bot", None)
-    event = getattr(ctx.deps, "event", None)
+    bot = ctx.get_bot()
+    event = ctx.get_event()
     return extract_session(bot, event) if bot and event else None
 
 

@@ -393,12 +393,10 @@ class MCPToolkit(BaseToolkit, ResourceLifespanMixin):
                     dynamic_headers.update(self.header_provider(context))
                 except Exception as e:
                     logger.warning(f"Header provider failed for {session_id}: {e}")
-            if self.forward_bot_context and context and context.deps:
-                from zhenxun.services.ai.utils.runtime_utils import ContextUtils
-
-                uid = ContextUtils.extract_user_id(context.deps)
-                gid = ContextUtils.extract_group_id(context.deps)
-                plat = ContextUtils.extract_platform(context.deps)
+            if self.forward_bot_context and context:
+                uid = context.get_user_id()
+                gid = context.get_group_id()
+                plat = context.get_platform()
                 if uid:
                     dynamic_headers["X-Zhenxun-User-Id"] = uid
                 if gid:

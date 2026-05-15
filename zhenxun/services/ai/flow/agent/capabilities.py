@@ -12,9 +12,7 @@ from zhenxun.services.ai.core.events.event_types import (
     TaskRunStartEvent,
 )
 from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
-from zhenxun.services.ai.core.messages import LLMResponse
 from zhenxun.services.ai.memory.scope import MemoryScope
-from zhenxun.services.ai.protocols import LLMContext
 from zhenxun.services.ai.protocols.capabilities import AbstractCapability
 from zhenxun.services.ai.run import AgentRunResult, RunContext, Task
 from zhenxun.services.log import logger

@@ -53,36 +53,6 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         self.selector_func = getattr(strategy, "selector_func", None)
 
 
-    def bind(self, **kwargs: Any) -> Any:
-        """DI 注入语法糖"""
-        from nonebot.params import Depends
-
-        from zhenxun.services.ai.flow.agent.bridge import AgentRunner
-
-        async def _dependency() -> AgentRunner[Any]:
-            return AgentRunner[Any](self, **kwargs)
-
-        return Depends(_dependency)
-
-    async def reply(
-        self, prompt: Any = None, reply_to: bool = False, **kwargs: Any
-    ) -> AgentRunResult[Any]:
-        """
-        团队级交互执行语法糖，隐式推导上下文，自动渲染协作进度并最终将团队产出回复给终端用户。
-
-        参数:
-            prompt: 派发给多智能体团队的任务描述。
-            reply_to: 是否将结果作为回复消息发送 (at用户或引用原消息)。
-            kwargs: 传递给底层 AgentRunner 的附加执行参数。
-
-        返回:
-            AgentRunResult[Any]: 包含最终融合输出、消息历史和用量统计的运行结果对象。
-        """
-        from zhenxun.services.ai.flow.agent.bridge import AgentRunner
-
-        runner = AgentRunner[Any](self, **kwargs)
-        return await runner.reply(prompt=prompt, reply_to=reply_to)
-
     async def run(
         self,
         prompt: str | Task | None = None,
@@ -94,15 +64,14 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         团队级运行阻塞核心入口，内部静默分配任务给成员直至汇总结束。
 
         参数:
-            prompt: 派发给多智能体团队的任务描述或契约对象 (Task)。
+            prompt: 派发给多智能体团队的任务描述 or 契约对象 (Task)。
             context: 显式传入的会话与运行上下文。
             kwargs: 透传的其他附加参数。
 
         返回:
             AgentRunResult[Any]: 包含最终融合输出、消息历史和用量统计的运行结果对象。
         """
-        async with self.run_stream(prompt, context=context, **kwargs) as stream_result:
-            return await stream_result.get_run_result()
+        return await super().run(prompt=prompt, context=context, **kwargs)
 
     import contextlib
 

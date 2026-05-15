@@ -15,7 +15,6 @@ from zhenxun.services.ai.tools.models import (
     ToolOptions,
 )
 from zhenxun.services.ai.utils.lifespan import ResourceLifespanMixin
-from zhenxun.services.ai.utils.runtime_utils import ContextUtils
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import dump_json_safely, model_copy, parse_as
 
@@ -471,11 +470,11 @@ class GroupSharedToolkit(BaseToolkit, Generic[StateT]):
         """框架级 Hook：提取群组上下文，隔离装载群聊共享状态"""
         await super().enter_session(session_id, context)
 
-        group_id = ContextUtils.extract_group_id(context.deps)
+        group_id = context.get_group_id()
         if group_id:
             state_key = f"group_{group_id}"
         else:
-            user_id = ContextUtils.extract_user_id(context.deps)
+            user_id = context.get_user_id()
             state_key = f"user_{user_id}" if user_id else session_id
 
         self._session_to_state_key[session_id] = state_key
@@ -507,7 +506,7 @@ class UserPersonalToolkit(GroupSharedToolkit[StateT]):
     async def enter_session(self, session_id: str, context: RunContext) -> None:
         await BaseToolkit.enter_session(self, session_id, context)
 
-        user_id = ContextUtils.extract_user_id(context.deps)
+        user_id = context.get_user_id()
         state_key = f"user_{user_id}" if user_id else session_id
 
         self._session_to_state_key[session_id] = state_key

@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from zhenxun.services.ai.core.templates import PromptTemplate
 from zhenxun.utils.pydantic_compat import model_dump
+from zhenxun.services.ai.utils.runtime_utils import ContextUtils
 
 AgentDepsT = TypeVar("AgentDepsT", default=Any)
 ProviderFunc = Callable[["RunContext"], Any | Awaitable[Any]]
@@ -171,6 +172,40 @@ class RunContext(Generic[AgentDepsT]):
     )
     """标记 session_id 是否为框架隐式生成的。"""
 
+    def get_bot(self) -> Bot | None:
+        """强类型安全地提取 Bot 实例"""
+        if not self.deps:
+            return None
+        bot = getattr(self.deps, "bot", None)
+        return bot if isinstance(bot, Bot) else None
+
+    def get_event(self) -> Event | None:
+        """强类型安全地提取 Event 实例"""
+        if not self.deps:
+            return None
+        event = getattr(self.deps, "event", None)
+        return event if isinstance(event, Event) else None
+
+    def get_matcher(self) -> Matcher | None:
+        """强类型安全地提取 Matcher 实例"""
+        if not self.deps:
+            return None
+        matcher = getattr(self.deps, "matcher", None)
+        return matcher if isinstance(matcher, Matcher) else None
+
+    def get_user_id(self) -> str | None:
+        """安全提取当前触发任务的用户 ID"""
+        return ContextUtils.extract_user_id(self.deps)
+
+    def get_group_id(self) -> str | None:
+        """安全提取当前触发任务的群组 ID（私聊则为 None）"""
+        return ContextUtils.extract_group_id(self.deps)
+
+    def get_platform(self) -> str:
+        """安全提取当前连接的适配器平台标识"""
+        return ContextUtils.extract_platform(self.deps)
+
+
     def __post_init__(self):
         if self.deps is None:
             self.deps = cast(AgentDepsT, NoneBotDeps.get_current())
@@ -180,18 +215,17 @@ class RunContext(Generic[AgentDepsT]):
                 MemoryIsolationLevel,
                 generate_session_meta,
             )
-            from zhenxun.services.ai.utils.runtime_utils import ContextUtils
 
-            bot = getattr(self.deps, "bot", None)
-            event = getattr(self.deps, "event", None)
+            bot = self.get_bot()
+            event = self.get_event()
 
             if bot and event:
                 meta = generate_session_meta(bot, event, isolation_level=MemoryIsolationLevel.GROUP_USER)
                 self.session_id = meta.session_id
                 self._is_auto_session_id = True
             else:
-                uid = ContextUtils.extract_user_id(self.deps)
-                gid = ContextUtils.extract_group_id(self.deps)
+                uid = self.get_user_id()
+                gid = self.get_group_id()
                 if uid and gid:
                     self.session_id = f"auto_{gid}_{uid}"
                     self._is_auto_session_id = True

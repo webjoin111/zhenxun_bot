@@ -116,8 +116,8 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
         from zhenxun.utils.message import MessageUtils
 
         ctx = RunContext()
-        bot = getattr(ctx.deps, "bot", None)
-        event = getattr(ctx.deps, "event", None)
+        bot = ctx.get_bot()
+        event = ctx.get_event()
 
         res = await self.run(prompt=prompt, context=ctx, **kwargs)
 

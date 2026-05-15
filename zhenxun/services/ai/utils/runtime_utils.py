@@ -60,7 +60,10 @@ def wrap_to_async(func: Callable) -> Callable:
 
 
 class ContextUtils:
-    """从强类型依赖 (deps) 中提取运行环境信息的通用工具类"""
+    """
+    从底层依赖容器 (deps) 中提取运行环境信息的纯静态工具类。
+
+    """
 
     @staticmethod
     def extract_user_id(deps: Any) -> str | None:
@@ -73,7 +76,11 @@ class ContextUtils:
             try:
                 return str(event.get_user_id())
             except Exception:
-                return str(getattr(event, "user_id", "")) or None
+                return (
+                    str(getattr(event, "user_id", ""))
+                    or str(getattr(event, "sender_id", ""))
+                    or None
+                )
         return None
 
     @staticmethod

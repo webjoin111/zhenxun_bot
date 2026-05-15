@@ -31,7 +31,6 @@ from zhenxun.services.ai.protocols.capabilities import (
 from zhenxun.services.ai.protocols.middleware import LLMContext
 from zhenxun.services.ai.run import AgentRunResult, RunContext
 from zhenxun.services.ai.tools.models import ToolResult
-from zhenxun.services.ai.utils.runtime_utils import ContextUtils
 from zhenxun.services.cache.runtime_cache import LevelUserMemoryCache
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import GoldHandle
@@ -142,7 +141,7 @@ class RequireAuthCapability(AbstractCapability):
         handler: WrapToolExecuteHandler,
     ) -> Any:
         tool = context.call.current_tool
-        user_id = ContextUtils.extract_user_id(context.deps)
+        user_id = context.get_user_id()
 
         settings = getattr(tool, "settings", None)
         auth_provider = (
@@ -158,16 +157,10 @@ class RequireAuthCapability(AbstractCapability):
                 return await handler(current_kwargs)
             except NeedsAuthException as e:
                 provider = e.provider
-                bot = getattr(context.deps, "bot", None)
-                event = getattr(context.deps, "event", None)
+                bot = context.get_bot()
+                event = context.get_event()
 
-                if (
-                    not bot
-                    or not event
-                    or not user_id
-                    or not isinstance(bot, Bot)
-                    or not isinstance(event, Event)
-                ):
+                if not bot or not event or not user_id:
                     logger.warning(
                         f"由于缺少 {provider} 凭证，工具执行被拦截（非交互环境）。"
                     )
@@ -224,18 +217,12 @@ class PermissionCapability(AbstractCapability):
         tool = context.call.current_tool
         admin_level = getattr(tool, "metadata", {}).get("admin_level", 0)
         if admin_level > 0:
-            user_id = ContextUtils.extract_user_id(context.deps)
-            group_id = ContextUtils.extract_group_id(context.deps)
+            user_id = context.get_user_id()
+            group_id = context.get_group_id()
 
-            bot = getattr(context.deps, "bot", None)
-            event = getattr(context.deps, "event", None)
-            if (
-                bot
-                and event
-                and isinstance(bot, Bot)
-                and isinstance(event, Event)
-                and await SUPERUSER(bot, event)
-            ):
+            bot = context.get_bot()
+            event = context.get_event()
+            if bot and event and await SUPERUSER(bot, event):
                 return arguments
 
             if user_id:
@@ -279,8 +266,8 @@ class BillingCapability(AbstractCapability):
             settings.metadata.get("cost_gold", 0) if settings else 0
         ) or getattr(tool, "metadata", {}).get("cost_gold", 0)
         if cost_gold > 0:
-            user_id = ContextUtils.extract_user_id(context.deps)
-            platform = ContextUtils.extract_platform(context.deps)
+            user_id = context.get_user_id()
+            platform = context.get_platform()
             if user_id:
                 try:
                     await UserConsole.reduce_gold(
