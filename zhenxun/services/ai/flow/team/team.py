@@ -3,10 +3,8 @@ from typing import Any, cast
 
 from pydantic import BaseModel
 
-from zhenxun.services.ai.flow.agent.models import AgentRuntimeConfig
 from zhenxun.services.ai.flow.base import BaseRunnable
-from zhenxun.services.ai.flow.team.models import TeamMode
-from zhenxun.services.ai.flow.team.router import BaseRouter
+from zhenxun.services.ai.flow.team.models import TeamRuntimeConfig
 from zhenxun.services.ai.flow.team.strategy import (
     BaseTeamStrategy,
 )
@@ -23,100 +21,37 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         self,
         name: str,
         members: list[BaseRunnable[Any]],
+        strategy: BaseTeamStrategy,
         description: str | None = None,
         persona: Any | None = None,
-        mode: str | TeamMode | BaseTeamStrategy = TeamMode.COORDINATE,
-        leader_model: str | None = None,
-        leader_tools: list[Any] | None = None,
-        blackboard_schema: type[BaseModel] | None = None,
-        initial_blackboard_state: BaseModel | None = None,
-        custom_prompt: str | None = None,
-        state_flow: dict[str, list[str | Any]] | Callable | None = None,
-        selector_func: Callable[..., str | None | Awaitable[str | None]] | None = None,
-        router: "BaseRouter | None" = None,
-        runtime_config: AgentRuntimeConfig | dict | None = None,
+        runtime_config: TeamRuntimeConfig | dict | None = None,
     ):
+        """
+        多智能体协作团队初始化。
+
+        参数:
+            name: 团队的名称标识。
+            members: 团队成员列表，可以包含 Agent、Workflow 或其他 Team。
+            strategy: 团队协作策略实例。
+            description: 团队的职能描述，用于上层节点路由。
+            persona: 团队的整体人设或宏观设定。
+            runtime_config: 团队级别的运行时宏观配置。
+        """
         self.name = name
-        self.mode = mode
         self.members = members
+        self.strategy = strategy
         self.description = (
             description
             or f"一个名为 {self.name} 的协作团队，包含 {len(self.members)} 个处理节点。"
         )
         self.persona = persona
 
-        if leader_model is None and members:
-            for m in members:
-                m_model = getattr(m, "model_name", None) or getattr(
-                    m, "leader_model", None
-                )
-                if m_model:
-                    leader_model = m_model
-                    break
-
-        self.leader_model = leader_model
-        self.leader_tools = leader_tools or []
-
         if isinstance(runtime_config, dict):
-            runtime_config = AgentRuntimeConfig(**runtime_config)
-        self.runtime_config = runtime_config or AgentRuntimeConfig(
-            stateless=True, enable_hitl=False
-        )
+            runtime_config = TeamRuntimeConfig(**runtime_config)
+        self.runtime_config = runtime_config or TeamRuntimeConfig(stateless=True)
 
-        if isinstance(state_flow, dict):
-            from zhenxun.services.ai.flow.team.models import Transition
+        self.selector_func = getattr(strategy, "selector_func", None)
 
-            normalized_flow = {}
-            for k, targets in state_flow.items():
-                normalized_targets = []
-                for t in targets:
-                    if isinstance(t, str):
-                        normalized_targets.append(Transition(target=t))
-                    else:
-                        normalized_targets.append(t)
-                normalized_flow[k] = normalized_targets
-            self.state_flow = normalized_flow
-        else:
-            self.state_flow = state_flow
-
-        self.selector_func = selector_func
-
-        if isinstance(mode, BaseTeamStrategy):
-            self.strategy = mode
-        else:
-            mode_str = mode.value if isinstance(mode, TeamMode) else mode.lower()
-            from zhenxun.services.ai.flow.team.registry import TeamStrategyRegistry
-
-            strategy_cls = TeamStrategyRegistry.get(mode_str)
-            if not strategy_cls:
-                raise ValueError(f"未找到指定的 Team 模式: {mode_str}")
-
-            self.strategy = strategy_cls(
-                custom_prompt=custom_prompt,
-                router=router,
-            )
-
-        self.blackboard = None
-        if blackboard_schema is not None:
-            from zhenxun.services.ai.run.blackboard import (
-                BlackboardManager,
-                create_blackboard_tools,
-            )
-
-            self.blackboard = BlackboardManager(
-                schema=blackboard_schema, initial_state=initial_blackboard_state
-            )
-            bb_tools = create_blackboard_tools(self.blackboard)
-
-            if not self.leader_tools:
-                self.leader_tools = []
-            self.leader_tools.extend(bb_tools)
-
-            for member in self.members:
-                m = cast(Any, member)
-                if not getattr(m, "tool_definitions", None):
-                    m.tool_definitions = []
-                m.tool_definitions.extend(bb_tools)
 
     def bind(self, **kwargs: Any) -> Any:
         """DI 注入语法糖"""
@@ -182,8 +117,6 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         if context is None:
             context = RunContext()
 
-        if self.blackboard is not None:
-            context.session.blackboard = self.blackboard
 
         from zhenxun.services.ai.core.stream_events import EventStreamer
         from zhenxun.services.ai.flow.team.runner import TeamRunner

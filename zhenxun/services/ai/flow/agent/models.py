@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from zhenxun.services.ai.flow.base import BaseRuntimeConfig
 from zhenxun.services.ai.protocols.memory import MemoryIsolationLevel
 
 
@@ -39,11 +40,9 @@ class AgentMemoryConfig(BaseModel):
     """触发记忆压缩的对话轮数上限。"""
 
 
-class AgentRuntimeConfig(BaseModel):
+class AgentRuntimeConfig(BaseRuntimeConfig):
     """智能体运行时行为与工作流配置"""
 
-    stateless: bool = Field(default=True)
-    """是否无状态执行。若为 True，将在每次请求时生成独立的临时会话。"""
     isolation_level: MemoryIsolationLevel = Field(
         default=MemoryIsolationLevel.AGENT_USER
     )
@@ -51,9 +50,6 @@ class AgentRuntimeConfig(BaseModel):
 
     enable_hitl: bool = Field(default=True)
     """是否允许智能体主动挂起任务，向用户求助 (Human-in-the-Loop)。"""
-
-    ui_streamer: str | None = Field(default=None)
-    """自动绑定的前端UI渲染器标识符（如 'markdown'）"""
 
 
 class CapabilitySpec(BaseModel):

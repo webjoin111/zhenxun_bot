@@ -7,22 +7,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from zhenxun.services.ai.core.configs import BaseOutputDefinition
 from zhenxun.services.ai.core.messages import LLMMessage
+from zhenxun.services.ai.flow.base import BaseRuntimeConfig
 
 
-class TeamMode(str, Enum):
-    """Team 的多智能体协作模式"""
+class TeamRuntimeConfig(BaseRuntimeConfig):
+    """Team 专属的运行时配置"""
 
-    COORDINATE = "coordinate"
-    """委派协作模式：Leader 主动拆解任务，调用 DelegateTool 将子任务委派给 Member，最终汇总结果返回。"""
-
-    ROUTE = "route"
-    """状态路由模式：Router 评估问题，利用 HandoffTool 将控制流直接转交并物理转移给最匹配的 Member福利。"""
-
-    BROADCAST = "broadcast"
-    """并发广播模式：Leader 将同一问题同时分发给所有 Member 处理，最终整合多方观点。"""
-
-    TASKS = "tasks"
-    """自主任务模式：Leader 在共享黑板上拆解目标为子任务，处理前置依赖，并驱动 Member 执行，直至达成目标。"""
+    leader_enable_hitl: bool = Field(default=False)
+    """是否允许团队的隐式 Leader / Router 发起人机求助 (Human-in-the-Loop)"""
 
 
 class RouteDecision(BaseModel):

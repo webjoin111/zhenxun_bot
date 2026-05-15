@@ -144,15 +144,14 @@ class LLMRouter(BaseRouter):
         from zhenxun.services.ai.core.exceptions import HandoffException
         from zhenxun.services.ai.core.templates import PromptTemplate
         from zhenxun.services.ai.flow.agent.agent import Agent
+        from zhenxun.services.ai.flow.agent.models import AgentRuntimeConfig
         from zhenxun.services.ai.flow.team.capabilities import TeamRoutingCapability
 
-        default_system_prompt = (
-            "## 角色与目标\n"
-            "你是一个高级任务路由器 (所在团队: {{ team_name }})。\n"
-            "请根据用户的输入意图，立刻调用相应的移交工具 (transfer_to_...) "
-            "将对话物理转移给合适的专员处理。\n"
-            "你必须且只能选择移交，不能自己作答。"
-        )
+        default_system_prompt = """## 角色与目标
+你是一个高级任务路由器 (所在团队: {{ team_name }})。
+请根据用户的输入意图，立刻调用相应的移交工具 (transfer_to_...)
+将对话物理转移给合适的专员处理。
+你必须且只能选择移交，不能自己作答。"""
 
         if self.allowed_transitions:
             transitions_desc = "\n## 可用的移交目标及条件：\n"
@@ -170,12 +169,18 @@ class LLMRouter(BaseRouter):
             team_name=self.team_name, members=self.members, state_flow=self.state_flow
         )
 
+        leader_config = AgentRuntimeConfig(
+            stateless=self.runtime_config.stateless if self.runtime_config else True,
+            enable_hitl=getattr(self.runtime_config, "leader_enable_hitl", False),
+            ui_streamer=None
+        )
+
         router_agent = Agent(
             name=f"{self.team_name}_Router",
             instruction=route_prompt,
             model=self.leader_model,
             tools=self.leader_tools,
-            runtime_config=self.runtime_config,
+            runtime_config=leader_config,
         )
 
         sub_context = context.clone_for_member(router_agent.name)

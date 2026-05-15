@@ -19,21 +19,22 @@ class TaskPlanningToolkit(BaseToolkit):
     大模型专用的黑板操作工具。大模型被剥夺了执行权，仅能拆解、指派和总结任务。
     """
 
-    default_instructions = (
-        "<instructions>\n"
-        "## 🛠️ 任务规划工作流指南\n"
-        "你现在的角色是**项目经理 (Planner)**。你的唯一职责是拆解任务、分配人员并监控看板状态，**系统底层会自动拉起专家执行任务**。\n"
-        "1. **规划**：使用 `create_task` 拆解任务，设定 `assignee`（专家名称）和 `depends_on`（依赖的其它任务ID）。\n"
-        "2. **等待与监控**：每次你创建或更新任务后，请立刻停止工具调用，系统引擎会自动并发执行 pending 任务并再次唤醒你。\n"
-        "3. **🩹 智能自愈与重试**：如果你被唤醒后，看到看板上有任务处于 `failed` 状态，请仔细阅读失败结果 (result)。你可以通过 `update_task_status` 将该任务的状态重新修改为 `pending` 以触发重新执行（可以附带修改建议在 result 里），或者创建新任务替代它。\n"
-        "4. **终结**：当你确认所有目标已达成时，调用 `mark_all_complete` 附上最终总结，正式结束整个流水线。\n"
-        "⚠️ 警告：你没有任何执行具体业务代码或查询的工具，你只能操作任务看板！\n"
-        "</instructions>"
-    )
+    default_instructions = """<instructions>
+## 🛠️ 任务规划工作流指南
+你现在的角色是**项目经理 (Planner)**。你的唯一职责是拆解任务、分配人员并监控看板状态，**系统底层会自动拉起专家执行任务**。
+1. **规划**：使用 `create_task` 拆解任务，设定 `assignee`（专家名称）和 `depends_on`（依赖的其它任务ID）。
+2. **等待与监控**：每次你创建或更新任务后，请立刻停止工具调用，系统引擎会自动并发执行 pending 任务并再次唤醒你。
+3. **🩹 智能自愈与重试**：如果你被唤醒后，看到看板上有任务处于 `failed` 状态，
+请仔细阅读失败结果 (result)。你可以通过 `update_task_status` 将该任务的状态重新修改为 `pending`
+以触发重新执行（可以附带修改建议在 result 里），或者创建新任务替代它。
+4. **终结**：当你确认所有目标已达成时，调用 `mark_all_complete` 附上最终总结，正式结束整个流水线。
+⚠️ 警告：你没有任何执行具体业务代码或查询的工具，你只能操作任务看板！
+</instructions>"""  # noqa: E501
 
     def __init__(self, members: list[BaseRunnable], **kwargs):
         super().__init__(**kwargs)
         self.members = members
+        self._background_tasks: set[asyncio.Task] = set()
 
     def _get_board(self, context: RunContext) -> TaskBoardState:
         """从运行上下文中安全的获取或初始化任务看板状态"""
@@ -51,14 +52,20 @@ class TaskPlanningToolkit(BaseToolkit):
         assignee: Annotated[
             str,
             Field(
-                description="负责执行此任务的专家名称，必须完全匹配 <team_members> 中提供的 id，严禁捏造"
+                description=(
+                    "负责执行此任务的专家名称，必须完全匹配 <team_members> "
+                    "中提供的 id，严禁捏造"
+                )
             ),
         ],
         context: RunContext,
         depends_on: Annotated[
             list[str] | None,
             Field(
-                description="该任务依赖的前置任务 ID 列表。如果该任务可独立执行，请留空数组 []",
+                description=(
+                    "该任务依赖的前置任务 ID 列表。如果该任务可独立执行，"
+                    "请留空数组 []"
+                ),
             ),
         ] = None,
         metadata: Annotated[
@@ -73,7 +80,10 @@ class TaskPlanningToolkit(BaseToolkit):
         valid_member_names = [m.name for m in self.members]
         if assignee not in valid_member_names:
             return ToolResult(
-                output=f"❌ 创建失败：未找到名为 '{assignee}' 的专家。可用专家: {valid_member_names}"
+                output=(
+                    f"❌ 创建失败：未找到名为 '{assignee}' 的专家。"
+                    f"可用专家: {valid_member_names}"
+                )
             ).as_error()
 
         task = board.create_task(
@@ -87,7 +97,7 @@ class TaskPlanningToolkit(BaseToolkit):
         from zhenxun.services.ai.core.events import EventCenter
         from zhenxun.services.ai.core.events.event_types import TeamTaskCreatedEvent
 
-        asyncio.create_task(
+        _task = asyncio.create_task(
             EventCenter.publish(
                 TeamTaskCreatedEvent(
                     session_id=context.session_id,
@@ -98,14 +108,22 @@ class TaskPlanningToolkit(BaseToolkit):
                 )
             )
         )
+        self._background_tasks.add(_task)
+        _task.add_done_callback(self._background_tasks.discard)
 
         board_str = board.render_board_to_string()
         return ToolResult(
-            output=f"✅ 任务创建成功！任务 ID: [{task.id}]，状态: {task.status.value}\n\n{board_str}"
+            output=(
+                f"✅ 任务创建成功！任务 ID: [{task.id}]，"
+                f"状态: {task.status.value}\n\n{board_str}"
+            )
         )
 
     @tool(
-        description="手动强制更新任务的状态（仅在特殊情况下使用，因为 execute_task 会自动更新状态）。"
+        description=(
+            "手动强制更新任务的状态（仅在特殊情况下使用，"
+            "因为 execute_task 会自动更新状态）。"
+        )
     )
     async def update_task_status(
         self,
@@ -113,14 +131,18 @@ class TaskPlanningToolkit(BaseToolkit):
         status: Annotated[
             TaskNodeStatus,
             Field(
-                description="新的任务状态，支持: pending(用于重试), completed, failed 等"
+                description=(
+                    "新的任务状态，支持: pending(用于重试), completed, failed 等"
+                )
             ),
         ],
         context: RunContext,
         result: Annotated[
             str,
             Field(
-                description="提供结果、失败原因，或在设为 pending 重试时给执行专家的建议"
+                description=(
+                    "提供结果、失败原因，或在设为 pending 重试时给执行专家的建议"
+                )
             ),
         ] = "",
     ) -> ToolResult:
@@ -135,7 +157,7 @@ class TaskPlanningToolkit(BaseToolkit):
         task_obj = board.get_task(task_id)
         task_title = task_obj.title if task_obj else "Unknown"
 
-        asyncio.create_task(
+        _task = asyncio.create_task(
             EventCenter.publish(
                 TeamTaskUpdatedEvent(
                     session_id=context.session_id,
@@ -147,6 +169,8 @@ class TaskPlanningToolkit(BaseToolkit):
                 )
             )
         )
+        self._background_tasks.add(_task)
+        _task.add_done_callback(self._background_tasks.discard)
 
         board_str = board.render_board_to_string()
         return ToolResult(
@@ -154,7 +178,10 @@ class TaskPlanningToolkit(BaseToolkit):
         )
 
     @tool(
-        description="声明整体目标已完成。在调用此工具后，大模型将被立刻中断并直接将 summary 返回给用户。"
+        description=(
+            "声明整体目标已完成。在调用此工具后，"
+            "大模型将被立刻中断并直接将 summary 返回给用户。"
+        )
     )
     async def mark_all_complete(
         self,

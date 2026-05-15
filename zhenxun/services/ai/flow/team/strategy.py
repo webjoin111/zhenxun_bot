@@ -1,16 +1,18 @@
 from abc import ABC
-from collections.abc import AsyncGenerator
-from typing import Any
+from collections.abc import AsyncGenerator, Callable
+from typing import Any, cast
+
+from pydantic import BaseModel
 
 from zhenxun.services.ai.core.templates import PromptTemplate
 from zhenxun.services.ai.flow.agent.agent import Agent
+from zhenxun.services.ai.flow.agent.models import AgentRuntimeConfig
 from zhenxun.services.ai.flow.team.models import (
     CallAction,
     ConcurrentCallAction,
     FinishAction,
     TeamAction,
 )
-from zhenxun.services.ai.flow.team.registry import team_strategy
 from zhenxun.services.ai.flow.team.router import BaseRouter
 from zhenxun.services.ai.run import RunContext, Task
 from zhenxun.services.ai.tools.bridges.delegate import DelegateTool
@@ -22,9 +24,14 @@ class BaseTeamStrategy(ABC):
 
     default_system_prompt: str = ""
 
-    def __init__(self, custom_prompt: str | None = None, **kwargs):
+    def __init__(self, custom_prompt: str | None = None):
+        """
+        多智能体团队协作策略基类初始化。
+
+        参数:
+            custom_prompt: 自定义系统提示词，用于覆盖默认的团队系统提示词模板。
+        """
         self.custom_prompt = custom_prompt
-        self.kwargs = kwargs
 
     def get_prompt(self, **kwargs) -> str:
         template = self.custom_prompt or self.default_system_prompt
@@ -47,19 +54,70 @@ class BaseTeamStrategy(ABC):
             result="The Strategy has not implemented generate_plan() yet."
         )
 
+    def _build_leader_agent(self, team: Any, name: str, instruction: str, tools: list[Any]) -> Agent:
+        """
+        统一的团队 Leader / Planner 装配工厂。
+        自动处理无状态配置以及 HITL 状态继承。
+        """
+        leader_config = AgentRuntimeConfig(
+            stateless=team.runtime_config.stateless if team.runtime_config else True,
+            enable_hitl=getattr(team.runtime_config, "leader_enable_hitl", False),
+            ui_streamer=None,
+        )
+        return Agent(
+            name=name,
+            instruction=instruction,
+            model=getattr(self, "leader_model", None),
+            tools=tools,
+            runtime_config=leader_config,
+        )
 
-@team_strategy("route", namespace="builtin")
+
+
 class RouteStrategy(BaseTeamStrategy):
     """路由策略：基于挂载的 Router 进行最合适的专家分发"""
 
     def __init__(
         self,
+        state_flow: dict[str, list[str | Any]] | Callable | None = None,
+        selector_func: Callable[..., str | None] | None = None,
         router: BaseRouter | None = None,
+        leader_model: str | None = None,
+        leader_tools: list[Any] | None = None,
         custom_prompt: str | None = None,
-        **kwargs,
     ):
-        super().__init__(custom_prompt=custom_prompt, **kwargs)
+        """
+        路由策略初始化，基于挂载的 Router 进行最合适的专家分发。
+
+        参数:
+            state_flow: 状态流转规则字典或动态函数，定义成员之间控制流的物理走向。
+            selector_func: 极速硬路由的静态选择函数，返回目标智能体名称。
+            router: 自定义的动态路由器实例 (如 LLMRouter, RegexRouter 等)。
+            leader_model: 路由节点 (Leader) 使用的大模型名称，若为空则默认继承全局。
+            leader_tools: 挂载给路由节点 (Leader) 的专属工具列表。
+            custom_prompt: 自定义系统提示词，用于覆盖默认的路由系统提示词。
+        """
+        super().__init__(custom_prompt=custom_prompt)
+        self.selector_func = selector_func
         self.router = router
+        self.leader_model = leader_model
+        self.leader_tools = leader_tools or []
+
+        if isinstance(state_flow, dict):
+            from zhenxun.services.ai.flow.team.models import Transition
+
+            normalized_flow = {}
+            for k, targets in state_flow.items():
+                normalized_targets = []
+                for t in targets:
+                    if isinstance(t, str):
+                        normalized_targets.append(Transition(target=t))
+                    else:
+                        normalized_targets.append(t)
+                normalized_flow[k] = normalized_targets
+            self.state_flow = normalized_flow
+        else:
+            self.state_flow = state_flow
 
     async def generate_plan(
         self, team: Any, prompt: str | Task | None, context: RunContext, **kwargs
@@ -69,16 +127,15 @@ class RouteStrategy(BaseTeamStrategy):
             from .router import ChainRouter, FunctionRouter, LLMRouter
 
             routers = []
-            selector_func = getattr(team, "selector_func", None)
-            if selector_func:
-                routers.append(FunctionRouter(selector_func))
+            if self.selector_func:
+                routers.append(FunctionRouter(self.selector_func))
             routers.append(
                 LLMRouter(
                     team_name=team.name,
                     members=team.members,
-                    leader_model=getattr(team, "leader_model", None),
-                    leader_tools=getattr(team, "leader_tools", []),
-                    state_flow=getattr(team, "state_flow", None),
+                    leader_model=self.leader_model,
+                    leader_tools=self.leader_tools,
+                    state_flow=self.state_flow,
                     runtime_config=getattr(team, "runtime_config", None),
                     custom_prompt=self.custom_prompt,
                 )
@@ -117,7 +174,11 @@ class RouteStrategy(BaseTeamStrategy):
                     f"已达到最大限制 {max_cycles} 次。"
                 )
                 raise AbortException(
-                    reason=f"Team '{team.name}' 路由流转超过最大次数限制 ({max_cycles}次)，已强制熔断。",
+                    reason=(
+                        f"Team '{team.name}' 路由流转超过最大次数限制"
+                        f" ({max_cycles}次)，"
+                        "已强制熔断。"
+                    ),
                     display="🚨 团队协作陷入死循环，已被系统强制中断。",
                 )
 
@@ -164,9 +225,8 @@ class RouteStrategy(BaseTeamStrategy):
                 continue
 
             fast_routed = False
-            state_flow = getattr(team, "state_flow", None)
-            if isinstance(state_flow, dict) and current_target in state_flow:
-                for t in state_flow[current_target]:
+            if isinstance(self.state_flow, dict) and current_target in self.state_flow:
+                for t in self.state_flow[current_target]:
                     if getattr(t, "trigger_regex", None):
                         import re
 
@@ -207,16 +267,31 @@ class RouteStrategy(BaseTeamStrategy):
             break
 
 
-@team_strategy("coordinate", namespace="builtin")
 class CoordinateStrategy(BaseTeamStrategy):
     """协作策略：Leader 自主规划，委派任务给 Sub-Agents 并汇总结果"""
 
-    default_system_prompt = (
-        "## 角色与目标\n"
-        "你是一个多智能体团队的协调者（Leader）。\n"
-        "你可以使用你自身携带的工具先查阅、收集资料；也可以分析用户的目标将其拆解为子任务，并委派给合适的下属专员。\n"
-        "当你收集齐所有需要的信息或专员报告后，请汇总生成最终回复向用户汇报。"
-    )
+    default_system_prompt = """## 角色与目标
+你是一个多智能体团队的协调者（Leader）。
+你可以使用你自身携带的工具先查阅、收集资料；也可以分析用户的目标将其拆解为子任务，并委派给合适的下属专员。
+当你收集齐所有需要的信息或专员报告后，请汇总生成最终回复向用户汇报。"""
+
+    def __init__(
+        self,
+        leader_model: str | None = None,
+        leader_tools: list[Any] | None = None,
+        custom_prompt: str | None = None,
+    ):
+        """
+        协作策略初始化，Leader 主动拆解任务，委派给 Sub-Agents 并汇总结果。
+
+        参数:
+            leader_model: 协调节点 (Leader) 使用的大模型名称，若为空则默认继承全局。
+            leader_tools: 挂载给协调节点 (Leader) 的专属工具列表。
+            custom_prompt: 自定义系统提示词，用于覆盖默认的协调系统提示词。
+        """
+        super().__init__(custom_prompt=custom_prompt)
+        self.leader_model = leader_model
+        self.leader_tools = leader_tools or []
 
     async def generate_plan(
         self, team: Any, prompt: str | Task | None, context: RunContext, **kwargs
@@ -236,16 +311,16 @@ class CoordinateStrategy(BaseTeamStrategy):
                 )
             )
 
-        leader_tools = getattr(team, "leader_tools", []).copy()
+        leader_tools = self.leader_tools.copy()
         leader_tools.extend(delegation_tools)
 
-        leader_agent = Agent(
+        leader_agent = self._build_leader_agent(
+            team=team,
             name=f"{team.name}_Leader",
             instruction=self.get_prompt(),
-            model=team.leader_model,
-            tools=leader_tools,
-            runtime_config=team.runtime_config,
+            tools=leader_tools
         )
+
 
         session_id = context.session_id or "default_team_session"
         from zhenxun.services.ai.core.events import EventCenter
@@ -272,15 +347,30 @@ class CoordinateStrategy(BaseTeamStrategy):
         yield FinishAction(result=leader_res.output)
 
 
-@team_strategy("broadcast", namespace="builtin")
 class BroadcastStrategy(BaseTeamStrategy):
     """广播策略：并发让所有成员处理同一个任务，最后由 Leader 总结"""
 
-    default_system_prompt = (
-        "## 角色与目标\n"
-        "你是一个多智能体团队的总结者（Leader）。\n"
-        "以下是各位专家的独立处理结果，请融合各方观点，取长补短，给出一份最终的总结报告。"
-    )
+    default_system_prompt = """## 角色与目标
+你是一个多智能体团队的总结者（Leader）。
+以下是各位专家的独立处理结果，请融合各方观点，取长补短，给出一份最终的总结报告。"""
+
+    def __init__(
+        self,
+        leader_model: str | None = None,
+        leader_tools: list[Any] | None = None,
+        custom_prompt: str | None = None,
+    ):
+        """
+        广播策略初始化，并发让所有成员处理同一个任务，最后由 Leader 总结。
+
+        参数:
+            leader_model: 总结节点 (Leader) 使用的大模型名称，若为空则默认继承全局。
+            leader_tools: 挂载给总结节点 (Leader) 的专属工具列表。
+            custom_prompt: 自定义系统提示词，用于覆盖默认的广播总结系统提示词。
+        """
+        super().__init__(custom_prompt=custom_prompt)
+        self.leader_model = leader_model
+        self.leader_tools = leader_tools or []
 
     async def generate_plan(
         self, team: Any, prompt: str | Task | None, context: RunContext, **kwargs
@@ -331,32 +421,72 @@ class BroadcastStrategy(BaseTeamStrategy):
             f"{summary_text}"
         )
 
-        leader_agent = Agent(
+        leader_agent = self._build_leader_agent(
+            team=team,
             name=f"{team.name}_Leader",
-            instruction=self.get_prompt(),
-            model=team.leader_model,
-            tools=getattr(team, "leader_tools", []),
-            runtime_config=team.runtime_config,
+            instruction=synthesize_prompt,
+            tools=self.leader_tools
         )
+
 
         leader_res = yield CallAction(agent=leader_agent, task=synthesize_prompt)
 
         yield FinishAction(result=leader_res.output)
 
 
-@team_strategy("tasks", namespace="builtin")
 class TaskStrategy(BaseTeamStrategy):
     """任务规划策略：Leader 利用工具箱在黑板上拆解任务、管理依赖并驱动 Member 执行"""
 
-    default_system_prompt = (
-        "<how_to_respond>\n"
-        "你是一个多智能体团队的项目经理（Planner）。\n"
-        "请仔细阅读用户的请求，将其拆解为一个个具体的子任务，并利用 `create_task` 建立所有任务和依赖关系（注意 `assignee` 必须严格从下方的团队成员中选择）。\n"
-        "【⚠️核心执行流规范】\n"
-        "1. 分配完毕后，**必须立刻停止调用任何工具，并直接输出纯文本回复**（如：'任务已分配，等待执行'），从而结束你的当前回合。\n"
-        "2. 当底层自动执行完毕后，系统会再次唤醒你并提供最新的看板结果。请根据结果决定是下发新任务、要求重做，还是调用 `mark_all_complete` 汇报总结。\n"
-        "</how_to_respond>"
-    )
+    default_system_prompt = """<how_to_respond>
+你是一个多智能体团队的项目经理（Planner）。
+请仔细阅读用户的请求，将其拆解为一个个具体的子任务，
+并利用 `create_task` 建立所有任务和依赖关系（注意 `assignee` 必须严格从下方的团队成员中选择）。
+【⚠️核心执行流规范】
+1. 分配完毕后，**必须立刻停止调用任何工具，并直接输出纯文本回复**
+（如：'任务已分配，等待执行'），从而结束你的当前回合。
+2. 当底层自动执行完毕后，系统会再次唤醒你并提供最新的看板结果。
+请根据结果决定是下发新任务、要求重做，还是调用 `mark_all_complete` 汇报总结。
+</how_to_respond>"""  # noqa: E501
+
+    def __init__(
+        self,
+        leader_model: str | None = None,
+        leader_tools: list[Any] | None = None,
+        max_iterations: int = 15,
+        blackboard_schema: type[BaseModel] | None = None,
+        initial_blackboard_state: BaseModel | None = None,
+        custom_prompt: str | None = None,
+    ):
+        """
+        任务规划策略初始化，Leader 利用工具箱在黑板上拆解任务、管理依赖并
+        驱动 Member 执行。
+
+        参数:
+            leader_model: 规划节点 (Leader) 使用的大模型名称，若为空则默认继承全局。
+            leader_tools: 挂载给规划节点 (Leader) 的专属附加工具列表。
+            max_iterations: 引擎驱动的状态机最大迭代/循环次数，防止死循环。
+            blackboard_schema: 团队共享黑板的数据结构类型 (Pydantic Model 类)。
+            initial_blackboard_state: 共享黑板的初始数据状态实例。
+            custom_prompt: 自定义系统提示词，用于覆盖默认的规划系统提示词。
+        """
+        super().__init__(custom_prompt=custom_prompt)
+        self.leader_model = leader_model
+        self.leader_tools = leader_tools or []
+        self.max_iterations = max_iterations
+
+        self.blackboard = None
+        self.bb_tools = []
+        if blackboard_schema is not None:
+            from zhenxun.services.ai.run.blackboard import (
+                BlackboardManager,
+                create_blackboard_tools,
+            )
+
+            self.blackboard = BlackboardManager(
+                schema=blackboard_schema, initial_state=initial_blackboard_state
+            )
+            self.bb_tools = create_blackboard_tools(self.blackboard)
+            self.leader_tools.extend(self.bb_tools)
 
     async def generate_plan(
         self, team: Any, prompt: str | Task | None, context: RunContext, **kwargs
@@ -366,13 +496,26 @@ class TaskStrategy(BaseTeamStrategy):
         from zhenxun.services.ai.flow.team.models import TaskBoardState, TaskNodeStatus
         from zhenxun.services.ai.flow.team.task_tools import TaskPlanningToolkit
 
+        if self.blackboard is not None:
+            context.session.blackboard = self.blackboard
+
+        if self.bb_tools:
+            for m in team.members:
+                if not getattr(m, "tool_definitions", None):
+                    m.tool_definitions = []
+                for t in self.bb_tools:
+                    if t not in m.tool_definitions:
+                        m.tool_definitions.append(t)
+
         member_infos = []
         for m in team.members:
             desc = getattr(m, "description", "")
             if getattr(m, "persona", None):
                 desc = f"角色：{m.persona.role}，目标：{m.persona.goal}"
             member_infos.append(
-                f'<member id="{m.name}" name="{m.name}">\n  Description: {desc}\n</member>'
+                f'<member id="{m.name}" name="{m.name}">\n'
+                f'  Description: {desc}\n'
+                f'</member>'
             )
 
         members_xml = "<team_members>\n" + "\n".join(member_infos) + "\n</team_members>"
@@ -381,26 +524,28 @@ class TaskStrategy(BaseTeamStrategy):
 
         task_toolkit = TaskPlanningToolkit(members=team.members)
 
-        leader_tools = getattr(team, "leader_tools", []).copy()
+        leader_tools = self.leader_tools.copy()
         leader_tools.append(task_toolkit)
 
-        leader_agent = Agent(
+        leader_agent = self._build_leader_agent(
+            team=team,
             name=f"{team.name}_Planner",
             instruction=final_instruction,
-            model=team.leader_model,
-            tools=leader_tools,
-            runtime_config=team.runtime_config,
+            tools=leader_tools
         )
+
 
         logger.info(
             f"📋 [TaskStrategy] '{team.name}' 正在启动 Engine-Driven 状态机循环..."
         )
 
         if "__task_board__" not in context.session.shared_state:
-            context.session.shared_state["__task_board__"] = TaskBoardState()
-        board: TaskBoardState = context.session.shared_state["__task_board__"]
+            context.session.shared_state["__task_board__"] = (
+                self.blackboard._state if self.blackboard else TaskBoardState()
+            )
+        board = cast(TaskBoardState, context.session.shared_state["__task_board__"])
 
-        max_iterations = getattr(team, "max_iterations", 15)
+        max_iterations = self.max_iterations
         planner_prompt = prompt
 
         for iteration in range(max_iterations):
@@ -413,11 +558,12 @@ class TaskStrategy(BaseTeamStrategy):
             if not available_tasks:
                 if iteration > 0:
                     board_str = board.render_board_to_string()
-                    planner_prompt = (
-                        f"### 📋 当前看板最新状态\n{board_str}\n\n"
-                        "**系统指令**：底层执行引擎的回合已结束。当前没有可立即执行的 pending 任务。\n"
-                        "请检查是否有 failed 的任务需要修复重新指派？或者如果所有任务均已 completed，请立刻调用 `mark_all_complete` 汇报结果。"
-                    )
+                    planner_prompt = f"""### 📋 当前看板最新状态
+{board_str}
+
+**系统指令**：底层执行引擎的回合已结束。当前没有可立即执行的 pending 任务。
+请检查是否有 failed 的任务需要修复重新指派？或者如果所有任务均已 completed，
+请立刻调用 `mark_all_complete` 汇报结果。"""
 
                 logger.info(f"🧠 [TaskStrategy] 唤醒 Planner (Iter: {iteration})")
                 leader_res = yield CallAction(agent=leader_agent, task=planner_prompt)
@@ -468,7 +614,8 @@ class TaskStrategy(BaseTeamStrategy):
                         dep_task = board.get_task(dep_id)
                         if dep_task and dep_task.result:
                             dep_results.append(
-                                f"【前置任务 [{dep_task.title}] 的产出】:\n{dep_task.result}"
+                                f"【前置任务 [{dep_task.title}] 的产出】:\n"
+                                f"{dep_task.result}"
                             )
                     if dep_results:
                         task_prompt += (

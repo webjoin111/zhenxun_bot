@@ -1,5 +1,5 @@
 from collections.abc import AsyncIterator
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 import uuid
 
 if TYPE_CHECKING:
@@ -11,7 +11,7 @@ from zhenxun.services.ai.core.events.event_types import (
     WorkflowErrorEvent,
     WorkflowStartedEvent,
 )
-from zhenxun.services.ai.flow.base import BaseRunnable
+from zhenxun.services.ai.flow.base import BaseRunnable, BaseRuntimeConfig
 from zhenxun.services.ai.flow.workflow.nodes import Steps
 from zhenxun.services.ai.flow.workflow.types import (
     StepInput,
@@ -30,12 +30,20 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
     """
 
     def __init__(self, name: str, steps: list[Any], description: str = ""):
+        """
+        静态图元工作流容器初始化。
+
+        参数:
+            name: 工作流的名称标识。
+            steps: 工作流的节点列表（按列表顺序构成串行或嵌套结构）。
+            description: 工作流的说明描述，用于被 Agent 调用时理解其功能。
+        """
         self.name = name
         self.description = description
         self.id = uuid.uuid4().hex
 
         self.root_steps = Steps(steps=steps, name=f"{self.name}_Root")
-        self.runtime_config = None  # 满足 BaseRunnable 接口
+        self.runtime_config = BaseRuntimeConfig(stateless=True)
         self.persona = None
 
     def _build_result(
@@ -180,20 +188,22 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
             raise e
 
     import contextlib
+
     @contextlib.asynccontextmanager
     async def run_stream(
         self, prompt: Any = None, *, context: RunContext | None = None, **kwargs: Any
     ) -> AsyncIterator["StreamedRunResult[Any]"]:
         """对齐 BaseRunnable 接口的流式上下文管理器"""
+        import asyncio
+
         from zhenxun.services.ai.core.stream_events import EventStreamer
         from zhenxun.services.ai.run import StreamedRunResult
         from zhenxun.services.ai.run.models import AgentRunError
-        import asyncio
-        
+
         streamer = EventStreamer()
         if context:
             context.run.streamer = streamer
-            
+
         async def _execution_task():
             try:
                 async for event in self._internal_stream(prompt, context, **kwargs):
@@ -209,7 +219,7 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
         finally:
             if not task.done():
                 task.cancel()
-                
+
     async def _internal_stream(
         self, prompt: Any = None, context: RunContext | None = None, **kwargs: Any
     ) -> AsyncIterator[Any]:
@@ -245,14 +255,19 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
                 )
                 await EventCenter.publish(comp_event)
                 yield comp_event
-                
-                # 转换为标准 AgentRunEnd 以兼容 AgentRunner
+
+                from zhenxun.services.ai.core.messages import UsageInfo
                 from zhenxun.services.ai.run import AgentRunResult
                 from zhenxun.services.ai.run.models import AgentRunEnd
-                from zhenxun.services.ai.core.messages import UsageInfo
-                
-                wf_result = self._build_result(initial_input, safe_context, final_output)
-                agent_res = AgentRunResult(output=wf_result.last_step_content, structured_data=wf_result, usage=UsageInfo())
+
+                wf_result = self._build_result(
+                    initial_input, safe_context, final_output
+                )
+                agent_res = AgentRunResult(
+                    output=wf_result.last_step_content,
+                    structured_data=wf_result,
+                    usage=UsageInfo(),
+                )
                 yield AgentRunEnd(result=agent_res)
         except Exception as e:
             logger.error(f"Workflow '{self.name}' 流式执行崩溃: {e}", e=e)

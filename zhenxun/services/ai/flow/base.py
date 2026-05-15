@@ -3,10 +3,21 @@ from collections.abc import AsyncIterator
 import contextlib
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
+from pydantic import BaseModel, Field
+
 if TYPE_CHECKING:
     from zhenxun.services.ai.run.models import StreamedRunResult
 
 T_RunResult = TypeVar("T_RunResult")
+
+
+class BaseRuntimeConfig(BaseModel):
+    """所有可执行实体（Agent/Team/Workflow）的通用基础运行时配置"""
+    stateless: bool = Field(default=True)
+    """是否使用临时会话，不持久化历史记录"""
+    ui_streamer: str | None = Field(default=None)
+    """自动绑定的前端UI渲染器标识符（如 'markdown'）"""
+
 
 
 class BaseRunnable(ABC, Generic[T_RunResult]):
@@ -24,7 +35,7 @@ class BaseRunnable(ABC, Generic[T_RunResult]):
     persona: Any | None = None
     """(可选) 实体的角色设定 (Persona)。包含 role 和 goal，在多智能体路由移交时优先级最高"""
 
-    runtime_config: Any
+    runtime_config: BaseRuntimeConfig
     """运行时配置，如是否无状态、UI输出模式等"""
 
     @abstractmethod
