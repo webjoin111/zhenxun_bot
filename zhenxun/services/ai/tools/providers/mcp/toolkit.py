@@ -18,7 +18,7 @@ from nonebot_plugin_alconna import UniMessage
 from pydantic import ValidationError
 
 from zhenxun.services.ai.run import RunContext
-from zhenxun.services.ai.sandbox.extension import BaseMcpProxyPlugin
+from zhenxun.services.ai.sandbox.extension import BaseMcpProxyExtension
 from zhenxun.services.ai.sandbox.models import SandboxSecurityProfile
 from zhenxun.services.ai.tools.core.tool import BaseTool
 from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
@@ -509,9 +509,9 @@ class MCPToolkit(BaseToolkit, ResourceLifespanMixin):
 
                             plugin_name = "universal_mcp"
 
-                            await driver.mount_plugin(plugin_name)
+                            await driver.mount_extension(plugin_name)
                             mcp_plugin = cast(
-                                BaseMcpProxyPlugin, driver.get_plugin(plugin_name)
+                                BaseMcpProxyExtension, driver.get_extension(plugin_name)
                             )
 
                             if not self.command:

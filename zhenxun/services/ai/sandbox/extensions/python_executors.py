@@ -10,7 +10,7 @@ from zhenxun.services.ai.core.events.event_types import (
     SandboxExecutionStartedEvent,
 )
 from zhenxun.services.ai.sandbox.extension import (
-    BaseSandboxPlugin,
+    BaseSandboxExtension,
     SupportsCommandExecution,
     SupportsFileSystem,
     SupportsPortMapping,
@@ -19,11 +19,11 @@ from zhenxun.services.ai.sandbox.models import SandboxExecutionResult
 from zhenxun.services.ai.sandbox.utils import JupyterKernelClient
 
 
-class UniversalPythonPlugin(BaseSandboxPlugin):
-    """大一统 Python 执行插件，根据底层驱动能力自动路由"""
+class UniversalPythonExtension(BaseSandboxExtension):
+    """大一统 Python 执行扩展，根据底层驱动能力自动路由集"""
 
     @property
-    def plugin_name(self) -> str:
+    def extension_name(self) -> str:
         return "universal_python"
 
     @property

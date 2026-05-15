@@ -46,8 +46,8 @@ class SandboxToolkit(BaseToolkit):
     def __init__(self, profile: SandboxSecurityProfile | None = None, **kwargs: Any):
         super().__init__(**kwargs)
         self.profile = profile or SandboxSecurityProfile()
-        if "universal_python" not in self.profile.required_plugins:
-            self.profile.required_plugins.append("universal_python")
+        if "universal_python" not in self.profile.required_extensions:
+            self.profile.required_extensions.append("universal_python")
         self._executors = {}
         self._interactive_sessions = {}
 
@@ -117,7 +117,7 @@ class SandboxToolkit(BaseToolkit):
             "basic_python",
         ]:
             try:
-                plugin = executor.get_plugin(p_name)
+                plugin = executor.get_extension(p_name)
                 python_plugin = cast(PythonPluginProtocol, plugin)
                 break
             except RuntimeError:

@@ -1,4 +1,3 @@
-import ast
 import asyncio
 from pathlib import Path
 import sys
@@ -6,7 +5,6 @@ import uuid
 
 import aiohttp
 
-from zhenxun.services.ai.sandbox.models import SandboxRequirements, SandboxTier
 from zhenxun.services.log import logger
 
 STDLIB_MODULES = getattr(
@@ -58,6 +56,7 @@ PACKAGE_ALIAS_MAP = {
     "Crypto": "pycryptodome",
     "jwt": "pyjwt",
 }
+
 
 def parse_shebang(script_path: str | Path) -> str | None:
     path = Path(script_path)
@@ -258,4 +257,3 @@ class JupyterKernelClient:
         if self.ws and not self.ws.closed:
             await self.ws.close()
             self.ws = None
-

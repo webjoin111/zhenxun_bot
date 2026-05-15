@@ -124,11 +124,11 @@ class _SandboxManager(ResourceLifespanMixin):
         ):
             profile.enable_network = True
 
-        plugins_to_mount = set()
-        if profile and profile.required_plugins:
-            plugins_to_mount.update(profile.required_plugins)
-        if requirements and requirements.required_plugins:
-            plugins_to_mount.update(requirements.required_plugins)
+        extensions_to_mount = set()
+        if profile and profile.required_extensions:
+            extensions_to_mount.update(profile.required_extensions)
+        if requirements and requirements.required_extensions:
+            extensions_to_mount.update(requirements.required_extensions)
 
         self.touch(session_id)
         self._ensure_watchdog()
@@ -155,8 +155,8 @@ class _SandboxManager(ResourceLifespanMixin):
                     or requirements.env_setup.install_scripts
                 ):
                     await driver.install_dependencies(requirements)
-                for p in plugins_to_mount:
-                    await driver.mount_plugin(p)
+                for p in extensions_to_mount:
+                    await driver.mount_extension(p)
                 return driver
 
         logger.info(
@@ -177,8 +177,8 @@ class _SandboxManager(ResourceLifespanMixin):
         ):
             await driver.install_dependencies(requirements)
 
-        for p in plugins_to_mount:
-            await driver.mount_plugin(p)
+        for p in extensions_to_mount:
+            await driver.mount_extension(p)
 
         self._active_sandboxes[session_id] = driver
 

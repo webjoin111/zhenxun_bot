@@ -409,7 +409,12 @@ class DockerDriver(
         )
 
         os_server_path = Path(__file__).parent / "agent_os.py"
-        os_server_code = os_server_path.read_text(encoding="utf-8")
+        ipc_models_path = Path(__file__).parent / "ipc_models.py"
+
+        base_os_code = os_server_path.read_text(encoding="utf-8")
+        ipc_models_code = ipc_models_path.read_text(encoding="utf-8")
+
+        os_server_code = f"{ipc_models_code}\n\n{base_os_code}"
         os_server_b64 = base64.b64encode(os_server_code.encode("utf-8")).decode("utf-8")
 
         container_config = {

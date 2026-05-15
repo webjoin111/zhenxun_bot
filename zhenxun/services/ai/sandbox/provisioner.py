@@ -6,7 +6,6 @@ from zhenxun.services.log import logger
 
 if TYPE_CHECKING:
     from zhenxun.services.ai.sandbox.drivers.base import BaseSandboxDriver
-    from zhenxun.services.ai.sandbox.models import EnvSetupConfig
 
 
 class BaseProvisioner(ABC):
@@ -66,14 +65,16 @@ class UnifiedManifestProvisioner(BaseProvisioner):
 
     async def install(self, driver: "BaseSandboxDriver", payload: Any) -> bool:
         from zhenxun.services.ai.sandbox.models import EnvSetupConfig
+
         env_setup = cast(EnvSetupConfig, payload)
         cmd_driver = cast(SupportsCommandExecution, driver)
 
-        # 0. 检查环境 Hash 缓存，实现极速跳过
         target_hash = env_setup.calculate_hash()
         hash_check = await cmd_driver.execute_raw_command("cat /workspace/.zx_env_hash")
         if hash_check.exit_code == 0 and hash_check.stdout.strip() == target_hash:
-            logger.info(f"[Sandbox] ⚡ 环境指纹 ({target_hash[:8]}) 匹配成功，跳过所有依赖安装环节！")
+            logger.info(
+                f"[Sandbox] ⚡ 环境指纹 ({target_hash[:8]}) 匹配成功，跳过所有依赖安装环节！"
+            )
             return True
 
         if env_setup.system_packages:
@@ -126,8 +127,9 @@ class UnifiedManifestProvisioner(BaseProvisioner):
                 logger.info(f"[Sandbox] 正在执行自定义装配脚本: {script}")
                 await cmd_driver.execute_raw_command(script, timeout=300)
 
-        # 5. 写入最新环境指纹
-        await cmd_driver.execute_raw_command(f"echo '{target_hash}' > /workspace/.zx_env_hash")
+        await cmd_driver.execute_raw_command(
+            f"echo '{target_hash}' > /workspace/.zx_env_hash"
+        )
         logger.debug(f"[Sandbox] 环境装配完毕，已写入指纹快照: {target_hash[:8]}")
 
         return True
@@ -154,13 +156,16 @@ class UnifiedManifestProvisioner(BaseProvisioner):
                 await cmd_driver.execute_raw_command(
                     "pip install -q -r requirements.txt", cwd=workspace_dir, timeout=300
                 )
-        
-        # 统一接管原 NpmProvisioner 的工作区逻辑
-        check_npm = await cmd_driver.execute_raw_command(f"test -f {workspace_dir}/package.json")
+
+        check_npm = await cmd_driver.execute_raw_command(
+            f"test -f {workspace_dir}/package.json"
+        )
         if check_npm.exit_code == 0:
-            logger.info(f"[UnifiedProvisioner] 发现 package.json，正在安装 npm 依赖...")
+            logger.info("[UnifiedProvisioner] 发现 package.json，正在安装 npm 依赖...")
             await cmd_driver.execute_raw_command(
-                "npm install --no-fund --no-audit --loglevel=error", cwd=workspace_dir, timeout=300
+                "npm install --no-fund --no-audit --loglevel=error",
+                cwd=workspace_dir,
+                timeout=300,
             )
         return True
 

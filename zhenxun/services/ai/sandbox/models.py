@@ -47,8 +47,8 @@ class SandboxRequirements(BaseModel):
     """最低需求层级"""
     env_setup: EnvSetupConfig = Field(default_factory=EnvSetupConfig)
     """沙箱环境装配配置"""
-    required_plugins: list[str] = Field(default_factory=list)
-    """需要自动挂载的插件列表"""
+    required_extensions: list[str] = Field(default_factory=list)
+    """需要自动挂载的扩展列表"""
 
     def merge(self, other: "SandboxRequirements") -> "SandboxRequirements":
         """合并另一个依赖需求对象"""
@@ -60,7 +60,7 @@ class SandboxRequirements(BaseModel):
         self.env_setup.bins = list(dict.fromkeys(self.env_setup.bins + other.env_setup.bins))
         self.env_setup.install_scripts.extend(other.env_setup.install_scripts)
 
-        self.required_plugins = list(set(self.required_plugins + other.required_plugins))
+        self.required_extensions = list(set(self.required_extensions + other.required_extensions))
 
         tier_order = {
             SandboxTier.LIGHTWEIGHT: 1,
@@ -114,6 +114,6 @@ class SandboxSecurityProfile(BaseModel):
         default=False,
         description="是否强制需要全功能 PTY 交互终端 (将禁用高级 Jupyter 绘图特性)",
     )
-    required_plugins: list[str] = Field(
-        default_factory=list, description="强制挂载的插件列表"
+    required_extensions: list[str] = Field(
+        default_factory=list, description="强制挂载的扩展列表"
     )

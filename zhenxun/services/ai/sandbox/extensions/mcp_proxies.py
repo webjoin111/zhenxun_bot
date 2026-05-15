@@ -1,4 +1,3 @@
-import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 import json
@@ -8,10 +7,9 @@ import anyio
 from anyio import create_memory_object_stream, create_task_group
 from mcp.shared.message import SessionMessage
 from mcp.types import JSONRPCMessage
-import websockets
 
 from zhenxun.services.ai.sandbox.extension import (
-    BaseMcpProxyPlugin,
+    BaseMcpProxyExtension,
     SupportsCommandExecution,
     SupportsPortMapping,
 )
@@ -19,9 +17,9 @@ from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_dump_json, model_validate
 
 
-class UniversalMcpPlugin(BaseMcpProxyPlugin):
+class UniversalMcpExtension(BaseMcpProxyExtension):
     @property
-    def plugin_name(self) -> str:
+    def extension_name(self) -> str:
         return "universal_mcp"
 
     @asynccontextmanager
@@ -41,9 +39,10 @@ class UniversalMcpPlugin(BaseMcpProxyPlugin):
         self, command: str, args: list[str], env: dict[str, str] | None = None
     ):
         from zhenxun.services.ai.sandbox.drivers.docker import DockerDriver
+
         driver = cast(DockerDriver, self.channel)
         logger.info(
-            f"[UniversalMcpPlugin] 正在 Docker 沙箱内启动 MCP 服务器: {command} {' '.join(args)}"
+            f"[UniversalMcpExtension] 正在 Docker 沙箱内启动 MCP 服务器: {command} {' '.join(args)}"
         )
 
         payload = {"command": command, "args": args, "env": env or {}}

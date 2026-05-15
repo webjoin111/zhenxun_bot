@@ -66,23 +66,23 @@ class SandboxChannel(ABC):
     def get_meta(self, key: str, default: Any = None) -> Any: ...
 
 
-class BaseSandboxPlugin(ABC):
+class BaseSandboxExtension(ABC):
     def __init__(self, channel: SandboxChannel):
         self.channel = channel
 
     @property
     @abstractmethod
-    def plugin_name(self) -> str:
+    def extension_name(self) -> str:
         pass
 
     async def on_mount(self) -> None:
-        logger.debug(f"[SandboxPlugin] 插件 '{self.plugin_name}' 已挂载。")
+        logger.debug(f"[SandboxExtension] 扩展 '{self.extension_name}' 已挂载。")
 
     async def on_unmount(self) -> None:
-        logger.debug(f"[SandboxPlugin] 插件 '{self.plugin_name}' 已卸载。")
+        logger.debug(f"[SandboxExtension] 扩展 '{self.extension_name}' 已卸载。")
 
 
-class BaseMcpProxyPlugin(BaseSandboxPlugin):
+class BaseMcpProxyExtension(BaseSandboxExtension):
     @abstractmethod
     @asynccontextmanager
     async def connect_mcp(
@@ -97,7 +97,7 @@ class BaseMcpProxyPlugin(BaseSandboxPlugin):
 class SandboxRegistry:
     _drivers: dict[str, type["BaseSandboxDriver"]] = {}
     _providers: dict[str, "BaseSandboxProvider"] = {}
-    _plugins: dict[str, type[BaseSandboxPlugin]] = {}
+    _extensions: dict[str, type[BaseSandboxExtension]] = {}
 
     @classmethod
     def register(cls, name: str, driver_cls: type["BaseSandboxDriver"]) -> None:
@@ -129,15 +129,15 @@ class SandboxRegistry:
         return cls._providers.copy()
 
     @classmethod
-    def register_plugin(cls, plugin_cls: type[BaseSandboxPlugin]) -> None:
-        if isinstance(plugin_cls.plugin_name, property) and plugin_cls.plugin_name.fget:
-            name = plugin_cls.plugin_name.fget(None)
+    def register_extension(cls, extension_cls: type[BaseSandboxExtension]) -> None:
+        if isinstance(extension_cls.extension_name, property) and extension_cls.extension_name.fget:
+            name = extension_cls.extension_name.fget(None)
         else:
-            name = getattr(plugin_cls, "plugin_name", str(plugin_cls))
-        cls._plugins[name] = plugin_cls
-        logger.debug(f"[SandboxRegistry] 成功注册沙箱插件: {name}")
+            name = getattr(extension_cls, "extension_name", str(extension_cls))
+        cls._extensions[name] = extension_cls
+        logger.debug(f"[SandboxRegistry] 成功注册沙箱扩展: {name}")
 
     @classmethod
-    def get_plugin_cls(cls, name: str) -> type[BaseSandboxPlugin] | None:
-        return cls._plugins.get(name)
+    def get_extension_cls(cls, name: str) -> type[BaseSandboxExtension] | None:
+        return cls._extensions.get(name)
 

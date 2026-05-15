@@ -1,13 +1,12 @@
-from .models import SandboxExecutionResult
-
-from . import plugins, providers
+from . import extensions, providers  # noqa: F401
 from .drivers.base import BaseSandboxDriver
-from .extension import BaseSandboxPlugin, SandboxChannel, SandboxRegistry
+from .extension import BaseSandboxExtension, SandboxChannel, SandboxRegistry
 from .manager import register_sandbox_configs, sandbox_manager
+from .models import SandboxExecutionResult
 
 __all__ = [
     "BaseSandboxDriver",
-    "BaseSandboxPlugin",
+    "BaseSandboxExtension",
     "SandboxChannel",
     "SandboxExecutionResult",
     "SandboxRegistry",

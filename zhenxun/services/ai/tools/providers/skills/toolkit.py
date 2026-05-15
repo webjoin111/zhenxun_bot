@@ -53,7 +53,7 @@ class SkillSandboxExecutionMixin:
         )
         profile = SandboxSecurityProfile(
             enable_network=skill.frontmatter.enable_network,
-            required_plugins=["universal_python"],
+            required_extensions=["universal_python"],
         )
 
         from zhenxun.services.ai.sandbox.models import SandboxRequirements
@@ -188,7 +188,7 @@ class SkillSandboxExecutionMixin:
         )
         profile = SandboxSecurityProfile(
             enable_network=skill.frontmatter.enable_network,
-            required_plugins=["universal_python"],
+            required_extensions=["universal_python"],
         )
 
         from zhenxun.services.ai.sandbox.models import SandboxRequirements
@@ -542,7 +542,7 @@ class SkillMetaToolkit(BaseToolkit, SkillSandboxExecutionMixin):
         )
         profile = SandboxSecurityProfile(
             enable_network=skill.frontmatter.enable_network,
-            required_plugins=["universal_python"],
+            required_extensions=["universal_python"],
         )
         try:
             executor = await sandbox_manager.get_or_create_session(

@@ -10,16 +10,15 @@ import aiofiles
 from zhenxun.configs.config import Config
 from zhenxun.configs.path_config import DATA_PATH
 from zhenxun.services.ai.sandbox.models import (
-    SandboxExecutionResult,
     SandboxSecurityProfile,
 )
 from zhenxun.services.log import logger
 
-from .base import BaseSandboxDriver
 from ..extension import SupportsFileSystem
+from .base import BaseSandboxDriver
 
 try:
-    import wasmtime
+    import wasmtime  # type: ignore
 
     WASMTIME_AVAILABLE = True
 except ImportError:
@@ -73,6 +72,51 @@ class WasmtimeCoreEngine:
         return await asyncio.to_thread(cls._run_code_sync, code, fuel, workspace_dir)
 
     @classmethod
+    def _create_wasm_env(
+        cls,
+        wasm_path: Path,
+        fuel: int,
+        argv: list[str],
+        stdout_path: str,
+        stderr_path: str,
+        stdin_path: str | None = None,
+        workspace_dir: str | None = None,
+    ) -> tuple[Any, Any]:
+        """提取 Wasmtime 引擎初始化的公共样板代码"""
+        wt: Any = wasmtime
+        config = wt.Config()
+        config.consume_fuel = True
+        config.cache = True
+
+        engine = wt.Engine(config)
+        store = wt.Store(engine)
+
+        if hasattr(store, "set_fuel"):
+            store.set_fuel(fuel)
+        elif hasattr(store, "add_fuel"):
+            store.add_fuel(fuel)
+
+        wasi = wt.WasiConfig()
+        wasi.argv = argv
+        if stdin_path:
+            wasi.stdin_file = stdin_path
+        wasi.stdout_file = stdout_path
+        wasi.stderr_file = stderr_path
+
+        if workspace_dir and Path(workspace_dir).exists():
+            wasi.preopen_dir(workspace_dir, "/workspace")
+
+        store.set_wasi(wasi)
+        linker = wt.Linker(engine)
+        linker.define_wasi()
+
+        module = wt.Module.from_file(engine, str(wasm_path))
+        instance = linker.instantiate(store, module)
+        start_func = instance.exports(store).get("_start")
+
+        return store, start_func
+
+    @classmethod
     def _run_wasm_plugin_sync(
         cls, wasm_path: Path, stdin_data: str, args: list[str], fuel: int
     ) -> dict[str, Any]:
@@ -85,8 +129,6 @@ class WasmtimeCoreEngine:
                 "stderr": f"找不到插件文件: {wasm_path}",
             }
 
-        wt: Any = wasmtime
-
         stdin_fd, stdin_path = tempfile.mkstemp(suffix=".in")
         with open(stdin_fd, "w", encoding="utf-8") as f:
             f.write(stdin_data)
@@ -98,30 +140,14 @@ class WasmtimeCoreEngine:
 
         exit_code = 0
         try:
-            config = wt.Config()
-            config.consume_fuel = True
-            config.cache = True
-
-            engine = wt.Engine(config)
-            store = wt.Store(engine)
-
-            if hasattr(store, "set_fuel"):
-                store.set_fuel(fuel)
-            elif hasattr(store, "add_fuel"):
-                store.add_fuel(fuel)
-
-            wasi = wt.WasiConfig()
-            wasi.argv = [wasm_path.name] + args
-            wasi.stdin_file = stdin_path
-            wasi.stdout_file = stdout_path
-            wasi.stderr_file = stderr_path
-            store.set_wasi(wasi)
-
-            linker = wt.Linker(engine)
-            linker.define_wasi()
-            module = wt.Module.from_file(engine, str(wasm_path))
-            instance = linker.instantiate(store, module)
-            start_func = instance.exports(store).get("_start")
+            store, start_func = cls._create_wasm_env(
+                wasm_path=wasm_path,
+                fuel=fuel,
+                argv=[wasm_path.name] + args,
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+                stdin_path=stdin_path,
+            )
             start_func(store)
 
         except Exception as e:
@@ -165,34 +191,14 @@ class WasmtimeCoreEngine:
 
         exit_code = 0
         try:
-            config = wt.Config()
-            config.consume_fuel = True
-            config.cache = True
-
-            engine = wt.Engine(config)
-            store = wt.Store(engine)
-
-            if hasattr(store, "set_fuel"):
-                store.set_fuel(fuel)
-            elif hasattr(store, "add_fuel"):
-                store.add_fuel(fuel)
-
-            wasi = wt.WasiConfig()
-            wasi.argv = ["python", "-c", code]
-            wasi.stdout_file = stdout_path
-            wasi.stderr_file = stderr_path
-
-            if workspace_dir and Path(workspace_dir).exists():
-                wasi.preopen_dir(workspace_dir, "/workspace")
-
-            store.set_wasi(wasi)
-
-            linker = wt.Linker(engine)
-            linker.define_wasi()
-
-            module = wt.Module.from_file(engine, str(wasm_path))
-            instance = linker.instantiate(store, module)
-            start_func = instance.exports(store).get("_start")
+            store, start_func = cls._create_wasm_env(
+                wasm_path=wasm_path,
+                fuel=fuel,
+                argv=["python", "-c", code],
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+                workspace_dir=workspace_dir,
+            )
 
             start_func(store)
 
@@ -287,4 +293,3 @@ class WasmDriver(BaseSandboxDriver, SupportsFileSystem):
     async def close(self) -> None:
         shutil.rmtree(self.workspace, ignore_errors=True)
         logger.info(f"[WasmDriver] 极速沙箱已销毁回收 (Session: {self.session_id})")
-

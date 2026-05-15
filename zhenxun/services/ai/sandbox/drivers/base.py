@@ -3,14 +3,13 @@ import time
 from typing import Any
 
 from zhenxun.services.ai.sandbox.extension import (
-    BaseSandboxPlugin,
+    BaseSandboxExtension,
     SandboxChannel,
 )
 from zhenxun.services.ai.sandbox.models import (
     SandboxRequirements,
     SandboxSecurityProfile,
 )
-from zhenxun.services.log import logger
 
 
 class BaseSandboxDriver(SandboxChannel):
@@ -21,7 +20,7 @@ class BaseSandboxDriver(SandboxChannel):
         self.last_active_time: float = time.time()
         self.loaded_skills: set[str] = set()
         self.installed_packages: set[str] = set()
-        self._plugins: dict[str, BaseSandboxPlugin] = {}
+        self._extensions: dict[str, BaseSandboxExtension] = {}
         self._meta: dict[str, Any] = {}
 
     @property
@@ -34,24 +33,24 @@ class BaseSandboxDriver(SandboxChannel):
         """【Channel 协议】获取底层驱动的元数据（如映射端口、Base_URL等）"""
         return self._meta.get(key, default)
 
-    async def mount_plugin(self, plugin_name: str) -> None:
-        """动态挂载一个高级能力插件到当前通道"""
+    async def mount_extension(self, extension_name: str) -> None:
+        """动态挂载一个高级能力扩展到当前通道"""
         from zhenxun.services.ai.sandbox.extension import SandboxRegistry
 
-        if plugin_name in self._plugins:
+        if extension_name in self._extensions:
             return
-        plugin_cls = SandboxRegistry.get_plugin_cls(plugin_name)
-        if not plugin_cls:
-            raise ValueError(f"Plugin '{plugin_name}' 未在 SandboxRegistry 注册。")
-        plugin_instance = plugin_cls(self)
-        await plugin_instance.on_mount()
-        self._plugins[plugin_name] = plugin_instance
+        extension_cls = SandboxRegistry.get_extension_cls(extension_name)
+        if not extension_cls:
+            raise ValueError(f"Extension '{extension_name}' 未在 SandboxRegistry 注册。")
+        extension_instance = extension_cls(self)
+        await extension_instance.on_mount()
+        self._extensions[extension_name] = extension_instance
 
-    def get_plugin(self, plugin_name: str) -> BaseSandboxPlugin:
-        """获取已挂载的高级能力插件"""
-        if plugin_name not in self._plugins:
-            raise RuntimeError(f"Plugin '{plugin_name}' 尚未被挂载到此沙箱环境。")
-        return self._plugins[plugin_name]
+    def get_extension(self, extension_name: str) -> BaseSandboxExtension:
+        """获取已挂载的高级能力扩展"""
+        if extension_name not in self._extensions:
+            raise RuntimeError(f"Extension '{extension_name}' 尚未被挂载到此沙箱环境。")
+        return self._extensions[extension_name]
 
     def touch(self) -> None:
         """更新最后活跃时间，防止被 GC 清理"""
@@ -71,12 +70,10 @@ class BaseSandboxDriver(SandboxChannel):
         self.touch()
         success = True
 
-        # 采用统一清单装配器接管所有的依赖安装
         provisioner = ProvisionerRegistry.get("unified_manifest")
         if provisioner:
             res = await provisioner.install(self, requirements.env_setup)
             if res:
-                # 标记安装完成，避免重复调用。具体的深层缓存交由第三阶段解决
                 self.installed_packages.add("unified_env_installed")
             else:
                 success = False
@@ -94,4 +91,3 @@ class BaseSandboxDriver(SandboxChannel):
     async def close(self) -> None:
         """异步清理并销毁沙箱环境"""
         pass
-
