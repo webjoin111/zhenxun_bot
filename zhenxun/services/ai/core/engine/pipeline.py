@@ -1,24 +1,22 @@
 from typing import Any
 
 from zhenxun.services.ai.config import get_llm_config
+from zhenxun.services.ai.core.engine.token_estimator import global_estimator
 from zhenxun.services.ai.core.messages import (
     LLMMessage,
     TextPart,
 )
-from zhenxun.services.ai.core.engine.token_estimator import global_estimator
 from zhenxun.services.ai.llm.capabilities import get_model_capabilities
-from zhenxun.services.ai.memory.scope import MemoryScope
-from zhenxun.services.ai.memory.working_memory import (
+from zhenxun.services.ai.memory.compression import (
     CondenserPipeline,
     CondenserRegistry,
     MessageDropper,
     ToolOutputCompactor,
 )
-from zhenxun.services.ai.protocols.memory import (
+from zhenxun.services.ai.memory.interfaces import (
     BaseMemoryReducer,
-    BaseWorkingMemory,
-    SessionMetadata,
 )
+from zhenxun.services.ai.memory.models import SessionMetadata
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_copy
 
@@ -33,23 +31,21 @@ class DialoguePipeline:
         self,
         model_name: str,
         session_metadata: SessionMetadata,
-        working_memory: BaseWorkingMemory | None = None,
-        long_term_memory: MemoryScope | None = None,
-        memory_reducers: list[str | BaseMemoryReducer] | None = None,
-        context_threshold: float | None = None,
-        max_history_turns: int | None = None,
+        memory_facade: Any,
     ):
         self.model_name = model_name
         self.session_metadata = session_metadata
-        self.working_memory = working_memory
-        self.long_term_memory = long_term_memory
-        self.context_threshold = context_threshold
-        self.max_history_turns = max_history_turns
+        self.memory_facade = memory_facade
+
+        self.working_memory = memory_facade.working_memory
+        self.long_term_memory = memory_facade.long_term_memory
+        self.context_threshold = memory_facade.context_threshold
+        self.max_history_turns = memory_facade.max_history_turns
 
         self.custom_reducers: list[BaseMemoryReducer] | None = None
-        if memory_reducers is not None:
+        if memory_facade.memory_reducers is not None:
             self.custom_reducers = []
-            for r in memory_reducers:
+            for r in memory_facade.memory_reducers:
                 if isinstance(r, str):
                     self.custom_reducers.append(CondenserRegistry.get(r))
                 else:
@@ -194,7 +190,9 @@ class DialoguePipeline:
         if self.long_term_memory and normalized_user_msg:
             content_for_recall = normalized_user_msg.extract_text
 
-            matches = await self.long_term_memory.recall(content_for_recall)
+            matches = await self.long_term_memory.recall(
+                content_for_recall, inner_scope=self.session_metadata.scope_prefix
+            )
             if matches:
                 fact_str = "\n".join(
                     f"- {m.record.content} (相关性: {m.score:.2f})" for m in matches

@@ -1,6 +1,6 @@
 from typing import Any
 
-from zhenxun.services.ai.memory.scope import MemoryScope
+from zhenxun.services.ai.memory.long_term_memory import MemoryScope
 from zhenxun.services.ai.run import Inject, RunContext
 from zhenxun.services.ai.tools.core.decorators import silent, tool
 from zhenxun.services.ai.tools.core.toolkit import BaseToolkit

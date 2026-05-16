@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from zhenxun.services.ai.core.exceptions import ConcurrencyRejectException
 from zhenxun.services.ai.flow.base import ConcurrencyPolicy
 from zhenxun.services.ai.memory.working_memory import _get_default_memory
-from zhenxun.services.ai.protocols.memory import SessionMetadata
+from zhenxun.services.ai.memory.models import SessionMetadata
 from zhenxun.services.ai.run.models import CancellationToken
 
 

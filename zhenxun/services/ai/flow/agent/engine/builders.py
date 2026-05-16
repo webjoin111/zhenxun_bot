@@ -9,8 +9,8 @@ from zhenxun.services.ai.core.engine.pipeline import DialoguePipeline
 from zhenxun.services.ai.core.messages import LLMMessage
 from zhenxun.services.ai.core.templates import PromptTemplate
 from zhenxun.services.ai.flow.agent.models import Persona
+from zhenxun.services.ai.memory.interfaces import SessionMetadata
 from zhenxun.services.ai.protocols.capabilities import CombinedCapability
-from zhenxun.services.ai.protocols.memory import BaseWorkingMemory, SessionMetadata
 from zhenxun.services.ai.run import DependencyInjector, RunContext, TemplateStr
 from zhenxun.services.ai.tools.engine.registry import (
     ToolCollection,
@@ -105,8 +105,7 @@ class ContextBuilder:
         base_system_prompt: str,
         injected_prompts: list[str],
         session_metadata: SessionMetadata,
-        working_memory: BaseWorkingMemory,
-        memory_config: Any,
+        memory_facade: Any,
     ) -> list[LLMMessage]:
         """融合记忆与工具说明，通过对话管线(DialoguePipeline)生成最终的消息数组"""
         system_prompt = base_system_prompt
@@ -118,11 +117,7 @@ class ContextBuilder:
         pipeline = DialoguePipeline(
             model_name=model_name,
             session_metadata=session_metadata,
-            working_memory=working_memory,
-            long_term_memory=None,
-            memory_reducers=memory_config.memory_reducers,
-            context_threshold=memory_config.context_threshold,
-            max_history_turns=memory_config.max_history_turns,
+            memory_facade=memory_facade,
         )
         return await pipeline.build_messages(
             user_input=final_prompt_text,

@@ -7,7 +7,6 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from zhenxun.services.ai.flow.base import BaseRuntimeConfig
-from zhenxun.services.ai.protocols.memory import MemoryIsolationLevel
 
 
 class Persona(BaseModel):
@@ -25,28 +24,8 @@ class Persona(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
-class AgentMemoryConfig(BaseModel):
-    """智能体记忆与上下文压缩配置"""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    memory_reducers: list[str | Any] | None = Field(default=None)
-    """记忆压缩策略列表。支持字符串标识或自定义 Reducer 实例。"""
-
-    context_threshold: float | None = Field(default=None)
-    """触发记忆压缩的 Token 阈值。<=1.0 为比例，>1.0 为绝对 Token 数。"""
-
-    max_history_turns: int | None = Field(default=None)
-    """触发记忆压缩的对话轮数上限。"""
-
-
 class AgentRuntimeConfig(BaseRuntimeConfig):
     """智能体运行时行为与工作流配置"""
-
-    isolation_level: MemoryIsolationLevel = Field(
-        default=MemoryIsolationLevel.AGENT_USER
-    )
-    """记忆隔离级别。默认为最高级别的智能体私有隔离。"""
 
     enable_hitl: bool = Field(default=True)
     """是否允许智能体主动挂起任务，向用户求助 (Human-in-the-Loop)。"""

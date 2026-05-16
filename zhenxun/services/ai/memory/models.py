@@ -3,51 +3,189 @@
 """
 
 import time
+from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from nonebot.adapters import Bot, Event
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class MemoryIsolationLevel(str, Enum):
+    """记忆上下文的隔离级别"""
+
+    GLOBAL = "global"
+    """全局共享：所有用户、所有群聊、所有插件看同一个记忆（极少使用）"""
+    GROUP_SHARED = "group_shared"
+    """群组共享：单群内所有人共享，跨群不共享 ( /p_xx/g_xx )"""
+    USER_GLOBAL = "user_global"
+    """用户全局：单用户跨群、跨插件共享 ( /p_xx/u_xx )"""
+    GROUP_USER = "group_user"
+    """群组用户：单群内的单用户共享 ( /p_xx/g_xx/u_xx )"""
+    PLUGIN_USER = "plugin_user"
+    """插件级用户隔离：该插件内所有 Agent 共享该用户的记忆 ( /p_xx/g_xx/u_xx/ns_xx )"""
+    AGENT_USER = "agent_user"
+    """Agent级用户隔离：最高级别隔离，各 Agent 间绝对物理隔离 ( /p_xx/g_xx/u_xx/ns_xx/ag_xx )"""
+
+
+class SessionMetadata(BaseModel):
+    """结构化会话元数据"""
+
+    session_id: str = Field(...)
+    """核心会话标识符。"""
+    platform: str | None = Field(default=None)
+    """平台标识。"""
+    group_id: str | None = Field(default=None)
+    """群组/频道 ID。"""
+    user_id: str | None = Field(default=None)
+    """用户 ID。"""
+    namespace: str | None = Field(default=None)
+    """插件/命名空间标识。"""
+    agent_name: str | None = Field(default=None)
+    """具体智能体标识。"""
+    isolation_level: MemoryIsolationLevel | None = Field(default=None)
+    """生成此会话时的隔离级别。"""
+    scope_prefix: str = Field(default="/")
+    """基于隔离级别生成的路径作用域，用于长期记忆 (RAG) 的向量检索前缀过滤。"""
+
+    def __str__(self) -> str:
+        return self.session_id
+
+
+def generate_session_meta(
+    bot: Bot,
+    event: Event,
+    isolation_level: MemoryIsolationLevel = MemoryIsolationLevel.AGENT_USER,
+    prefix: str = "",
+    namespace: str | None = None,
+    agent_name: str | None = None,
+) -> SessionMetadata:
+    """根据事件和隔离级别，自动提取生成基于路径作用域 (Scope Path) 的 SessionMetadata"""
+    from nonebot_plugin_session import extract_session
+
+    session = extract_session(bot, event)
+    platform = session.platform
+    user_id = session.id1
+    group_id = session.id2 or session.id3
+
+    parts = []
+    if prefix:
+        prefix_clean = prefix.strip("/")
+        if prefix_clean:
+            parts.append(prefix_clean)
+
+    if platform:
+        parts.append(f"p_{platform}")
+
+    use_group = False
+    use_user = False
+
+    if isolation_level == MemoryIsolationLevel.GROUP_SHARED:
+        use_group = True
+    elif isolation_level == MemoryIsolationLevel.USER_GLOBAL:
+        use_user = True
+    elif isolation_level in (
+        MemoryIsolationLevel.GROUP_USER,
+        MemoryIsolationLevel.PLUGIN_USER,
+        MemoryIsolationLevel.AGENT_USER,
+    ):
+        use_group = True if group_id else False
+        use_user = True
+
+    if use_group and group_id:
+        parts.append(f"g_{group_id}")
+    if use_user and user_id:
+        parts.append(f"u_{user_id}")
+
+    if isolation_level in (MemoryIsolationLevel.PLUGIN_USER, MemoryIsolationLevel.AGENT_USER):
+        parts.append(f"ns_{namespace or 'unknown'}")
+
+    if isolation_level == MemoryIsolationLevel.AGENT_USER:
+        parts.append(f"ag_{agent_name or 'unknown'}")
+
+    session_id = "/" + "/".join(parts)
+    scope_prefix = session_id  # 当前设计下，session_id 本身即为完美的树状层级 Scope Path
+
+    return SessionMetadata(
+        session_id=session_id,
+        scope_prefix=scope_prefix,
+        platform=platform,
+        group_id=group_id,
+        user_id=user_id,
+        namespace=namespace,
+        agent_name=agent_name,
+        isolation_level=isolation_level,
+    )
 
 
 class MemoryRecord(BaseModel):
     """单条长期记忆记录实体"""
 
-    id: str = Field(
-        default_factory=lambda: __import__("uuid").uuid4().__str__(),
-        description="记忆的唯一标识",
-    )
-    content: str = Field(description="记忆的文本内容")
-    scope: str = Field(default="/", description="记忆的作用域(如 user_id, group_id)")
-    importance: float = Field(
-        default=0.5, ge=0.0, le=1.0, description="重要性评分(0.0-1.0)"
-    )
-    embedding: list[float] | None = Field(
-        default=None, description="向量表示，用于语义相似度搜索"
-    )
-    created_at: float = Field(default_factory=time.time, description="创建时间戳")
-    metadata: dict[str, Any] = Field(default_factory=dict, description="附加元数据")
+    id: str = Field(default_factory=lambda: __import__("uuid").uuid4().__str__())
+    """记忆的唯一标识"""
+    content: str = Field(...)
+    """记忆的文本内容"""
+    scope: str = Field(default="/")
+    """记忆的作用域(如 user_id, group_id)"""
+    importance: float = Field(default=0.5, ge=0.0, le=1.0)
+    """重要性评分(0.0-1.0)"""
+    embedding: list[float] | None = Field(default=None)
+    """向量表示，用于语义相似度搜索"""
+    created_at: float = Field(default_factory=time.time)
+    """创建时间戳"""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    """附加元数据"""
 
 
 class MemoryMatch(BaseModel):
     """召回的记忆匹配结果"""
 
-    record: MemoryRecord = Field(description="匹配到的记忆实体")
-    score: float = Field(description="复合相关性得分")
-    match_reasons: list[str] = Field(
-        default_factory=list, description="匹配原因(如 semantic, recency, importance)"
-    )
+    record: MemoryRecord = Field(...)
+    """匹配到的记忆实体"""
+    score: float = Field(...)
+    """复合相关性得分"""
+    match_reasons: list[str] = Field(default_factory=list)
+    """匹配原因(如 semantic, recency, importance)"""
 
 
 class MemoryConfig(BaseModel):
     """长期记忆的复合打分与检索配置"""
 
-    recency_weight: float = Field(default=0.3, description="时间衰减权重")
-    semantic_weight: float = Field(default=0.5, description="语义相似度权重")
-    importance_weight: float = Field(default=0.2, description="重要性权重")
-    recency_half_life_days: int = Field(default=30, description="时间衰减的半衰期(天)")
+    recency_weight: float = Field(default=0.3)
+    """时间衰减权重"""
+    semantic_weight: float = Field(default=0.5)
+    """语义相似度权重"""
+    importance_weight: float = Field(default=0.2)
+    """重要性权重"""
+    recency_half_life_days: int = Field(default=30)
+    """时间衰减的半衰期(天)"""
+
+
+class AgentMemory(BaseModel):
+    """统一的记忆门面配置 (Unified Memory Facade)"""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    isolation_level: MemoryIsolationLevel = Field(default=MemoryIsolationLevel.GROUP_USER)
+    """记忆隔离级别"""
+    working_memory: Any | None = Field(default=None)
+    """BaseWorkingMemory 短期工作记忆实例"""
+    long_term_memory: Any | None = Field(default=None)
+    """MemoryScope 长期记忆实例"""
+
+    context_threshold: float | None = Field(default=None)
+    """触发记忆压缩的 Token 阈值。<=1.0 为比例，>1.0 为绝对 Token 数"""
+    max_history_turns: int | None = Field(default=None)
+    """触发记忆压缩的对话轮数上限"""
+    memory_reducers: list[str | Any] | None = Field(default=None)
+    """记忆压缩策略列表"""
 
 
 __all__ = [
+    "AgentMemory",
     "MemoryConfig",
     "MemoryMatch",
     "MemoryRecord",
+    "MemoryIsolationLevel",
+    "SessionMetadata",
+    "generate_session_meta",
 ]

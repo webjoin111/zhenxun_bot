@@ -10,7 +10,7 @@ from zhenxun.services.ai.knowledge.models import Document
 from zhenxun.services.ai.knowledge.readers import get_reader_for_file
 from zhenxun.services.ai.llm.api import embed
 from zhenxun.services.ai.memory.models import MemoryRecord
-from zhenxun.services.ai.protocols.memory import StorageBackend
+from zhenxun.services.ai.memory.interfaces import StorageBackend
 from zhenxun.services.ai.tools.core.decorators import tool
 from zhenxun.services.ai.tools.models import ToolResult
 from zhenxun.services.log import logger

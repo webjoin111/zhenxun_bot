@@ -26,22 +26,17 @@ from zhenxun.services.ai.flow.agent.engine.executor import (
     AgentExecutorConfig,
 )
 from zhenxun.services.ai.flow.agent.models import (
-    AgentMemoryConfig,
     AgentRuntimeConfig,
     Persona,
 )
 from zhenxun.services.ai.flow.base import BaseRunnable
 from zhenxun.services.ai.llm.config.generation import IntentBuilder
 from zhenxun.services.ai.llm.manager import get_model_instance
-from zhenxun.services.ai.memory.scope import MemoryScope
+from zhenxun.services.ai.memory.models import AgentMemory, SessionMetadata
 from zhenxun.services.ai.protocols.capabilities import (
     AbstractCapability,
     HitlCapability,
     SkillCapability,
-)
-from zhenxun.services.ai.protocols.memory import (
-    BaseWorkingMemory,
-    SessionMetadata,
 )
 from zhenxun.services.ai.protocols.tool import ToolExecutable
 from zhenxun.services.ai.run import (
@@ -85,7 +80,7 @@ class Agent(
         generation_config: GenerationConfig | IntentBuilder | dict | None = None,
         response_model: BaseOutputDefinition | type[OutputDataT] | None = None,
         dynamic_prompts: list[Callable] | None = None,
-        memory_config: AgentMemoryConfig | dict | None = None,
+        memory: bool | dict[str, Any] | AgentMemory = False,
         runtime_config: AgentRuntimeConfig | dict | None = None,
         prepare_tools: ToolsPrepareFunc | None = None,
         guardrails: list[Any] | None = None,
@@ -103,7 +98,7 @@ class Agent(
             generation_config: 默认生成配置，支持 `GenerationConfig`、`IntentBuilder` 或 dict。
             response_model: 结构化输出模型；为空时按纯文本输出。
             dynamic_prompts: 动态系统提示词函数列表，运行时追加到系统提示。
-            memory_config: 记忆/上下文压缩配置；可传 `AgentMemoryConfig` 或 dict。
+            memory: 是否开启长期记忆与上下文压缩 (可传布尔值，或传入 AgentMemory)。
             runtime_config: 运行时行为配置；可传 `AgentRuntimeConfig` 或 dict。
             prepare_tools: 工具预处理钩子，在请求模型前可动态改写工具列表。
             guardrails: 护栏定义列表，支持可调用对象、规则字符串或护栏实例。
@@ -162,13 +157,20 @@ class Agent(
         self._guardrails = parse_guardrails(guardrails)
         self.prepare_tools = prepare_tools
 
-        if isinstance(memory_config, dict):
-            memory_config = AgentMemoryConfig(**memory_config)
-        self.memory_config = memory_config or AgentMemoryConfig()
+        from zhenxun.services.ai.memory.models import AgentMemory
+
+        if isinstance(memory, bool):
+            self.memory_facade = AgentMemory() if memory else None
+        elif isinstance(memory, dict):
+            self.memory_facade = AgentMemory(**memory)
+        else:
+            self.memory_facade = memory
 
         if isinstance(runtime_config, dict):
             runtime_config = AgentRuntimeConfig(**runtime_config)
         self.runtime_config = runtime_config or AgentRuntimeConfig()
+
+        self.runtime_config.stateless = self.memory_facade is None
 
         self.capabilities: list[AbstractCapability] = []
 
@@ -394,8 +396,7 @@ class Agent(
         message_history: list[LLMMessage] | None = None,
         tool_filter: GlobalToolFilter | None = None,
         config: ExecutionConfig | None = None,
-        working_memory: BaseWorkingMemory | None = None,
-        long_term_memory: MemoryScope | None = None,
+        memory: bool | dict[str, Any] | AgentMemory | None = None,
         generation_config: GenerationConfig | None = None,
         **kwargs: Any,
     ) -> AgentRunResult[OutputDataT]:
@@ -409,8 +410,7 @@ class Agent(
             message_history: 初始化的底层对话历史记录。
             tool_filter: 全局工具过滤器，用于限制本次运行可用的工具池。
             config: 核心执行引擎配置 (用于控制最大循环次数、并发调用等)。
-            working_memory: 显式指定的短期工作记忆管理实例。
-            long_term_memory: 显式指定的长期记忆管理实例 (RAG)。
+            memory: 单次运行级别的记忆门面覆盖 (覆盖 __init__ 中的设定)。
             generation_config: 单次运行覆盖的大模型生成配置。
             kwargs: 透传的其他附加参数。
 
@@ -424,12 +424,10 @@ class Agent(
             message_history=message_history,
             tool_filter=tool_filter,
             config=config,
-            working_memory=working_memory,
-            long_term_memory=long_term_memory,
+            memory=memory,
             generation_config=generation_config,
-            **kwargs
+            **kwargs,
         )
-
 
     @contextlib.asynccontextmanager
     async def run_stream(
@@ -441,8 +439,7 @@ class Agent(
         message_history: list[LLMMessage] | None = None,
         tool_filter: GlobalToolFilter | None = None,
         config: ExecutionConfig | None = None,
-        working_memory: BaseWorkingMemory | None = None,
-        long_term_memory: MemoryScope | None = None,
+        memory: bool | dict[str, Any] | AgentMemory | None = None,
         generation_config: GenerationConfig | None = None,
         event_streamer: EventStreamer | None = None,
         **kwargs: Any,
@@ -494,8 +491,7 @@ class Agent(
                         message_history=message_history,
                         tool_filter=tool_filter,
                         config=config,
-                        working_memory=working_memory,
-                        long_term_memory=long_term_memory,
+                        memory=memory,
                         generation_config=generation_config,
                         event_streamer=streamer,
                         **kwargs,
@@ -504,7 +500,6 @@ class Agent(
             except ControlFlowException as e:
                 await streamer.send(AgentRunError(error=e))
             except asyncio.CancelledError:
-                # 优雅处理中断策略引发的 Cancellation 强制挂起
                 from zhenxun.services.ai.core.exceptions import (
                     ConcurrencyInterruptException,
                 )
@@ -572,8 +567,7 @@ class Agent(
         message_history: list[LLMMessage] | None = None,
         tool_filter: GlobalToolFilter | None = None,
         config: ExecutionConfig | None = None,
-        working_memory: BaseWorkingMemory | None = None,
-        long_term_memory: MemoryScope | None = None,
+        memory: bool | dict[str, Any] | AgentMemory | None = None,
         generation_config: GenerationConfig | None = None,
         cancellation_token: Any = None,
         event_streamer: Any = None,
@@ -591,15 +585,18 @@ class Agent(
             bot = context.get_bot()
             event = context.get_event()
             if bot and event:
-                from zhenxun.services.ai.protocols.memory import generate_session_meta
+                from zhenxun.services.ai.memory.models import generate_session_meta
 
                 isolation_level = getattr(self.runtime_config, "isolation_level", None)
                 if isolation_level is None:
-                    from zhenxun.services.ai.protocols.memory import (
-                        MemoryIsolationLevel,
-                    )
+                    if self.memory_facade:
+                        isolation_level = self.memory_facade.isolation_level
+                    else:
+                        from zhenxun.services.ai.memory.models import (
+                            MemoryIsolationLevel,
+                        )
 
-                    isolation_level = MemoryIsolationLevel.AGENT_USER
+                        isolation_level = MemoryIsolationLevel.GROUP_USER
 
                 _meta = generate_session_meta(
                     bot,
@@ -638,12 +635,24 @@ class Agent(
 
             dynamic_caps.append(OutputValidationCapability(None, combined_guardrails))
 
-        if long_term_memory:
+        from zhenxun.services.ai.memory.models import AgentMemory
+
+        effective_memory = self.memory_facade
+        if memory is not None:
+            if isinstance(memory, bool):
+                effective_memory = AgentMemory() if memory else None
+            elif isinstance(memory, dict):
+                effective_memory = AgentMemory(**memory)
+            else:
+                effective_memory = memory
+
+        actual_ltm = effective_memory.long_term_memory if effective_memory else None
+        if actual_ltm:
             from zhenxun.services.ai.flow.agent.capabilities import (
                 LongTermMemoryCapability,
             )
 
-            dynamic_caps.append(LongTermMemoryCapability(long_term_memory))
+            dynamic_caps.append(LongTermMemoryCapability(actual_ltm))
 
         if task_obj:
             from zhenxun.services.ai.flow.agent.capabilities import (
@@ -720,13 +729,20 @@ class Agent(
 
         session_metadata = SessionMetadata(session_id=context.session_id)
 
-        if working_memory is None:
+        actual_wm = effective_memory.working_memory if effective_memory else None
+        if effective_memory and actual_wm is None:
             from zhenxun.services.ai.memory.working_memory import _get_default_memory
 
-            working_memory = _get_default_memory()
+            actual_wm = _get_default_memory()
+            effective_memory.working_memory = actual_wm
+
+        if actual_wm is None:
+            from zhenxun.services.ai.memory.working_memory import _get_default_memory
+
+            actual_wm = _get_default_memory()
 
         if message_history:
-            await working_memory.set_history(session_metadata, message_history)
+            await actual_wm.set_history(session_metadata, message_history)
 
         try:
             messages_for_run = await ContextBuilder.build_context_messages(
@@ -735,8 +751,7 @@ class Agent(
                 base_system_prompt=system_prompt,
                 injected_prompts=tool_payload.injected_prompts,
                 session_metadata=session_metadata,
-                working_memory=working_memory,
-                memory_config=self.memory_config,
+                memory_facade=effective_memory,
             )
 
             if (
@@ -744,7 +759,7 @@ class Agent(
                 and messages_for_run
                 and messages_for_run[-1].role == "user"
             ):
-                await working_memory.add_messages(
+                await actual_wm.add_messages(
                     session_metadata, [cast(LLMMessage, messages_for_run[-1])]
                 )
 
@@ -790,7 +805,7 @@ class Agent(
 
             new_msgs = final_messages[len(messages_for_run) :]
             if new_msgs:
-                await working_memory.add_messages(session_metadata, new_msgs)
+                await actual_wm.add_messages(session_metadata, new_msgs)
 
             last_msg = final_messages[-1]
             final_text = (

@@ -12,8 +12,8 @@ from nonebot.matcher import Matcher
 from pydantic import BaseModel, ConfigDict, Field
 
 from zhenxun.services.ai.core.templates import PromptTemplate
-from zhenxun.utils.pydantic_compat import model_dump
 from zhenxun.services.ai.utils.runtime_utils import ContextUtils
+from zhenxun.utils.pydantic_compat import model_dump
 
 AgentDepsT = TypeVar("AgentDepsT", default=Any)
 ProviderFunc = Callable[["RunContext"], Any | Awaitable[Any]]
@@ -205,13 +205,12 @@ class RunContext(Generic[AgentDepsT]):
         """安全提取当前连接的适配器平台标识"""
         return ContextUtils.extract_platform(self.deps)
 
-
     def __post_init__(self):
         if self.deps is None:
             self.deps = cast(AgentDepsT, NoneBotDeps.get_current())
 
         if not self.session_id and self.deps:
-            from zhenxun.services.ai.protocols.memory import (
+            from zhenxun.services.ai.memory.models import (
                 MemoryIsolationLevel,
                 generate_session_meta,
             )
@@ -220,7 +219,9 @@ class RunContext(Generic[AgentDepsT]):
             event = self.get_event()
 
             if bot and event:
-                meta = generate_session_meta(bot, event, isolation_level=MemoryIsolationLevel.GROUP_USER)
+                meta = generate_session_meta(
+                    bot, event, isolation_level=MemoryIsolationLevel.GROUP_USER
+                )
                 self.session_id = meta.session_id
                 self._is_auto_session_id = True
             else:
