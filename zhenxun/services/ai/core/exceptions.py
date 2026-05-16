@@ -1,4 +1,4 @@
-﻿"""
+"""
 自定义异常与错误码定义
 """
 
@@ -131,6 +131,23 @@ class HandoffException(ControlFlowException):
         self.payload = payload or {}
         self.display = display
         super().__init__(f"Handoff to {target}")
+
+
+class ConcurrencyRejectException(ControlFlowException):
+    """并发拒绝异常。当 Agent 设置为 REJECT 且正在忙碌时抛出。"""
+
+    def __init__(self, message: str, display: Any = None):
+        self.message = message
+        self.display = display or "⏳ 智能体正在处理您的上一个请求，请稍后再试~"
+        super().__init__(message)
+
+
+class ConcurrencyInterruptException(ControlFlowException):
+    """并发打断异常。当 Agent 设置为 INTERRUPT 且被新请求打断时抛出。"""
+
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(message)
 
 
 class SubmitStructuredException(ControlFlowException):

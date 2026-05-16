@@ -83,6 +83,8 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         context: RunContext | None = None,
         **kwargs: Any,
     ):
+        import asyncio
+
         if context is None:
             context = RunContext()
 
@@ -95,18 +97,44 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         context.run.streamer = streamer
         runner = TeamRunner(self, self.strategy)
 
+        policy = getattr(self.runtime_config, "concurrency_policy", None)
+        if policy is None:
+            from zhenxun.services.ai.flow.base import ConcurrencyPolicy
+
+            policy = (
+                ConcurrencyPolicy.ALLOW
+                if getattr(self.runtime_config, "stateless", True)
+                else ConcurrencyPolicy.QUEUE
+            )
+
         async def _execution_task():
+            from zhenxun.services.ai.run.models import CancellationToken
+            from zhenxun.services.ai.run.session_manager import session_manager
+
+            cancel_token = context.run.cancellation_token or CancellationToken()
+            context.run.cancellation_token = cancel_token
+
             try:
-                async for event in runner.run_stream(prompt, context, **kwargs):
-                    await streamer.send(event)
+                async with session_manager.apply_concurrency_policy(
+                    session_id=context.session_id or "default_session",
+                    policy=policy,
+                    cancel_token=cancel_token,
+                ):
+                    async for event in runner.run_stream(prompt, context, **kwargs):
+                        await streamer.send(event)
             except BaseException as e:
                 from zhenxun.services.ai.run.models import AgentRunError
 
+                if isinstance(e, asyncio.CancelledError):
+                    from zhenxun.services.ai.core.exceptions import (
+                        ConcurrencyInterruptException,
+                    )
+
+                    e = ConcurrencyInterruptException("团队执行已被新请求打断并接管")
                 await streamer.send(AgentRunError(error=e))
             finally:
                 await streamer.end()
 
-        import asyncio
 
         task = asyncio.create_task(_execution_task())
         result_obj = StreamedRunResult[Any](streamer)

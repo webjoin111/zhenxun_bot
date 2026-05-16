@@ -112,6 +112,27 @@ class AgentRunner(Generic[T_Out]):
                         raise stream_event.error
 
         except ControlFlowException as e:
+            from zhenxun.services.ai.core.exceptions import (
+                ConcurrencyInterruptException,
+                ConcurrencyRejectException,
+            )
+
+            if isinstance(e, ConcurrencyRejectException):
+                logger.warning(
+                    f"⏳ {self.runnable.name} 触发并发拒绝 (REJECT): {e.message}"
+                )
+                return cast(
+                    AgentRunResult[T_Out], AgentRunResult(output="", usage=UsageInfo())
+                )
+
+            if isinstance(e, ConcurrencyInterruptException):
+                logger.warning(
+                    f"🛑 {self.runnable.name} 触发并发中断 (INTERRUPT): {e.message}"
+                )
+                return cast(
+                    AgentRunResult[T_Out], AgentRunResult(output="", usage=UsageInfo())
+                )
+
             logger.debug(
                 f"{self.runnable.name} 控制流正常中断: {type(e).__name__} - {e}"
             )

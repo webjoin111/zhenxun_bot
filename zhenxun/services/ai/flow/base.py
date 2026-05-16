@@ -1,14 +1,29 @@
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 import contextlib
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
+from typing_extensions import Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 if TYPE_CHECKING:
     from zhenxun.services.ai.run.models import StreamedRunResult
 
 T_RunResult = TypeVar("T_RunResult")
+
+
+class ConcurrencyPolicy(str, Enum):
+    """并发执行策略枚举"""
+
+    ALLOW = "allow"
+    """允许并发：不做任何限制（适用于无状态或绝对独立任务）"""
+    REJECT = "reject"
+    """拒绝新请求：当前有任务在执行时，直接丢弃新任务并提醒"""
+    QUEUE = "queue"
+    """排队等待：当前有任务在执行时，新任务排队等待（先进先出）"""
+    INTERRUPT = "interrupt"
+    """中断旧任务：新任务到达时，立即强制取消并覆盖正在执行的旧任务"""
 
 
 class BaseRuntimeConfig(BaseModel):
@@ -18,6 +33,17 @@ class BaseRuntimeConfig(BaseModel):
     """是否使用临时会话，不持久化历史记录"""
     ui_streamer: str | None = Field(default=None)
     """自动绑定的前端UI渲染器标识符（如 'markdown'）"""
+    concurrency_policy: ConcurrencyPolicy | None = Field(default=None)
+    """并发执行策略。如果未显式指定，无状态(stateless=True)默认为ALLOW，有状态(stateless=False)默认为QUEUE。"""
+
+    @model_validator(mode="after")
+    def _set_default_concurrency_policy(self) -> Self:
+        if self.concurrency_policy is None:
+            if self.stateless:
+                self.concurrency_policy = ConcurrencyPolicy.ALLOW
+            else:
+                self.concurrency_policy = ConcurrencyPolicy.QUEUE
+        return self
 
 
 class BaseRunnable(ABC, Generic[T_RunResult]):

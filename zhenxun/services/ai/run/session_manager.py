@@ -4,14 +4,19 @@ from contextvars import ContextVar
 import time
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
+from zhenxun.services.ai.core.exceptions import ConcurrencyRejectException
+from zhenxun.services.ai.flow.base import ConcurrencyPolicy
 from zhenxun.services.ai.memory.working_memory import _get_default_memory
 from zhenxun.services.ai.protocols.memory import SessionMetadata
+from zhenxun.services.ai.run.models import CancellationToken
 
 
 class SessionInfo(BaseModel):
     """会话信息的元数据视图。"""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     session_id: str
     state: dict[str, Any] = Field(
@@ -19,6 +24,12 @@ class SessionInfo(BaseModel):
     )
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
+    active_task: Any | None = Field(
+        default=None, description="当前正在执行的 asyncio.Task"
+    )
+    cancel_token: CancellationToken | None = Field(
+        default=None, description="当前任务的取消令牌"
+    )
 
 
 class AgentSessionManager:
@@ -30,11 +41,64 @@ class AgentSessionManager:
     def __init__(self):
         self._sessions: dict[str, SessionInfo] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._exec_locks: dict[str, asyncio.Lock] = {}
 
     def _get_lock(self, session_id: str) -> asyncio.Lock:
         if session_id not in self._locks:
             self._locks[session_id] = asyncio.Lock()
         return self._locks[session_id]
+
+    def _get_exec_lock(self, session_id: str) -> asyncio.Lock:
+        if session_id not in self._exec_locks:
+            self._exec_locks[session_id] = asyncio.Lock()
+        return self._exec_locks[session_id]
+
+    @asynccontextmanager
+    async def apply_concurrency_policy(
+        self,
+        session_id: str,
+        policy: ConcurrencyPolicy,
+        cancel_token: CancellationToken,
+    ):
+        """应用并发策略的中央调度上下文管理器"""
+        if policy == ConcurrencyPolicy.ALLOW:
+            yield
+            return
+
+        exec_lock = self._get_exec_lock(session_id)
+
+        if policy == ConcurrencyPolicy.REJECT:
+            if exec_lock.locked():
+                raise ConcurrencyRejectException(
+                    f"会话 {session_id} 正忙，新请求被拒绝。"
+                )
+
+        elif policy == ConcurrencyPolicy.INTERRUPT:
+            if exec_lock.locked():
+                session = await self.get(session_id)
+                if session:
+                    if session.cancel_token:
+                        session.cancel_token.cancel()
+                    if session.active_task and not session.active_task.done():
+                        session.active_task.cancel()
+
+        elif policy == ConcurrencyPolicy.QUEUE:
+            if exec_lock.locked():
+                from zhenxun.services.log import logger
+
+                logger.info(
+                    f"⏳ [并发控制] 会话 {session_id} 正忙，新请求已进入后台等待队列 (QUEUE)..."
+                )
+
+        async with exec_lock:
+            session = await self.get_or_create(session_id)
+            session.active_task = asyncio.current_task()
+            session.cancel_token = cancel_token
+            try:
+                yield
+            finally:
+                session.active_task = None
+                session.cancel_token = None
 
     async def get_or_create(self, session_id: str) -> SessionInfo:
         async with self._get_lock(session_id):

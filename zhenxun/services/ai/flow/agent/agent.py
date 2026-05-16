@@ -464,24 +464,57 @@ class Agent(
             if deps is not None and safe_context.deps is None:
                 safe_context.deps = cast(AgentDepsT, deps)
 
+        policy = getattr(self.runtime_config, "concurrency_policy", None)
+        if policy is None:
+            from zhenxun.services.ai.flow.base import ConcurrencyPolicy
+
+            policy = (
+                ConcurrencyPolicy.ALLOW
+                if getattr(self.runtime_config, "stateless", True)
+                else ConcurrencyPolicy.QUEUE
+            )
+
         async def _execution_task():
+            from zhenxun.services.ai.run.models import CancellationToken
+            from zhenxun.services.ai.run.session_manager import session_manager
+
+            cancel_token = safe_context.run.cancellation_token or CancellationToken()
+            safe_context.run.cancellation_token = cancel_token
+
             try:
-                await streamer.send(AgentRunStart(agent_name=self.name))
-                result = await self._run_step(
-                    prompt=prompt,
-                    context=safe_context,
-                    message_history=message_history,
-                    tool_filter=tool_filter,
-                    config=config,
-                    working_memory=working_memory,
-                    long_term_memory=long_term_memory,
-                    generation_config=generation_config,
-                    event_streamer=streamer,
-                    **kwargs,
-                )
-                await streamer.send(AgentRunEnd(result=result))
+                async with session_manager.apply_concurrency_policy(
+                    session_id=safe_context.session_id or "default_session",
+                    policy=policy,
+                    cancel_token=cancel_token,
+                ):
+                    await streamer.send(AgentRunStart(agent_name=self.name))
+                    result = await self._run_step(
+                        prompt=prompt,
+                        context=safe_context,
+                        message_history=message_history,
+                        tool_filter=tool_filter,
+                        config=config,
+                        working_memory=working_memory,
+                        long_term_memory=long_term_memory,
+                        generation_config=generation_config,
+                        event_streamer=streamer,
+                        **kwargs,
+                    )
+                    await streamer.send(AgentRunEnd(result=result))
             except ControlFlowException as e:
                 await streamer.send(AgentRunError(error=e))
+            except asyncio.CancelledError:
+                # 优雅处理中断策略引发的 Cancellation 强制挂起
+                from zhenxun.services.ai.core.exceptions import (
+                    ConcurrencyInterruptException,
+                )
+
+                logger.debug(f"Agent {self.name} 执行被并发策略中断取消。")
+                await streamer.send(
+                    AgentRunError(
+                        error=ConcurrencyInterruptException("任务已被新请求打断并接管")
+                    )
+                )
             except Exception as e:
                 await streamer.send(AgentRunError(error=e))
             finally:
