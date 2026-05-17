@@ -224,9 +224,6 @@ class SandboxToolkit(BaseToolkit):
                 "然后使用 `execute_terminal_command` 在真实终端中运行它！"
             )
 
-        from nonebot_plugin_alconna import Image as AlcImage
-        from nonebot_plugin_alconna import UniMessage
-
         from zhenxun.services.ai.core.messages import (
             ImagePart,
             LLMContentPart,
@@ -234,13 +231,9 @@ class SandboxToolkit(BaseToolkit):
         )
 
         final_output: list[LLMContentPart] = [TextPart(text=output_text.strip())]
-        display_msg = UniMessage()
-        has_display = False
 
         for img_bytes in image_bytes_list:
-            display_msg += AlcImage(raw=img_bytes)
             final_output.append(ImagePart(raw=img_bytes))
-            has_display = True
 
         if system_notice:
             context.run.add_system_prompt(system_notice)
@@ -248,8 +241,8 @@ class SandboxToolkit(BaseToolkit):
         result = ToolResult(
             output=final_output if len(final_output) > 1 else output_text.strip()
         )
-        if has_display:
-            result = result.show_to_user(display_msg)
+        if len(image_bytes_list) > 0:
+            result = result.show_to_user(final_output)
         return result
 
     @tool(

@@ -14,7 +14,6 @@ from zhenxun.services.ai.core.messages import (
     LLMMessage,
     LLMResponse,
 )
-from zhenxun.services.ai.message_builder import MessageBuilder
 
 from .api import (
     ModelName,
@@ -30,8 +29,6 @@ from .config import (
     IntentBuilder,
 )
 
-create_multimodal_message = MessageBuilder.create_multimodal_message
-
 __all__ = [
     "AudioResponse",
     "IntentBuilder",
@@ -44,7 +41,6 @@ __all__ = [
     "TTSConfig",
     "chat",
     "create_image",
-    "create_multimodal_message",
     "create_speech",
     "embed",
     "generate",

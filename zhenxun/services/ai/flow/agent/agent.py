@@ -18,6 +18,7 @@ from zhenxun.services.ai.core.exceptions import (
 from zhenxun.services.ai.core.messages import (
     LLMMessage,
     UsageInfo,
+    PromptInput,
 )
 from zhenxun.services.ai.core.stream_events import EventStreamer
 from zhenxun.services.ai.flow.agent.engine.builders import ContextBuilder, ToolBuilder
@@ -389,7 +390,7 @@ class Agent(
 
     async def run(
         self,
-        prompt: str | Task | None = None,
+        prompt: PromptInput | Task | None = None,
         *,
         deps: AgentDepsT | None = None,
         context: RunContext[AgentDepsT] | None = None,
@@ -432,7 +433,7 @@ class Agent(
     @contextlib.asynccontextmanager
     async def run_stream(
         self,
-        prompt: str | Task | None = None,
+        prompt: PromptInput | Task | None = None,
         *,
         deps: AgentDepsT | None = None,
         context: RunContext[AgentDepsT] | None = None,
@@ -525,11 +526,11 @@ class Agent(
                 task.cancel()
 
     def _parse_task_prompt(
-        self, prompt: str | Task | None
-    ) -> tuple[Task | None, str | None, list[Any], Any, list[Any]]:
+        self, prompt: PromptInput | Task | None
+    ) -> tuple[Task | None, Any | None, list[Any], Any, list[Any]]:
         """解析输入意图，提取数据契约 (Task)"""
         task_obj = None
-        final_prompt_text = None
+        final_prompt_payload = None
         extra_tools = []
         run_output_type = self.response_model
         task_guardrails = []
@@ -547,13 +548,13 @@ class Agent(
                 f"### 📋 [任务指令]\n{task_obj.description}",
                 f"### 🎯 [预期产出要求]\n{task_obj.expected_output}",
             ]
-            final_prompt_text = "\n\n".join(prompt_parts)
+            final_prompt_payload = "\n\n".join(prompt_parts)
         elif prompt is not None:
-            final_prompt_text = str(prompt)
+            final_prompt_payload = prompt
 
         return (
             task_obj,
-            final_prompt_text,
+            final_prompt_payload,
             extra_tools,
             run_output_type,
             task_guardrails,
@@ -613,7 +614,7 @@ class Agent(
             GLOBAL_CAPABILITIES,
         )
 
-        task_obj, final_prompt_text, extra_tools, run_output_type, task_guardrails = (
+        task_obj, final_prompt_payload, extra_tools, run_output_type, task_guardrails = (
             self._parse_task_prompt(prompt)
         )
 
@@ -672,8 +673,14 @@ class Agent(
         await run_scoped_cap.before_run(context)
         context.capabilities = run_scoped_cap.capabilities
 
-        if final_prompt_text:
-            context.run.user_input = final_prompt_text
+        # 保证日志与记忆系统获取到纯文本，但不破坏用于生成的 final_prompt_payload
+        if final_prompt_payload is not None:
+            if isinstance(final_prompt_payload, str):
+                context.run.user_input = final_prompt_payload
+            elif hasattr(final_prompt_payload, "extract_plain_text"):
+                context.run.user_input = final_prompt_payload.extract_plain_text()
+            else:
+                context.run.user_input = str(final_prompt_payload)
         context.run.agent_name = self.name
 
         system_prompt = await ContextBuilder.build_system_prompt(
@@ -747,15 +754,16 @@ class Agent(
         try:
             messages_for_run = await ContextBuilder.build_context_messages(
                 model_name=str(model_name_resolved) if model_name_resolved else "",
-                final_prompt_text=final_prompt_text,
+                user_input=final_prompt_payload,
                 base_system_prompt=system_prompt,
                 injected_prompts=tool_payload.injected_prompts,
                 session_metadata=session_metadata,
                 memory_facade=effective_memory,
+                run_context=context,
             )
 
             if (
-                final_prompt_text
+                final_prompt_payload is not None
                 and messages_for_run
                 and messages_for_run[-1].role == "user"
             ):

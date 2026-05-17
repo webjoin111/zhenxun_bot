@@ -21,9 +21,9 @@ from zhenxun.services.ai.core.exceptions import (
 from zhenxun.services.ai.core.messages import (
     AudioResponse,
     EmbeddingResponse,
-    LLMContentPart,
     LLMMessage,
     LLMResponse,
+    PromptInput,
     RerankResult,
 )
 from zhenxun.services.ai.core.models import ModelModality, ModelName
@@ -36,7 +36,7 @@ T = TypeVar("T", bound=BaseModel)
 
 
 async def chat(
-    message: str | Any | LLMMessage | list[LLMContentPart] | list[LLMMessage],
+    message: PromptInput | list[LLMMessage],
     *,
     model: ModelName = None,
     instruction: str | None = None,
@@ -197,7 +197,7 @@ async def rerank(
 
 
 async def generate_structured(
-    message: str | Any | LLMMessage | list[LLMContentPart] | list[LLMMessage],
+    message: PromptInput | list[LLMMessage],
     response_model: type[T],
     *,
     guardrails: list[Callable | str | Any] | None = None,

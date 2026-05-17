@@ -2,10 +2,11 @@ from collections.abc import Awaitable, Callable
 from io import BytesIO
 import mimetypes
 from pathlib import Path
-from typing import Any, TypeVar, cast
+from typing import Any, ClassVar, TypeVar, cast
 
 from nonebot.adapters import Message as PlatformMessage
 from nonebot_plugin_alconna.uniseg import (
+    Audio,
     Image,
     Segment,
     Text,
@@ -22,6 +23,7 @@ from zhenxun.services.ai.core.messages import (
     ImagePart,
     LLMContentPart,
     LLMMessage,
+    PromptInput,
     SystemMessage,
     TextPart,
     UserContentUnion,
@@ -39,17 +41,26 @@ class MessageBuilder:
     实现 Nonebot/Alconna 生态与底层 LLM 核心（types/messages）的绝对解耦。
     """
 
-    _MESSAGE_CONVERTERS: dict[type, Callable[[Any], Awaitable[list[LLMMessage]]]] = {}
+    _MESSAGE_CONVERTERS: ClassVar[
+        dict[type, Callable[[Any], Awaitable[list[LLMMessage]]]]
+    ] = {}
 
-    _SEGMENT_HANDLERS: dict[
-        type[Segment], Callable[[Any], Awaitable[LLMContentPart | None]]
+    _SEGMENT_HANDLERS: ClassVar[
+        dict[
+            type[Segment],
+            Callable[[Any], Awaitable[LLMContentPart | list[LLMContentPart] | None]],
+        ]
     ] = {}
 
     @classmethod
     def register_segment_handler(cls, seg_type: type[S]):
         """装饰器：注册 Uniseg 消息段的处理器"""
 
-        def decorator(func: Callable[[S], Awaitable[LLMContentPart | None]]):
+        def decorator(
+            func: Callable[
+                [S], Awaitable[LLMContentPart | list[LLMContentPart] | None]
+            ],
+        ):
             cls._SEGMENT_HANDLERS[seg_type] = func
             return func
 
@@ -159,75 +170,146 @@ class MessageBuilder:
             if handler:
                 try:
                     part = await handler(seg)
+
                     if part:
-                        parts.append(cast(UserContentUnion, part))
+                        if isinstance(part, list):
+                            parts.extend(cast(list[UserContentUnion], part))
+                        else:
+                            parts.append(cast(UserContentUnion, part))
                 except Exception as e:
                     logger.warning(f"处理消息段 {seg} 失败: {e}", "LLMUtils")
-        return parts
+        merged_parts: list[UserContentUnion] = []
+        for part in parts:
+            if (
+                isinstance(part, TextPart)
+                and merged_parts
+                and isinstance(merged_parts[-1], TextPart)
+            ):
+                merged_parts[-1].text += part.text
+            else:
+                merged_parts.append(part)
+        return merged_parts
+
+    @classmethod
+    async def _fetch_reply_as_parts(
+        cls, bot: Any, event: Any
+    ) -> list[LLMContentPart] | None:
+        """提取公共引用抓取与解析逻辑"""
+        try:
+            from nonebot.adapters import Message as PlatformMessage
+            from nonebot_plugin_alconna import UniMessage
+            from nonebot_plugin_alconna.uniseg import Reply
+            from nonebot_plugin_alconna.uniseg.tools import reply_fetch
+
+            orig_msg = await reply_fetch(event, bot)
+            if not orig_msg or not orig_msg.msg:
+                return None
+
+            orig_content = orig_msg.msg
+            if isinstance(orig_content, PlatformMessage):
+                uni_msg = cls.message_to_unimessage(orig_content)
+            else:
+                uni_msg = UniMessage.text(str(orig_content))
+
+            uni_msg = uni_msg.exclude(Reply)
+
+            parts = await cls.unimsg_to_llm_parts(uni_msg)
+            if not parts:
+                return None
+
+            if isinstance(parts[0], TextPart):
+                parts[0].text = f"[引用] {parts[0].text}"
+            else:
+                parts.insert(0, TextPart(text="[引用] "))
+            return cast(list[LLMContentPart], parts)
+        except Exception as e:
+            logger.debug(f"拉取引用消息失败: {e}")
+            return None
 
     @classmethod
     async def normalize_to_llm_messages(
         cls,
-        message: str | Any | LLMMessage | list[Any],
+        message: PromptInput,
         instruction: str | None = None,
+        bot: Any = None,
+        event: Any = None,
     ) -> list[LLMMessage]:
         messages = []
         if instruction:
             messages.append(SystemMessage(content=[TextPart(text=instruction)]))
 
+        reply_parts = []
+        try:
+            from nonebot.matcher import current_bot, current_event
+            from nonebot_plugin_alconna import UniMessage
+            from nonebot_plugin_alconna.uniseg import Reply
+
+            bot_inst = bot or current_bot.get(None)
+            event_inst = event or current_event.get(None)
+
+            if not bot_inst or not event_inst:
+                try:
+                    from zhenxun.services.ai.run import get_current_run_context
+
+                    ctx = get_current_run_context()
+                    if ctx:
+                        bot_inst = bot_inst or ctx.get_bot()
+                        event_inst = event_inst or ctx.get_event()
+                except Exception:
+                    pass
+
+            should_fetch_reply = True
+            if isinstance(message, UniMessage) and message.has(Reply):
+                should_fetch_reply = False
+
+            if bot_inst and event_inst and should_fetch_reply:
+                parts = await cls._fetch_reply_as_parts(bot_inst, event_inst)
+                if parts:
+                    reply_parts = parts
+        except Exception as e:
+            logger.debug(f"全局语义增强提取引用失败 (静默跳过): {e}")
+
+        converted_msgs: list[LLMMessage] = []
+        converted = False
         for msg_type, converter in cls._MESSAGE_CONVERTERS.items():
             if isinstance(message, msg_type):
                 converted_msgs = await converter(message)
-                messages.extend(converted_msgs)
-                return messages
+                converted = True
+                break
 
-        if isinstance(message, LLMMessage):
-            messages.append(message)
-        elif isinstance(message, list) and all(
-            isinstance(m, LLMMessage) for m in message
-        ):
-            messages.extend(message)
-        elif isinstance(message, str):
-            messages.append(LLMMessage.user(message))
-        elif isinstance(message, list):
-            parts = []
-            for item in message:
-                parts.append(await cls._transform_to_content_part(item))
-            messages.append(LLMMessage.user(parts))
-        else:
-            raise TypeError(f"不支持的消息类型: {type(message)}")
+        if not converted:
+            if isinstance(message, LLMMessage):
+                converted_msgs = [message]
+            elif isinstance(message, list) and all(
+                isinstance(m, LLMMessage) for m in message
+            ):
+                converted_msgs = cast(list[LLMMessage], list(message))
+            elif isinstance(message, str):
+                converted_msgs = [LLMMessage.user(message)]
+            elif isinstance(message, list):
+                parts = []
+                for item in message:
+                    parts.append(await cls._transform_to_content_part(item))
+                converted_msgs = [LLMMessage.user(parts)]
+            else:
+                raise TypeError(f"不支持的消息类型: {type(message)}")
+
+        if reply_parts:
+            for i, msg in enumerate(converted_msgs):
+                if getattr(msg, "role", None) == "user":
+                    from zhenxun.utils.pydantic_compat import model_copy
+
+                    new_msg = model_copy(msg, deep=True)
+                    new_msg.content = cast(list[Any], reply_parts) + new_msg.content
+                    converted_msgs[i] = new_msg
+                    break
+            else:
+                converted_msgs.insert(
+                    0, LLMMessage.user(cast(list[UserContentUnion], reply_parts))
+                )
+
+        messages.extend(converted_msgs)
         return messages
-
-    @classmethod
-    def create_multimodal_message(
-        cls,
-        text: str | None = None,
-        images: list[str | Path | bytes] | str | Path | bytes | None = None,
-        videos: list[str | Path | bytes] | str | Path | bytes | None = None,
-        audios: list[str | Path | bytes] | str | Path | bytes | None = None,
-    ) -> UniMessage:
-        message = UniMessage()
-        if text:
-            message.append(Text(text))
-        if images is not None:
-            cls._add_media(message, images, Image)
-        if videos is not None:
-            cls._add_media(message, videos, Video)
-        if audios is not None:
-            cls._add_media(message, audios, Voice)
-        return message
-
-    @classmethod
-    def _add_media(cls, message: UniMessage, items: Any, media_class: type) -> None:
-        items_list = items if isinstance(items, list) else [items]
-        for item in items_list:
-            if isinstance(item, str | Path):
-                if str(item).startswith(("http://", "https://")):
-                    message.append(media_class(url=str(item)))
-                else:
-                    message.append(media_class(path=Path(item)))
-            elif isinstance(item, bytes):
-                message.append(media_class(raw=item))
 
     @classmethod
     def message_to_unimessage(cls, message: PlatformMessage) -> UniMessage:
@@ -245,19 +327,127 @@ async def _handle_text(seg: Text) -> TextPart | None:
     return TextPart(text=seg.text) if seg.text.strip() else None
 
 
-@MessageBuilder.register_segment_handler(Image)
-async def _handle_image(seg: Image) -> ImagePart | None:
-    mime_type = getattr(seg, "mimetype", None) or "image/png"
-    if hasattr(seg, "raw") and seg.raw:
-        return ImagePart(
-            raw=seg.raw if isinstance(seg.raw, bytes) else seg.raw.read(),
-            mime_type=mime_type,
-        )
-    elif getattr(seg, "path", None) is not None:
-        return ImagePart(path=Path(str(seg.path)), mime_type=mime_type)
+def _extract_media_kwargs(seg: Segment, default_mime: str) -> dict | None:
+    """提取媒体 Segment 的公共属性字典，消除冗余解析"""
+    mime_type = getattr(seg, "mimetype", None) or default_mime
 
-    url = getattr(seg, "url", None)
-    if url:
-        return ImagePart(url=url, mime_type=mime_type)
+    raw_data = getattr(seg, "raw", None)
+    if raw_data:
+        return {
+            "raw": raw_data if isinstance(raw_data, bytes) else raw_data.read(),
+            "mime_type": mime_type,
+        }
+
+    path_data = getattr(seg, "path", None)
+    if path_data is not None:
+        return {"path": Path(str(path_data)), "mime_type": mime_type}
+
+    url_data = getattr(seg, "url", None)
+    if url_data:
+        return {"url": url_data, "mime_type": mime_type}
+
     return None
 
+
+@MessageBuilder.register_segment_handler(Image)
+async def _handle_image(seg: Image) -> ImagePart | None:
+    if (
+        not seg.raw
+        and not seg.url
+        and not getattr(seg, "path", None)
+        and getattr(seg, "id", None)
+    ):
+        try:
+            from nonebot.matcher import current_bot, current_event, current_matcher
+            from nonebot_plugin_alconna.uniseg.tools import image_fetch
+
+            bot = current_bot.get(None)
+            event = current_event.get(None)
+            matcher = current_matcher.get(None)
+
+            if bot and event and matcher:
+                logger.debug(
+                    f"MessageBuilder 正在底层静默下载图片实体 (ID: {seg.id})..."
+                )
+                raw_bytes = await image_fetch(event, bot, matcher.state, seg)
+                if raw_bytes:
+                    seg.raw = raw_bytes
+        except Exception as e:
+            logger.warning(f"底层静默水合下载图片失败: {e}")
+
+    kwargs = _extract_media_kwargs(seg, "image/png")
+    return ImagePart(**kwargs) if kwargs else None
+
+
+async def _process_audio_seg(seg: Audio | Voice) -> AudioPart | None:
+    kwargs = _extract_media_kwargs(seg, "audio/mp3")
+    return AudioPart(**kwargs) if kwargs else None
+
+
+@MessageBuilder.register_segment_handler(Audio)
+async def _handle_audio(seg: Audio) -> AudioPart | None:
+    return await _process_audio_seg(seg)
+
+
+@MessageBuilder.register_segment_handler(Voice)
+async def _handle_voice(seg: Voice) -> AudioPart | None:
+    return await _process_audio_seg(seg)
+
+
+@MessageBuilder.register_segment_handler(Video)
+async def _handle_video(seg: Video) -> VideoPart | None:
+    kwargs = _extract_media_kwargs(seg, "video/mp4")
+    return VideoPart(**kwargs) if kwargs else None
+
+
+from nonebot_plugin_alconna.uniseg import At, AtAll, Reply
+
+
+@MessageBuilder.register_segment_handler(Reply)
+async def _handle_reply(seg: Reply) -> list[LLMContentPart] | LLMContentPart | None:
+    try:
+        from nonebot.matcher import current_bot, current_event
+
+        bot = current_bot.get(None)
+        event = current_event.get(None)
+        if not bot or not event:
+            return None
+
+        return await MessageBuilder._fetch_reply_as_parts(bot, event)
+    except Exception as e:
+        logger.warning(f"拉取引用消息代理失败: {e}")
+        return None
+
+
+@MessageBuilder.register_segment_handler(AtAll)
+async def _handle_at_all(seg: AtAll) -> TextPart:
+    return TextPart(text="[@全体成员] ")
+
+
+@MessageBuilder.register_segment_handler(At)
+async def _handle_at(seg: At) -> TextPart:
+    if seg.display:
+        return TextPart(text=f"[@{seg.display}] ")
+
+    target_id = seg.target
+    try:
+        from nonebot.matcher import current_bot, current_event
+
+        bot = current_bot.get(None)
+        event = current_event.get(None)
+
+        nickname = str(target_id)
+        if bot and event:
+            group_id = getattr(event, "group_id", None)
+            if group_id and hasattr(bot, "get_group_member_info"):
+                info = await bot.get_group_member_info(
+                    group_id=group_id, user_id=int(target_id)
+                )
+                nickname = info.get("card") or info.get("nickname") or nickname
+            elif hasattr(bot, "get_stranger_info"):
+                info = await bot.get_stranger_info(user_id=int(target_id))
+                nickname = info.get("nickname") or nickname
+
+        return TextPart(text=f"[@{nickname}] ")
+    except Exception:
+        return TextPart(text=f"[@{target_id}] ")

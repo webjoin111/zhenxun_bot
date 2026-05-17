@@ -270,9 +270,12 @@ class GeminiMessageConverter(MessageConverter):
 
         if isinstance(part, VideoPart):
             if part.url is not None:
-                raise ValueError(
-                    "Gemini API 的视频处理需要通过 File API 上传，不支持直接 URL"
-                )
+                logger.debug(f"正在为Gemini下载并编码URL视频: {part.url}")
+                try:
+                    raw_data = await AsyncHttpx.get_content(part.url)
+                except Exception as e:
+                    logger.error(f"下载或编码URL视频失败: {e}", e=e)
+                    raise ValueError(f"无法处理视频URL: {e}")
             elif part.raw is not None:
                 raw_data = part.raw
             elif part.path is not None:
@@ -287,9 +290,12 @@ class GeminiMessageConverter(MessageConverter):
 
         if isinstance(part, AudioPart):
             if part.url is not None:
-                raise ValueError(
-                    "Gemini API 的音频处理需要通过 File API 上传，不支持直接 URL"
-                )
+                logger.debug(f"正在为Gemini下载并编码URL音频: {part.url}")
+                try:
+                    raw_data = await AsyncHttpx.get_content(part.url)
+                except Exception as e:
+                    logger.error(f"下载或编码URL音频失败: {e}", e=e)
+                    raise ValueError(f"无法处理音频URL: {e}")
             elif part.raw is not None:
                 raw_data = part.raw
             elif part.path is not None:
@@ -304,16 +310,24 @@ class GeminiMessageConverter(MessageConverter):
 
         if isinstance(part, FilePart):
             if part.url is not None:
-                payload = {
-                    "fileData": {"mimeType": part.mime_type, "fileUri": part.url}
-                }
-                payload.update(_get_gemini_resolution_dict())
-                return payload
-            elif part.raw is not None or part.path is not None:
-                file_name = (
-                    part.metadata.get("name", "file") if part.metadata else "file"
-                )
-                return {"text": f"[文件: {file_name}]\n<已省略的二进制内容>"}
+                logger.debug(f"正在为Gemini下载并编码URL文件: {part.url}")
+                try:
+                    raw_data = await AsyncHttpx.get_content(part.url)
+                except Exception as e:
+                    logger.error(f"下载或编码URL文件失败: {e}", e=e)
+                    raise ValueError(f"无法处理文件URL: {e}")
+            elif part.raw is not None:
+                raw_data = part.raw
+            elif part.path is not None:
+                raw_data = part.path.read_bytes()
+            else:
+                raise ValueError("FilePart 必须且只能提供 url, raw, path 中的一个")
+
+            mime_type = part.mime_type or "application/octet-stream"
+            base64_data = base64.b64encode(raw_data).decode("utf-8")
+            payload = {"inlineData": {"mimeType": mime_type, "data": base64_data}}
+            payload.update(_get_gemini_resolution_dict())
+            return payload
 
         if isinstance(part, ToolCallPart):
             payload = {

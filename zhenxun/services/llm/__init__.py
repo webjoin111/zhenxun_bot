@@ -105,7 +105,6 @@ from zhenxun.services.ai.llm.manager import (
 )
 from zhenxun.services.ai.message_builder import MessageBuilder
 
-create_multimodal_message = MessageBuilder.create_multimodal_message
 message_to_unimessage = MessageBuilder.message_to_unimessage
 unimsg_to_llm_parts = MessageBuilder.unimsg_to_llm_parts
 from zhenxun.services.ai.core.exceptions import LLMException
@@ -122,7 +121,6 @@ __all__ = [
     "LLMGenerationConfig",
     "LLMMessage",
     "LLMResponse",
-    "create_multimodal_message",
     "function_tool",
     "get_global_default_model_name",
     "get_model_instance",

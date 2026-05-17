@@ -101,11 +101,12 @@ class ContextBuilder:
     @staticmethod
     async def build_context_messages(
         model_name: str,
-        final_prompt_text: str | None,
+        user_input: Any | None,
         base_system_prompt: str,
         injected_prompts: list[str],
         session_metadata: SessionMetadata,
         memory_facade: Any,
+        run_context: RunContext | None = None,
     ) -> list[LLMMessage]:
         """融合记忆与工具说明，通过对话管线(DialoguePipeline)生成最终的消息数组"""
         system_prompt = base_system_prompt
@@ -120,9 +121,10 @@ class ContextBuilder:
             memory_facade=memory_facade,
         )
         return await pipeline.build_messages(
-            user_input=final_prompt_text,
+            user_input=user_input,
             system_instruction=system_prompt,
             base_overhead=0,
+            run_context=run_context,
         )
 
 

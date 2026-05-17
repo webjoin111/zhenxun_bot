@@ -9,9 +9,10 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 import time
-from typing import Annotated, Any, Generic, Literal, cast
+from typing import Annotated, Any, Generic, Literal, Union, cast
 from typing_extensions import Self, TypeVar
 
+from nonebot_plugin_alconna import UniMessage
 from pydantic import BaseModel, Field, model_validator
 
 from zhenxun.utils.pydantic_compat import model_copy, model_dump
@@ -261,9 +262,16 @@ class ToolCallDeltaPart(BaseModel):
 
 
 SystemContentUnion = TextPart
+"""系统消息允许的内容片段联合类型"""
+
 UserContentUnion = TextPart | ImagePart | AudioPart | VideoPart | FilePart
+"""用户消息允许的多模态内容片段联合类型"""
+
 AssistantContentUnion = TextPart | ThoughtPart | ToolCallPart
+"""助手回复允许的内容片段联合类型"""
+
 ToolContentUnion = ToolReturnPart | ImagePart | AudioPart | VideoPart | FilePart
+"""工具消息允许的内容片段联合类型"""
 
 
 LLMContentPart = Annotated[
@@ -277,10 +285,25 @@ LLMContentPart = Annotated[
     | ToolReturnPart,
     Field(discriminator="type"),
 ]
+"""大模型底层标准内容片段的 Annotated 联合类型"""
 
 
 RoleT = TypeVar("RoleT", default=str, covariant=True)
+"""泛型：消息参与者角色类型变量"""
+
 ContentT = TypeVar("ContentT", default=LLMContentPart, covariant=True)
+"""泛型：多模态片段数组的元素内容类型变量"""
+
+
+AnyLLMMessage = Annotated[
+    Union["SystemMessage", "UserMessage", "AssistantMessage", "ToolMessage"],
+    Field(discriminator="role"),
+]
+"""LLM 消息类型的合集联合类型"""
+
+
+PromptInput = Union[str, UniMessage, "LLMMessage", list[LLMContentPart], Any]
+"""支持作为 LLM 输入的提示词对象联合类型，包括纯文本、UniMessage、LLMMessage 消息实体"""
 
 
 class LLMMessage(BaseModel, Generic[RoleT, ContentT]):
@@ -572,7 +595,8 @@ class LLMMessage(BaseModel, Generic[RoleT, ContentT]):
 
 
 class SystemMessage(LLMMessage[Literal["system"], SystemContentUnion]):
-    """系统消息：通常用于在对话开头向模型提供系统级指令 (System Prompt)、角色设定或背景上下文。"""
+    """系统消息：通常用于在对话开头向模型提供系统级指令 (System Prompt)、
+    角色设定或背景上下文。"""
 
     role: Literal["system"] = "system"
     content: list[Annotated[SystemContentUnion, Field(discriminator="type")]] = Field(
@@ -590,7 +614,8 @@ class UserMessage(LLMMessage[Literal["user"], UserContentUnion]):
 
 
 class AssistantMessage(LLMMessage[Literal["assistant"], AssistantContentUnion]):
-    """助手消息：代表大模型 (AI) 生成的回复。可能包含纯文本、思维链过程或工具调用请求。"""
+    """助手消息：代表大模型 (AI) 生成的回复。
+    可能包含纯文本、思维链过程或工具调用请求。"""
 
     role: Literal["assistant"] = "assistant"
     content: list[Annotated[AssistantContentUnion, Field(discriminator="type")]] = (
@@ -610,12 +635,6 @@ class ToolMessage(LLMMessage[Literal["tool"], ToolContentUnion]):
         """验证消息的有效性"""
         if not self.tool_returns:
             raise ValueError("工具角色的消息必须包含 ToolReturnPart")
-
-
-AnyLLMMessage = Annotated[
-    SystemMessage | UserMessage | AssistantMessage | ToolMessage,
-    Field(discriminator="role"),
-]
 
 
 class RerankDocument(BaseModel):
@@ -803,7 +822,8 @@ class LLMGroundingAttribution(BaseModel):
 
 
 class LLMGroundingMetadata(BaseModel):
-    """检索增强/搜索引擎溯源 (Grounding) 的完整元数据字典，用于为大模型返回的信息提供可信背书"""
+    """检索增强/搜索引擎溯源 (Grounding) 的完整元数据字典，
+    用于为大模型返回的信息提供可信背书"""
 
     web_search_queries: list[str] | None = None
     """模型在执行检索时，实际使用的底层搜索引擎 Query 查询词列表"""
@@ -814,7 +834,8 @@ class LLMGroundingMetadata(BaseModel):
     search_entry_point: str | None = None
     """一段 HTML/CSS 内容，可用于在客户端渲染标准的搜索引擎入口/建议组件"""
     map_widget_token: str | None = None
-    """用于渲染 Google Maps 交互式地点小组件 (Places widget) 的上下文 Token (针对 googleMaps 工具)"""
+    """用于渲染 Google Maps 交互式地点小组件 (Places widget) 的
+    上下文 Token (针对 googleMaps 工具)"""
 
 
 class EmbeddingResponse(BaseModel):
@@ -862,6 +883,7 @@ __all__ = [
     "LLMGroundingMetadata",
     "LLMMessage",
     "LLMResponse",
+    "PromptInput",
     "RerankDocument",
     "RerankResult",
     "ResponseFormat",

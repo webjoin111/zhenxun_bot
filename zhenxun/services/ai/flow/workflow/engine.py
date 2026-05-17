@@ -19,6 +19,7 @@ from zhenxun.services.ai.flow.workflow.types import (
     WorkflowRunResult,
 )
 from zhenxun.services.ai.run import RunContext
+from zhenxun.services.ai.core.messages import PromptInput
 from zhenxun.services.ai.tools.core.tool import FunctionTool
 from zhenxun.services.log import logger
 
@@ -99,7 +100,7 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
         return Depends(_dependency)
 
     async def reply(
-        self, prompt: Any = None, reply_to: bool = False, **kwargs: Any
+        self, prompt: PromptInput | None = None, reply_to: bool = False, **kwargs: Any
     ) -> WorkflowRunResult:
         """
         工作流交互执行语法糖，隐式提取上下文并自动将最终流水线产出发送回复给用户。
@@ -141,7 +142,7 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
         return res
 
     async def run(
-        self, prompt: Any = None, *, context: RunContext | None = None, **kwargs: Any
+        self, prompt: PromptInput | None = None, *, context: RunContext | None = None, **kwargs: Any
     ) -> WorkflowRunResult:
         """
         工作流单次运行阻塞核心入口，遍历所有图元节点直至终止。
@@ -191,7 +192,7 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
 
     @contextlib.asynccontextmanager
     async def run_stream(
-        self, prompt: Any = None, *, context: RunContext | None = None, **kwargs: Any
+        self, prompt: PromptInput | None = None, *, context: RunContext | None = None, **kwargs: Any
     ) -> AsyncIterator["StreamedRunResult[Any]"]:
         """对齐 BaseRunnable 接口的流式上下文管理器"""
         import asyncio
@@ -221,7 +222,7 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
                 task.cancel()
 
     async def _internal_stream(
-        self, prompt: Any = None, context: RunContext | None = None, **kwargs: Any
+        self, prompt: PromptInput | None = None, context: RunContext | None = None, **kwargs: Any
     ) -> AsyncIterator[Any]:
         """原 arun_stream 逻辑改名，供内部 _execution_task 调用"""
         session_id = (

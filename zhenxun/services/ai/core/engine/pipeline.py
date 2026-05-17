@@ -37,13 +37,19 @@ class DialoguePipeline:
         self.session_metadata = session_metadata
         self.memory_facade = memory_facade
 
-        self.working_memory = memory_facade.working_memory
-        self.long_term_memory = memory_facade.long_term_memory
-        self.context_threshold = memory_facade.context_threshold
-        self.max_history_turns = memory_facade.max_history_turns
+        self.working_memory = memory_facade.working_memory if memory_facade else None
+        self.long_term_memory = (
+            memory_facade.long_term_memory if memory_facade else None
+        )
+        self.context_threshold = (
+            memory_facade.context_threshold if memory_facade else None
+        )
+        self.max_history_turns = (
+            memory_facade.max_history_turns if memory_facade else None
+        )
 
         self.custom_reducers: list[BaseMemoryReducer] | None = None
-        if memory_facade.memory_reducers is not None:
+        if memory_facade and memory_facade.memory_reducers is not None:
             self.custom_reducers = []
             for r in memory_facade.memory_reducers:
                 if isinstance(r, str):
@@ -159,6 +165,7 @@ class DialoguePipeline:
         system_instruction: str | None = None,
         message_buffer: list[LLMMessage] | None = None,
         base_overhead: int = 0,
+        run_context: Any | None = None,
     ) -> list[LLMMessage]:
         """
         全量装配工作流：
@@ -182,7 +189,10 @@ class DialoguePipeline:
         if user_input:
             from zhenxun.services.ai.message_builder import MessageBuilder
 
-            msgs = await MessageBuilder.normalize_to_llm_messages(user_input)
+            bot_inst = run_context.get_bot() if run_context else None
+            event_inst = run_context.get_event() if run_context else None
+
+            msgs = await MessageBuilder.normalize_to_llm_messages(user_input, bot=bot_inst, event=event_inst)
             if msgs:
                 normalized_user_msg = msgs[-1]
 

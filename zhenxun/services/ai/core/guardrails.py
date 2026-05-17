@@ -122,7 +122,8 @@ class LLMGuardrail(BaseGuardrail):
                 "请评估以下[待检测内容]是否违反了任何一条[规则列表]。\n\n"
                 f"### [规则列表]\n{rules_str}\n\n"
                 f"### [待检测内容]\n{text}\n\n"
-                "请严格按照规则评估。只要违反了其中任意一条，passed 必须为 false，并在 violations 中详细说明理由。"
+                "请严格按照规则评估。只要违反了其中任意一条，"
+                "passed 必须为 false，并在 violations 中详细说明理由。"
             )
 
         model = self.config.judge_model

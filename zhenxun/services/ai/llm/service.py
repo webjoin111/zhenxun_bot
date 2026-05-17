@@ -16,6 +16,7 @@ from zhenxun.services.ai.core.configs import (
     LLMEmbeddingConfig,
     TTSConfig,
 )
+from zhenxun.services.ai.core.engine.token_estimator import parse_usage_info
 from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
 from zhenxun.services.ai.core.messages import (
     AudioResponse,
@@ -27,8 +28,8 @@ from zhenxun.services.ai.core.messages import (
 from zhenxun.services.ai.core.models import (
     ModelCapabilities,
     ModelDetail,
+    ModelModality,
 )
-from zhenxun.services.ai.core.engine.token_estimator import parse_usage_info
 from zhenxun.services.ai.llm.engine import BaseEngine
 from zhenxun.services.ai.protocols import LLMContext
 from zhenxun.services.ai.protocols.llm import LLMModelBase
@@ -237,6 +238,41 @@ class LLMModel(LLMModelBase):
         生成高级响应 (支持中间件管道)。
         """
         self._check_not_closed()
+
+        filtered_messages = []
+        from zhenxun.services.ai.core.messages import AudioPart, ImagePart, VideoPart
+        from zhenxun.utils.pydantic_compat import model_copy
+
+        for msg in messages:
+            new_content = []
+            for part in msg.content:
+                if (
+                    isinstance(part, ImagePart)
+                    and ModelModality.IMAGE not in self.capabilities.input_modalities
+                ):
+                    logger.warning(
+                        f"模型 {self.model_name} 不支持图像输入，已自动过滤图片内容。"
+                    )
+                    continue
+                if (
+                    isinstance(part, AudioPart)
+                    and ModelModality.AUDIO not in self.capabilities.input_modalities
+                ):
+                    logger.warning(
+                        f"模型 {self.model_name} 不支持音频输入，已自动过滤音频内容。"
+                    )
+                    continue
+                if (
+                    isinstance(part, VideoPart)
+                    and ModelModality.VIDEO not in self.capabilities.input_modalities
+                ):
+                    logger.warning(
+                        f"模型 {self.model_name} 不支持视频输入，已自动过滤视频内容。"
+                    )
+                    continue
+                new_content.append(part)
+            filtered_messages.append(model_copy(msg, update={"content": new_content}))
+        messages = filtered_messages
 
         if self._generation_config and config:
             final_request_config = self._generation_config.merge_with(config)

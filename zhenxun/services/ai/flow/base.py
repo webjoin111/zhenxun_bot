@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field, model_validator
 if TYPE_CHECKING:
     from zhenxun.services.ai.run.models import StreamedRunResult
 
+from zhenxun.services.ai.core.messages import PromptInput
+
 T_RunResult = TypeVar("T_RunResult")
 
 
@@ -77,7 +79,7 @@ class BaseRunnable(ABC, Generic[T_RunResult]):
 
     async def reply(
         self,
-        prompt: Any = None,
+        prompt: PromptInput | None = None,
         reply_to: bool = False,
         *,
         context: Any = None,
@@ -90,7 +92,7 @@ class BaseRunnable(ABC, Generic[T_RunResult]):
         return cast(T_RunResult, await runner.reply(prompt=prompt, reply_to=reply_to))
 
     async def run(
-        self, prompt: Any = None, *, context: Any = None, **kwargs: Any
+        self, prompt: PromptInput | None = None, *, context: Any = None, **kwargs: Any
     ) -> T_RunResult:
         """阻塞式核心运行入口，默认通过 run_stream 消费提取结果"""
         async with self.run_stream(
@@ -101,7 +103,7 @@ class BaseRunnable(ABC, Generic[T_RunResult]):
     @abstractmethod
     @contextlib.asynccontextmanager
     async def run_stream(
-        self, prompt: Any = None, *, context: Any = None, **kwargs: Any
+        self, prompt: PromptInput | None = None, *, context: Any = None, **kwargs: Any
     ) -> "AsyncIterator[StreamedRunResult[Any]]":
         """流式运行入口，返回上下文管理器，用于消费底层执行流事件 (StreamedRunResult)"""
         yield cast(Any, None)

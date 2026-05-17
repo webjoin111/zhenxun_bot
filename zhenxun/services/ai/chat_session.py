@@ -1,7 +1,7 @@
 from typing import Any
 
 from zhenxun.services.ai.core.configs import GenerationConfig
-from zhenxun.services.ai.core.messages import LLMMessage
+from zhenxun.services.ai.core.messages import LLMMessage, PromptInput
 from zhenxun.services.ai.flow.agent import Agent
 from zhenxun.services.ai.flow.agent.models import AgentRuntimeConfig
 from zhenxun.services.ai.memory.models import AgentMemory, SessionMetadata
@@ -67,7 +67,7 @@ class ChatSession:
             )
         return []
 
-    async def chat(self, prompt: str | Any, **kwargs: Any) -> AgentRunResult[str]:
+    async def chat(self, prompt: PromptInput, **kwargs: Any) -> AgentRunResult[str]:
         """
         进行一次基础的上下文对话。
 

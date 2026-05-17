@@ -15,12 +15,12 @@ from zhenxun.services.ai.core.messages import (
     ToolMessage,
     UserMessage,
 )
-from zhenxun.services.ai.memory.long_term_memory import MemoryScope
-from zhenxun.services.ai.memory.models import SessionMetadata
 from zhenxun.services.ai.memory.interfaces import (
     BaseMessageStore,
     BaseWorkingMemory,
 )
+from zhenxun.services.ai.memory.long_term_memory import MemoryScope
+from zhenxun.services.ai.memory.models import SessionMetadata
 from zhenxun.services.ai.protocols.middleware import (
     BaseLLMMiddleware,
     LLMContext,
@@ -212,7 +212,8 @@ def get_orm_working_memory(
     | None = None,
 ) -> "ChatWorkingMemory":
     """
-    [工厂方法] 供第三方开发者调用，将 Tortoise ORM 表直接包装为带有滚动窗口截断能力的工作记忆系统。
+    [工厂方法] 供第三方开发者调用，
+    将 Tortoise ORM 表直接包装为带有滚动窗口截断能力的工作记忆系统。
     """
     store = TortoiseMessageStore(
         model_class=model_class, custom_save_hook=custom_save_hook

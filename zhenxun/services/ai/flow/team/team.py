@@ -9,6 +9,7 @@ from zhenxun.services.ai.flow.team.strategy import (
     BaseTeamStrategy,
 )
 from zhenxun.services.ai.run import AgentRunResult, RunContext, Task
+from zhenxun.services.ai.core.messages import PromptInput
 
 
 class Team(BaseRunnable[AgentRunResult[Any]]):
@@ -55,7 +56,7 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
 
     async def run(
         self,
-        prompt: str | Task | None = None,
+        prompt: PromptInput | Task | None = None,
         *,
         context: RunContext | None = None,
         **kwargs: Any,
@@ -78,7 +79,7 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
     @contextlib.asynccontextmanager
     async def run_stream(
         self,
-        prompt: str | Task | None = None,
+        prompt: PromptInput | Task | None = None,
         *,
         context: RunContext | None = None,
         **kwargs: Any,

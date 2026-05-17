@@ -13,8 +13,6 @@ from mcp.client.sse import sse_client
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.message import SessionMessage
-from nonebot_plugin_alconna import Image as AlcImage
-from nonebot_plugin_alconna import UniMessage
 from pydantic import ValidationError
 
 from zhenxun.services.ai.run import RunContext
@@ -190,8 +188,6 @@ class MCPRemoteTool(BaseTool):
         from zhenxun.services.ai.core.messages import ImagePart, TextPart
 
         output_content = []
-        display_msg = UniMessage()
-        has_display = False
         img_count = 0
 
         for item in result.content:
@@ -203,11 +199,9 @@ class MCPRemoteTool(BaseTool):
                 if b64_data:
                     try:
                         img_bytes = base64.b64decode(b64_data)
-                        display_msg += AlcImage(raw=img_bytes)
                         output_content.append(
                             ImagePart(raw=img_bytes, mime_type=mime_type)
                         )
-                        has_display = True
                         img_count += 1
                         continue
                     except Exception as e:
@@ -221,9 +215,7 @@ class MCPRemoteTool(BaseTool):
 
                 md_images = re.findall(r"!\[.*?\]\((https?://[^\)]+)\)", text)
                 for img_url in md_images:
-                    display_msg += AlcImage(url=img_url)
                     output_content.append(ImagePart(url=img_url))
-                    has_display = True
                     img_count += 1
             else:
                 dumped = model_dump(item) if hasattr(item, "model_dump") else str(item)
@@ -232,8 +224,8 @@ class MCPRemoteTool(BaseTool):
         tool_result = ToolResult(output=output_content).with_log(
             f"获取到 {len(output_content)} 条返回数据，提取了 {img_count} 张图片"
         )
-        if has_display:
-            tool_result = tool_result.show_to_user(display_msg)
+        if img_count > 0:
+            tool_result = tool_result.show_to_user(output_content)
         return tool_result
 
 
