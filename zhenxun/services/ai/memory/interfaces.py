@@ -1,8 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from zhenxun.services.ai.core.messages import LLMMessage
-from zhenxun.services.ai.memory.models import MemoryRecord, SessionMetadata
+from zhenxun.services.ai.memory.models import MemoryQuery, MemoryRecord, SessionMetadata
 
 
 class BaseMessageStore(ABC):
@@ -63,10 +63,8 @@ class StorageBackend(Protocol):
 
     async def search(
         self,
-        query_embedding: list[float],
+        query: MemoryQuery,
         scope_prefix: str | None = None,
-        metadata_filter: dict[str, Any] | None = None,
-        limit: int = 10,
     ) -> list[tuple[MemoryRecord, float]]:
         """在指定的前缀作用域内，检索与 query_embedding 相似的记忆。
         返回元组列表：(记忆记录, 相似度得分0-1)
@@ -89,7 +87,6 @@ class BaseMemoryReducer(ABC):
     async def reduce(
         self,
         messages: list[LLMMessage],
-        target_tokens: int,
         current_tokens: int,
         model_name: str,
         base_overhead: int = 0,

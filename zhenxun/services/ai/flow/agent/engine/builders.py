@@ -5,7 +5,6 @@ from typing import Any
 
 from nonebot.utils import is_coroutine_callable
 
-from zhenxun.services.ai.core.engine.pipeline import DialoguePipeline
 from zhenxun.services.ai.core.messages import LLMMessage
 from zhenxun.services.ai.core.templates import PromptTemplate
 from zhenxun.services.ai.flow.agent.models import Persona
@@ -108,24 +107,128 @@ class ContextBuilder:
         memory_facade: Any,
         run_context: RunContext | None = None,
     ) -> list[LLMMessage]:
-        """融合记忆与工具说明，通过对话管线(DialoguePipeline)生成最终的消息数组"""
+        """融合系统提示词、压缩后的历史记忆和用户输入，生成最终的消息数组"""
         system_prompt = base_system_prompt
 
         if injected_prompts:
             system_prompt += "\n\n--- 工具箱专属使用说明 ---\n\n"
             system_prompt += "\n\n".join(injected_prompts)
 
-        pipeline = DialoguePipeline(
-            model_name=model_name,
-            session_metadata=session_metadata,
-            memory_facade=memory_facade,
-        )
-        return await pipeline.build_messages(
-            user_input=user_input,
-            system_instruction=system_prompt,
-            base_overhead=0,
-            run_context=run_context,
-        )
+        messages_for_run: list[LLMMessage] = []
+        if system_prompt:
+            messages_for_run.append(LLMMessage.system(system_prompt))
+
+        normalized_user_msg = None
+        if user_input:
+            from zhenxun.services.ai.message_builder import MessageBuilder
+
+            bot_inst = run_context.get_bot() if run_context else None
+            event_inst = run_context.get_event() if run_context else None
+
+            msgs = await MessageBuilder.normalize_to_llm_messages(
+                user_input, bot=bot_inst, event=event_inst
+            )
+            if msgs:
+                normalized_user_msg = msgs[-1]
+
+        current_history: list[LLMMessage] = []
+        working_memory = memory_facade.working_memory if memory_facade else None
+
+        if working_memory:
+            current_history = await working_memory.get_history(session_metadata)
+
+            from zhenxun.services.ai.config import get_llm_config
+            from zhenxun.services.ai.memory.compression import CondenserPipeline
+            from zhenxun.services.ai.memory.interfaces import BaseMemoryReducer
+
+            config = get_llm_config().context_settings
+            pipeline_reducers: list[BaseMemoryReducer] = []
+
+            vw = config.vision_window_size
+            if (
+                memory_facade
+                and getattr(memory_facade, "vision_window", None) is not None
+            ):
+                vw = memory_facade.vision_window
+            if vw > 0:
+                from zhenxun.services.ai.memory.compression import (
+                    MultimodalPlaceholderReducer,
+                )
+
+                pipeline_reducers.append(MultimodalPlaceholderReducer(window_size=vw))
+
+            policy = getattr(memory_facade, "policy", None) if memory_facade else None
+            if policy is not None:
+                pipeline_reducers.extend(policy)
+            else:
+                from zhenxun.services.ai.memory.policy import MemoryPolicy
+
+                strategy = config.default_strategy
+                s_kwargs = config.strategy_kwargs.get(strategy, {}).copy()
+
+                threshold = config.trigger_threshold
+                if (
+                    memory_facade
+                    and getattr(memory_facade, "context_threshold", None) is not None
+                ):
+                    threshold = memory_facade.context_threshold
+
+                from zhenxun.services.ai.llm.capabilities import get_model_capabilities
+
+                caps = get_model_capabilities(model_name)
+                limit = (
+                    int(caps.max_input_tokens * threshold)
+                    if threshold <= 1.0
+                    else int(threshold)
+                )
+
+                max_turns = config.max_history_turns
+                if (
+                    memory_facade
+                    and getattr(memory_facade, "max_history_turns", None) is not None
+                ):
+                    max_turns = memory_facade.max_history_turns
+
+                if strategy == "unlimited":
+                    pipeline_reducers.extend(MemoryPolicy.unlimited())
+                elif strategy == "llm_summary":
+                    s_kwargs["trigger_tokens"] = limit
+                    s_kwargs["max_turns"] = max_turns
+                    pipeline_reducers.extend(MemoryPolicy.llm_summarize(**s_kwargs))
+                elif strategy == "structured_summary":
+                    s_kwargs["trigger_tokens"] = limit
+                    s_kwargs["max_turns"] = max_turns
+                    pipeline_reducers.extend(
+                        MemoryPolicy.structured_summarize(**s_kwargs)
+                    )
+                else:
+                    if max_turns is not None:
+                        s_kwargs["max_turns"] = max_turns
+                    pipeline_reducers.extend(MemoryPolicy.sliding_window(**s_kwargs))
+
+            if pipeline_reducers:
+                from zhenxun.services.log import logger
+
+                pipeline = CondenserPipeline(pipeline_reducers)
+                new_history, changed = await pipeline.run(
+                    current_history,
+                    model_name=model_name,
+                    base_overhead=0,
+                )
+
+                if changed:
+                    await working_memory.set_history(session_metadata, new_history)
+                    logger.info(
+                        f"💾 [上下文管线] 压缩/截断完毕，已同步覆写数据库。压缩后条数: {len(new_history)}"
+                    )
+                current_history = new_history
+
+        messages_for_run.extend(current_history)
+
+        if normalized_user_msg:
+            messages_for_run.append(normalized_user_msg)
+
+        return messages_for_run
 
 
 class ToolBuilder:

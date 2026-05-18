@@ -66,14 +66,14 @@ class Inject:
         """
         (底层) 注册一个自定义的依赖提供者。
         provider 函数接收 RunContext 作为唯一参数，支持同步或异步。
-        推荐使用更优雅的 @Inject.provider(key) 装饰器。
+        推荐使用 @Inject.provider(key) 装饰器。
         """
         cls._providers[key] = provider
 
     @classmethod
     def provider(cls, key: str):
         """
-        (推荐) 注册依赖提供者的装饰器。
+        注册依赖提供者的装饰器。
         示例:
             @Inject.provider("my_db")
             async def get_db(ctx: RunContext) -> AsyncSession: ...
@@ -96,7 +96,7 @@ class Inject:
     @classmethod
     def UpstreamResult(cls, step_name: str) -> Any:
         """
-        (推荐) 自动注入：精准获取工作流中指定前置节点的产出。可作为参数的默认值使用以通过静态检查。
+        自动注入：精准获取工作流中指定前置节点的产出。可作为参数的默认值使用以通过静态检查。
         示例: def my_step(data: str = Inject.UpstreamResult("AgentA")):
         """
         return _UpstreamResultMarker(step_name)

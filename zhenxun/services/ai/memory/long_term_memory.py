@@ -5,7 +5,12 @@ import uuid
 from tortoise import fields
 
 from zhenxun.services.ai.memory.interfaces import StorageBackend
-from zhenxun.services.ai.memory.models import MemoryConfig, MemoryMatch, MemoryRecord
+from zhenxun.services.ai.memory.models import (
+    MemoryConfig,
+    MemoryMatch,
+    MemoryQuery,
+    MemoryRecord,
+)
 from zhenxun.services.ai.memory.utils import (
     compute_composite_score,
     cosine_similarity,
@@ -65,28 +70,30 @@ class TortoiseStorageBackend(StorageBackend):
 
     async def search(
         self,
-        query_embedding: list[float],
+        query: MemoryQuery,
         scope_prefix: str | None = None,
-        metadata_filter: dict[str, Any] | None = None,
-        limit: int = 10,
     ) -> list[tuple[MemoryRecord, float]]:
-        query = self.model_class.all()
+        query_orm = self.model_class.all()
         if scope_prefix:
-            query = query.filter(scope__startswith=scope_prefix)
-        rows = await query
+            query_orm = query_orm.filter(scope__startswith=scope_prefix)
+        if not query.embedding and query.text:
+            query_orm = query_orm.filter(content__icontains=query.text)
+        rows = await query_orm
         results = []
         for row in rows:
-            if metadata_filter:
+            if query.metadata_filters:
                 row_meta = row.meta_data if isinstance(row.meta_data, dict) else {}
-                if not all(row_meta.get(k) == v for k, v in metadata_filter.items()):
+                if not all(
+                    row_meta.get(k) == v for k, v in query.metadata_filters.items()
+                ):
                     continue
-            if not isinstance(row.embedding, list) or not query_embedding:
+            if not isinstance(row.embedding, list) or not query.embedding:
                 results.append((self._to_memory_record(row), 0.1))
             else:
-                sim = cosine_similarity(query_embedding, row.embedding)
+                sim = cosine_similarity(query.embedding, row.embedding)
                 results.append((self._to_memory_record(row), sim))
         results.sort(key=lambda x: x[1], reverse=True)
-        return results[:limit]
+        return results[: query.limit]
 
     async def delete(
         self, scope_prefix: str | None = None, record_ids: list[str] | None = None
@@ -161,11 +168,17 @@ class MemoryScope:
         final_scope = join_scope_paths(self.root_path, inner_scope)
         query_vector = await self._get_embedding(query)
         fetch_limit = limit * 3 if self.rerank_model else limit * 2
-        raw_results = await self.storage.search(
-            query_vector,
-            scope_prefix=final_scope,
-            metadata_filter=metadata_filter,
+
+        memory_query = MemoryQuery(
+            text=query,
+            embedding=query_vector,
+            metadata_filters=metadata_filter,
             limit=fetch_limit,
+        )
+
+        raw_results = await self.storage.search(
+            memory_query,
+            scope_prefix=final_scope,
         )
 
         if self.rerank_model and raw_results:
@@ -246,30 +259,31 @@ class DictStorageBackend(StorageBackend):
 
     async def search(
         self,
-        query_embedding: list[float],
+        query: MemoryQuery,
         scope_prefix: str | None = None,
-        metadata_filter: dict[str, Any] | None = None,
-        limit: int = 10,
     ) -> list[tuple[MemoryRecord, float]]:
         results = []
         for record in self._records.values():
             if scope_prefix and not record.scope.startswith(scope_prefix):
                 continue
 
-            if metadata_filter:
+            if query.metadata_filters:
                 if not record.metadata or not all(
-                    record.metadata.get(k) == v for k, v in metadata_filter.items()
+                    record.metadata.get(k) == v
+                    for k, v in query.metadata_filters.items()
                 ):
                     continue
+            if not query.embedding and query.text and query.text not in record.content:
+                continue
 
-            if not record.embedding or not query_embedding:
+            if not record.embedding or not query.embedding:
                 results.append((record, 0.1))
             else:
-                sim = cosine_similarity(query_embedding, record.embedding)
+                sim = cosine_similarity(query.embedding, record.embedding)
                 results.append((record, sim))
 
         results.sort(key=lambda x: x[1], reverse=True)
-        return results[:limit]
+        return results[: query.limit]
 
     async def delete(
         self,

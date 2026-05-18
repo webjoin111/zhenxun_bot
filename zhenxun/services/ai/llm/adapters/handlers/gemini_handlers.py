@@ -30,7 +30,11 @@ from zhenxun.services.ai.core.messages import (
     UserMessage,
     VideoPart,
 )
-from zhenxun.services.ai.core.models import ModelCapabilities, ModelDetail
+from zhenxun.services.ai.core.models import (
+    ModelCapabilities,
+    ModelDetail,
+    ReasoningMode,
+)
 from zhenxun.services.ai.llm.adapters.base import (
     RequestData,
     ResponseData,
@@ -682,15 +686,29 @@ class GeminiTextHandler(BaseTextHandler):
             ):
                 is_structured = True
 
-        if (has_function_tools or is_structured) and effective_config:
+        has_reasoning_cap = False
+        if model.capabilities and model.capabilities.reasoning_mode in (
+            ReasoningMode.BUDGET,
+            ReasoningMode.LEVEL,
+        ):
+            has_reasoning_cap = True
+
+        if (
+            has_function_tools or is_structured or has_reasoning_cap
+        ) and effective_config:
             if (
                 effective_config.gemini_options.thinking_budget is None
                 and effective_config.gemini_options.thinking_level is None
             ):
-                reason_desc = "工具调用" if has_function_tools else "结构化输出"
-                logger.debug(
-                    f"检测到{reason_desc}，自动为模型 {model.model_name} 开启思维链增强"
-                )
+                if has_function_tools or is_structured:
+                    reason_desc = "工具调用" if has_function_tools else "结构化输出"
+                    logger.debug(
+                        f"检测到{reason_desc}，自动为模型 {model.model_name} 开启思维链增强"
+                    )
+                else:
+                    logger.debug(
+                        f"模型 {model.model_name} 声明原生支持思维链，自动开启思维链"
+                    )
                 effective_config.gemini_options.thinking_budget = -1
 
         endpoint = getattr(adapter, "_get_gemini_endpoint")(model, effective_config)

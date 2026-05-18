@@ -1,32 +1,128 @@
-import asyncio
-
 from pydantic import BaseModel, Field
 
-from zhenxun.services.ai.config import get_llm_config
 from zhenxun.services.ai.core.engine.token_estimator import global_estimator
 from zhenxun.services.ai.core.messages import (
+    AudioPart,
+    FilePart,
+    ImagePart,
     LLMMessage,
     SystemMessage,
+    TextPart,
     ToolMessage,
+    VideoPart,
 )
-from zhenxun.services.ai.llm.capabilities import get_model_capabilities
-from zhenxun.services.ai.llm.manager import get_global_default_model_name
 from zhenxun.services.ai.memory.interfaces import (
     BaseMemoryReducer,
-    BaseWorkingMemory,
 )
-from zhenxun.services.ai.memory.models import SessionMetadata
-from zhenxun.services.ai.memory.working_memory import _get_default_memory
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_copy
 
 
-class ToolOutputCompactor(BaseMemoryReducer):
-    async def reduce(
-        self, messages, target_tokens, current_tokens, model_name, base_overhead=0
-    ):
-        if current_tokens <= target_tokens:
+class SlidingWindowReducer(BaseMemoryReducer):
+    """物理滑动窗口：强制丢弃超过设定轮数的最早对话，保证数据库和上下文不无限膨胀"""
+
+    def __init__(self, max_turns: int = 50):
+        self.max_turns = max_turns
+
+    async def reduce(self, messages, current_tokens, model_name, base_overhead=0):
+        user_msgs = [m for m in messages if m.role == "user"]
+        if len(user_msgs) > self.max_turns:
+            keep_user_msgs = user_msgs[-self.max_turns :]
+            earliest_user_msg = keep_user_msgs[0]
+            idx = messages.index(earliest_user_msg)
+            has_system = messages and isinstance(messages[0], SystemMessage)
+            if has_system and idx > 0:
+                new_messages = [messages[0], *messages[idx:]]
+            else:
+                new_messages = messages[idx:]
+            new_tokens = global_estimator.estimate_context(
+                new_messages, model_name, base_overhead
+            )
+            return new_messages, True, new_tokens
+        return messages, False, current_tokens
+
+
+class MultimodalPlaceholderReducer(BaseMemoryReducer):
+    """视觉媒体降级：将超过一定轮数的老图片/视频替换为 <图片> 占位符文本"""
+
+    def __init__(self, window_size: int = 5):
+        self.window_size = window_size
+
+    @staticmethod
+    def apply_multimodal_placeholder(message: LLMMessage) -> LLMMessage:
+        sanitized_message = model_copy(message, deep=False)
+        new_content_parts = []
+
+        for part in sanitized_message.content:
+            if isinstance(part, ImagePart):
+                new_content_parts.append(TextPart(text="<图片>"))
+            elif isinstance(part, AudioPart):
+                new_content_parts.append(TextPart(text="<音频>"))
+            elif isinstance(part, VideoPart):
+                new_content_parts.append(TextPart(text="<视频>"))
+            elif isinstance(part, FilePart):
+                new_content_parts.append(TextPart(text="<文件>"))
+            elif isinstance(part, TextPart) and "[多模态内容:" in part.text:
+                new_content_parts.append(TextPart(text="<图片>"))
+            else:
+                new_content_parts.append(part)
+
+        merged_parts = []
+        for part in new_content_parts:
+            if (
+                isinstance(part, TextPart)
+                and merged_parts
+                and isinstance(merged_parts[-1], TextPart)
+            ):
+                new_text = (merged_parts[-1].text or "") + " " + (part.text or "")
+                merged_parts[-1] = TextPart(text=new_text.strip())
+            else:
+                merged_parts.append(part)
+
+        sanitized_message.content = merged_parts
+        sanitized_message.token_cost = None
+        return sanitized_message
+
+    async def reduce(self, messages, current_tokens, model_name, base_overhead=0):
+        if self.window_size <= 0:
             return messages, False, current_tokens
+
+        processed_messages = []
+        user_multimodal_count = 0
+        changed = False
+
+        for msg in reversed(messages):
+            has_multimodal = False
+            if isinstance(msg.content, list):
+                has_multimodal = any(
+                    isinstance(p, (ImagePart, AudioPart, VideoPart, FilePart))
+                    or (isinstance(p, TextPart) and "[多模态内容:" in p.text)
+                    for p in msg.content
+                )
+
+            if has_multimodal:
+                if msg.role == "user":
+                    user_multimodal_count += 1
+                if user_multimodal_count > self.window_size:
+                    processed_messages.append(self.apply_multimodal_placeholder(msg))
+                    changed = True
+                else:
+                    processed_messages.append(msg)
+            else:
+                processed_messages.append(msg)
+
+        if not changed:
+            return messages, False, current_tokens
+
+        processed_messages.reverse()
+        new_tokens = global_estimator.estimate_context(
+            processed_messages, model_name, base_overhead
+        )
+        return processed_messages, True, new_tokens
+
+
+class ToolOutputCompactor(BaseMemoryReducer):
+    async def reduce(self, messages, current_tokens, model_name, base_overhead=0):
         changed = False
         new_messages = []
         for msg in messages:
@@ -74,27 +170,32 @@ class ToolOutputCompactor(BaseMemoryReducer):
 
 
 class MessageDropper(BaseMemoryReducer):
-    async def reduce(
-        self, messages, target_tokens, current_tokens, model_name, base_overhead=0
-    ):
-        if current_tokens <= target_tokens:
+    def __init__(self, trigger_tokens: int = 4000):
+        self.trigger_tokens = trigger_tokens
+
+    async def reduce(self, messages, current_tokens, model_name, base_overhead=0):
+        if current_tokens <= self.trigger_tokens:
             return messages, False, current_tokens
         new_messages = list(messages)
         changed = False
-        idx = 0
-        while current_tokens > target_tokens and idx < len(new_messages):
-            msg = new_messages[idx]
-            is_pinned = msg.metadata.get("pinned", False) if msg.metadata else False
-            if isinstance(msg, SystemMessage) or is_pinned:
-                idx += 1
-                continue
-            dropped_msg = new_messages.pop(idx)
+
+        while current_tokens > self.trigger_tokens:
+            user_indices = [
+                i
+                for i, m in enumerate(new_messages)
+                if m.role == "user"
+                and not (m.metadata and m.metadata.get("pinned", False))
+            ]
+
+            if len(user_indices) < 2:
+                break
+
+            start_idx = user_indices[0]
+            end_idx = user_indices[1]
+
+            del new_messages[start_idx:end_idx]
             changed = True
-            current_tokens -= (
-                dropped_msg.token_cost
-                or global_estimator.estimate_message(dropped_msg, model_name)
-            )
-        if changed:
+
             current_tokens = global_estimator.estimate_context(
                 new_messages, model_name, base_overhead
             )
@@ -102,17 +203,31 @@ class MessageDropper(BaseMemoryReducer):
 
 
 class LLMSummarizerReducer(BaseMemoryReducer):
-    def __init__(self, keep_recent_msgs: int = 4):
-        self.keep_recent_msgs = keep_recent_msgs
-
-    async def reduce(
-        self, messages, target_tokens, current_tokens, model_name, base_overhead=0
+    def __init__(
+        self,
+        keep_recent_turns: int = 0,
+        trigger_tokens: int = 4000,
+        max_turns: int | None = None,
+        summarization_model: str = "Gemini/gemini-2.5-flash",
+        summarization_prompt: str = "请概括以下对话内容，保留关键的约束条件、用户偏好、已完成的任务状态和未解决的问题。",
     ):
-        if current_tokens <= target_tokens:
-            return messages, False, current_tokens
+        self.keep_recent_turns = keep_recent_turns
+        self.trigger_tokens = trigger_tokens
+        self.max_turns = max_turns
+        self.summarization_model = summarization_model
+        self.summarization_prompt = summarization_prompt
 
-        config = get_llm_config().context_settings
-        if not config.enable_summarization:
+    async def reduce(self, messages, current_tokens, model_name, base_overhead=0):
+        user_turns = sum(
+            1
+            for m in messages
+            if m.role == "user"
+            and not (m.metadata and m.metadata.get("is_summary", False))
+        )
+        is_token_exceeded = current_tokens > self.trigger_tokens
+        is_turn_exceeded = self.max_turns is not None and user_turns > self.max_turns
+
+        if not (is_token_exceeded or is_turn_exceeded):
             return messages, False, current_tokens
 
         pinned_msgs, working_msgs, prev_summary = [], [], ""
@@ -127,18 +242,20 @@ class LLMSummarizerReducer(BaseMemoryReducer):
             else:
                 working_msgs.append(msg)
 
-        if len(working_msgs) <= self.keep_recent_msgs:
-            return messages, False, current_tokens
-        to_summarize = (
-            working_msgs[: -self.keep_recent_msgs]
-            if self.keep_recent_msgs > 0
-            else working_msgs
-        )
-        to_keep = (
-            working_msgs[-self.keep_recent_msgs :] if self.keep_recent_msgs > 0 else []
-        )
+        user_indices = [i for i, m in enumerate(working_msgs) if m.role == "user"]
 
-        prompt_text = f"### 📋 [对话摘要任务]\n{config.summarization_prompt}\n\n"
+        if len(user_indices) <= self.keep_recent_turns:
+            return messages, False, current_tokens
+
+        split_idx = (
+            user_indices[-self.keep_recent_turns]
+            if self.keep_recent_turns > 0
+            else len(working_msgs)
+        )
+        to_summarize = working_msgs[:split_idx]
+        to_keep = working_msgs[split_idx:]
+
+        prompt_text = f"### 📋 [对话摘要任务]\n{self.summarization_prompt}\n\n"
         if prev_summary:
             prompt_text += "####  önceki_summary (参考先前的快照):\n"
             prompt_text += f"> {prev_summary}\n\n"
@@ -154,15 +271,17 @@ class LLMSummarizerReducer(BaseMemoryReducer):
         try:
             response = await chat(
                 prompt_text,
-                model=config.summarization_model,
+                model=self.summarization_model,
                 instruction="你是后台记忆整理引擎。请客观、简明输出当前对话全局摘要。",
             )
-            new_summary_msg = LLMMessage.system(
-                f"[全局记忆摘要(由AI生成)]\n{response.text}"
+            new_summary_msg = LLMMessage.assistant_text_response(
+                f"【历史对话摘要记忆】\n{response.text}"
             )
             new_summary_msg.metadata = {"is_summary": True, "pinned": True}
         except Exception as e:
-            logger.error(f"[LLMSummarizerReducer] 调用失败: {e}")
+            logger.error(
+                f"[LLMSummarizerReducer] 压缩总结调用失败，已跳过本次压缩: {e}"
+            )
             return messages, False, current_tokens
 
         new_messages = [*pinned_msgs, new_summary_msg, *to_keep]
@@ -174,16 +293,30 @@ class LLMSummarizerReducer(BaseMemoryReducer):
 
 
 class StructuredSummaryReducer(BaseMemoryReducer):
-    def __init__(self, keep_recent_msgs: int = 4):
-        self.keep_recent_msgs = keep_recent_msgs
-
-    async def reduce(
-        self, messages, target_tokens, current_tokens, model_name, base_overhead=0
+    def __init__(
+        self,
+        keep_recent_turns: int = 0,
+        trigger_tokens: int = 4000,
+        max_turns: int | None = None,
+        summarization_model: str = "Gemini/gemini-2.5-flash",
     ):
-        if current_tokens <= target_tokens:
-            return messages, False, current_tokens
+        self.keep_recent_turns = keep_recent_turns
+        self.trigger_tokens = trigger_tokens
+        self.max_turns = max_turns
+        self.summarization_model = summarization_model
 
-        config = get_llm_config().context_settings
+    async def reduce(self, messages, current_tokens, model_name, base_overhead=0):
+        user_turns = sum(
+            1
+            for m in messages
+            if m.role == "user"
+            and not (m.metadata and m.metadata.get("is_summary", False))
+        )
+        is_token_exceeded = current_tokens > self.trigger_tokens
+        is_turn_exceeded = self.max_turns is not None and user_turns > self.max_turns
+
+        if not (is_token_exceeded or is_turn_exceeded):
+            return messages, False, current_tokens
 
         pinned_msgs, working_msgs, prev_summary = [], [], ""
         for msg in messages:
@@ -197,17 +330,18 @@ class StructuredSummaryReducer(BaseMemoryReducer):
             else:
                 working_msgs.append(msg)
 
-        if len(working_msgs) <= self.keep_recent_msgs:
+        user_indices = [i for i, m in enumerate(working_msgs) if m.role == "user"]
+
+        if len(user_indices) <= self.keep_recent_turns:
             return messages, False, current_tokens
 
-        to_summarize = (
-            working_msgs[: -self.keep_recent_msgs]
-            if self.keep_recent_msgs > 0
-            else working_msgs
+        split_idx = (
+            user_indices[-self.keep_recent_turns]
+            if self.keep_recent_turns > 0
+            else len(working_msgs)
         )
-        to_keep = (
-            working_msgs[-self.keep_recent_msgs :] if self.keep_recent_msgs > 0 else []
-        )
+        to_summarize = working_msgs[:split_idx]
+        to_keep = working_msgs[split_idx:]
 
         prompt_text = "你是一个专门用于长上下文状态压缩的引擎。请阅读以下先前的总结和旧对话，提取核心状态信息，并合并它们。\n\n"
         if prev_summary:
@@ -240,7 +374,7 @@ class StructuredSummaryReducer(BaseMemoryReducer):
             summary_obj = await generate_structured(
                 prompt_text,
                 response_model=StateSummary,
-                model=config.summarization_model,
+                model=self.summarization_model,
                 instruction="请提取并合并先前的状态和最新的对话内容，保持精简，不要编造事实。",
             )
 
@@ -251,12 +385,14 @@ class StructuredSummaryReducer(BaseMemoryReducer):
                 f"📌 当前状态: {summary_obj.current_state}"
             )
 
-            new_summary_msg = LLMMessage.system(
-                f"[结构化上下文状态摘要(由AI生成)]\n{summary_text}"
+            new_summary_msg = LLMMessage.assistant_text_response(
+                f"【历史状态摘要记忆】\n{summary_text}"
             )
             new_summary_msg.metadata = {"is_summary": True, "pinned": True}
         except Exception as e:
-            logger.error(f"[StructuredSummaryReducer] 结构化总结失败: {e}")
+            logger.error(
+                f"[StructuredSummaryReducer] 结构化总结失败，已跳过本次压缩: {e}"
+            )
             return messages, False, current_tokens
 
         new_messages = [*pinned_msgs, new_summary_msg, *to_keep]
@@ -271,113 +407,22 @@ class CondenserPipeline:
     def __init__(self, reducers: list[BaseMemoryReducer]):
         self.reducers = reducers
 
-    async def run(self, messages, target_tokens, model_name, base_overhead=0):
+    async def run(
+        self, messages, model_name, base_overhead=0
+    ) -> tuple[list[LLMMessage], bool]:
         current_tokens = global_estimator.estimate_context(
             messages, model_name, base_overhead
         )
-        if current_tokens <= target_tokens:
-            return messages
+
         current_messages = messages
+        any_changed = False
         for reducer in self.reducers:
-            current_messages, _changed, current_tokens = await reducer.reduce(
+            current_messages, changed, current_tokens = await reducer.reduce(
                 current_messages,
-                target_tokens,
                 current_tokens,
                 model_name,
                 base_overhead,
             )
-            if current_tokens <= target_tokens:
-                break
-        return current_messages
-
-
-class CondenserRegistry:
-    _reducers: dict[str, type[BaseMemoryReducer]] = {}
-
-    @classmethod
-    def register(cls, name: str, reducer_cls: type[BaseMemoryReducer]):
-        cls._reducers[name] = reducer_cls
-
-    @classmethod
-    def get(cls, name: str, **kwargs) -> BaseMemoryReducer:
-        return cls._reducers[name](**kwargs)
-
-
-CondenserRegistry.register("tool_compactor", ToolOutputCompactor)
-CondenserRegistry.register("message_dropper", MessageDropper)
-CondenserRegistry.register("llm_summarizer", LLMSummarizerReducer)
-CondenserRegistry.register("structured_summarizer", StructuredSummaryReducer)
-
-
-class AsyncMemoryCondenser:
-    """负责在后台异步压缩记忆，提供并发锁保证无损合并。"""
-
-    def __init__(self):
-        self._locks: dict[str, asyncio.Lock] = {}
-        self.memory: BaseWorkingMemory = _get_default_memory()
-        self._compressing_tasks: dict[str, asyncio.Task] = {}
-
-    def _get_lock(self, scope: str) -> asyncio.Lock:
-        if scope not in self._locks:
-            self._locks[scope] = asyncio.Lock()
-        return self._locks[scope]
-
-    def trigger_compression(self, scope: str):
-        config = get_llm_config().context_settings
-        if not config.enabled:
-            return
-
-        if scope not in self._compressing_tasks:
-            task = asyncio.create_task(self._background_condense(scope))
-            self._compressing_tasks[scope] = task
-
-            def _on_done(t):
-                self._compressing_tasks.pop(scope, None)
-
-            task.add_done_callback(_on_done)
-
-    async def _background_condense(self, scope: str):
-        session = SessionMetadata(session_id=scope)
-        async with self._get_lock(scope):
-            current_history = await self.memory.get_history(session)
-            original_len = len(current_history)
-
-        model_name = get_global_default_model_name() or "Gemini/gemini-2.0-flash"
-        caps = get_model_capabilities(model_name)
-        config = get_llm_config().context_settings
-        threshold_tokens = int(caps.max_input_tokens * config.trigger_threshold)
-
-        current_tokens = global_estimator.estimate_context(current_history, model_name)
-        if current_tokens <= threshold_tokens:
-            return
-
-        logger.info(
-            f"[AsyncMemoryCondenser] Scope {scope} 触发后台上下文压缩 ({current_tokens}/{threshold_tokens})"
-        )
-
-        reducers = [CondenserRegistry.get("tool_compactor")]
-        if config.enable_summarization:
-            reducers.append(CondenserRegistry.get("llm_summarizer"))
-        reducers.append(CondenserRegistry.get("message_dropper"))
-
-        pipeline = CondenserPipeline(reducers)
-
-        try:
-            compressed_history = await pipeline.run(
-                current_history, target_tokens=threshold_tokens, model_name=model_name
-            )
-        except Exception as e:
-            logger.error(f"[AsyncMemoryCondenser] 后台压缩失败: {e}", e=e)
-            return
-
-        async with self._get_lock(scope):
-            latest_history = await self.memory.get_history(session)
-            new_msgs = latest_history[original_len:]
-            final_history = compressed_history + new_msgs
-            await self.memory.set_history(session, final_history)
-            logger.info(
-                f"[AsyncMemoryCondenser] Scope {scope} 后台压缩完成，已无损合并 {len(new_msgs)} 条并发新消息。"
-            )
-
-
-async_memory_condenser = AsyncMemoryCondenser()
+            if changed:
+                any_changed = True
+        return current_messages, any_changed

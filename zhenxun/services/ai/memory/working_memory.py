@@ -1,10 +1,12 @@
 from collections.abc import Callable
+import datetime
 import time
 from typing import Any, cast
 
 from nonebot.utils import is_coroutine_callable
 from pydantic import TypeAdapter
 from tortoise import fields
+from tortoise.timezone import now
 
 from zhenxun.services.ai.core.messages import (
     AssistantMessage,
@@ -101,6 +103,15 @@ class TortoiseMessageStore(BaseMessageStore):
             adapter = TypeAdapter(LLMContentPart)
             for p in content_raw:
                 if isinstance(p, dict):
+                    import base64
+
+                    for k in list(p.keys()):
+                        if k.startswith("_is_b64_"):
+                            orig_k = k[8:]
+                            if orig_k in p and isinstance(p[orig_k], str):
+                                p[orig_k] = base64.b64decode(p[orig_k])
+                            p.pop(k, None)
+
                     content_parts.append(adapter.validate_python(p))
         elif isinstance(content_raw, str):
             content_parts.append(TextPart(text=content_raw))
@@ -150,8 +161,19 @@ class TortoiseMessageStore(BaseMessageStore):
     ) -> None:
         if not messages:
             return
+
+        base_time = now()
+
+        last_msg = (
+            await self.model_class.filter(session_id=session.session_id)
+            .order_by("-created_at")
+            .first()
+        )
+        if last_msg and last_msg.created_at and last_msg.created_at >= base_time:
+            base_time = last_msg.created_at + datetime.timedelta(milliseconds=10)
+
         orm_objects = []
-        for msg in messages:
+        for i, msg in enumerate(messages):
             content_payload = msg.content
             if isinstance(content_payload, str):
                 content_payload = [{"type": "text", "text": content_payload}]
@@ -167,6 +189,18 @@ class TortoiseMessageStore(BaseMessageStore):
                         if hasattr(p, "model_dump")
                         else (p.copy() if isinstance(p, dict) else p)
                     )
+
+                    import base64
+                    from pathlib import Path
+
+                    if isinstance(p_dump, dict):
+                        for k, v in list(p_dump.items()):
+                            if isinstance(v, bytes):
+                                p_dump[k] = base64.b64encode(v).decode("utf-8")
+                                p_dump[f"_is_b64_{k}"] = True
+                            elif isinstance(v, Path):
+                                p_dump[k] = str(v)
+
                     processed_content.append(p_dump)
                 content_payload = (
                     processed_content
@@ -179,12 +213,14 @@ class TortoiseMessageStore(BaseMessageStore):
                     ]
                 )
 
+            msg_time = base_time + datetime.timedelta(milliseconds=i * 10)
             orm_obj = self.model_class(
                 session_id=session.session_id,
                 role=msg.role,
                 content=content_payload,
                 api_context=None,
                 metadata=msg.metadata,
+                created_at=msg_time,
             )
             if self.custom_save_hook:
                 if is_coroutine_callable(self.custom_save_hook):
@@ -226,18 +262,6 @@ class ChatWorkingMemory(BaseWorkingMemory):
         self.store = store
         self._max_messages = max_messages
 
-    async def _trim_history(self, session: SessionMetadata) -> None:
-        history = await self.store.get_messages(session)
-        if len(history) <= self._max_messages:
-            return
-        has_system = history and isinstance(history[0], SystemMessage)
-        if has_system:
-            keep_count = max(0, self._max_messages - 1)
-            new_history = [history[0], *history[-keep_count:]]
-        else:
-            new_history = history[-self._max_messages :]
-        await self.store.set_messages(session, new_history)
-
     async def get_history(self, session: SessionMetadata) -> list[LLMMessage]:
         return await self.store.get_messages(session)
 
@@ -245,8 +269,6 @@ class ChatWorkingMemory(BaseWorkingMemory):
         self, session: SessionMetadata, messages: list[LLMMessage]
     ) -> None:
         await self.store.add_messages(session, messages)
-        if messages:
-            await self._trim_history(session)
 
     async def clear_history(self, session: SessionMetadata) -> None:
         await self.store.clear(session)

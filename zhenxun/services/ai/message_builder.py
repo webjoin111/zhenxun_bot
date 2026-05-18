@@ -351,12 +351,7 @@ def _extract_media_kwargs(seg: Segment, default_mime: str) -> dict | None:
 
 @MessageBuilder.register_segment_handler(Image)
 async def _handle_image(seg: Image) -> ImagePart | None:
-    if (
-        not seg.raw
-        and not seg.url
-        and not getattr(seg, "path", None)
-        and getattr(seg, "id", None)
-    ):
+    if not seg.raw and not getattr(seg, "path", None):
         try:
             from nonebot.matcher import current_bot, current_event, current_matcher
             from nonebot_plugin_alconna.uniseg.tools import image_fetch
@@ -366,20 +361,40 @@ async def _handle_image(seg: Image) -> ImagePart | None:
             matcher = current_matcher.get(None)
 
             if bot and event and matcher:
-                logger.debug(
-                    f"MessageBuilder 正在底层静默下载图片实体 (ID: {seg.id})..."
-                )
+                logger.debug("MessageBuilder 正在底层静默拉取图片实体...")
                 raw_bytes = await image_fetch(event, bot, matcher.state, seg)
                 if raw_bytes:
                     seg.raw = raw_bytes
         except Exception as e:
-            logger.warning(f"底层静默水合下载图片失败: {e}")
+            logger.debug(f"底层静默水合下载图片失败: {e}")
+
+        if not seg.raw and seg.url:
+            from zhenxun.utils.http_utils import AsyncHttpx
+
+            try:
+                logger.debug(f"正在从临时 URL 物理固化图片: {seg.url[:50]}...")
+                raw_bytes = await AsyncHttpx.get_content(seg.url)
+                if raw_bytes:
+                    seg.raw = raw_bytes
+                    seg.url = None
+            except Exception as e:
+                logger.warning(f"固化图片 URL 失败: {e}")
 
     kwargs = _extract_media_kwargs(seg, "image/png")
     return ImagePart(**kwargs) if kwargs else None
 
 
 async def _process_audio_seg(seg: Audio | Voice) -> AudioPart | None:
+    if not seg.raw and not getattr(seg, "path", None) and seg.url:
+        from zhenxun.utils.http_utils import AsyncHttpx
+
+        try:
+            raw_bytes = await AsyncHttpx.get_content(seg.url)
+            if raw_bytes:
+                seg.raw = raw_bytes
+                seg.url = None
+        except Exception:
+            pass
     kwargs = _extract_media_kwargs(seg, "audio/mp3")
     return AudioPart(**kwargs) if kwargs else None
 
@@ -396,6 +411,16 @@ async def _handle_voice(seg: Voice) -> AudioPart | None:
 
 @MessageBuilder.register_segment_handler(Video)
 async def _handle_video(seg: Video) -> VideoPart | None:
+    if not seg.raw and not getattr(seg, "path", None) and seg.url:
+        from zhenxun.utils.http_utils import AsyncHttpx
+
+        try:
+            raw_bytes = await AsyncHttpx.get_content(seg.url)
+            if raw_bytes:
+                seg.raw = raw_bytes
+                seg.url = None
+        except Exception:
+            pass
     kwargs = _extract_media_kwargs(seg, "video/mp4")
     return VideoPart(**kwargs) if kwargs else None
 

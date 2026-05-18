@@ -17,8 +17,8 @@ from zhenxun.services.ai.core.exceptions import (
 )
 from zhenxun.services.ai.core.messages import (
     LLMMessage,
-    UsageInfo,
     PromptInput,
+    UsageInfo,
 )
 from zhenxun.services.ai.core.stream_events import EventStreamer
 from zhenxun.services.ai.flow.agent.engine.builders import ContextBuilder, ToolBuilder
@@ -159,9 +159,15 @@ class Agent(
         self.prepare_tools = prepare_tools
 
         from zhenxun.services.ai.memory.models import AgentMemory
+        from zhenxun.services.ai.memory.policy import MemoryPolicy
 
         if isinstance(memory, bool):
-            self.memory_facade = AgentMemory() if memory else None
+            if memory:
+                self.memory_facade = AgentMemory(
+                    policy=MemoryPolicy.sliding_window(max_turns=50)
+                )
+            else:
+                self.memory_facade = None
         elif isinstance(memory, dict):
             self.memory_facade = AgentMemory(**memory)
         else:
@@ -614,9 +620,13 @@ class Agent(
             GLOBAL_CAPABILITIES,
         )
 
-        task_obj, final_prompt_payload, extra_tools, run_output_type, task_guardrails = (
-            self._parse_task_prompt(prompt)
-        )
+        (
+            task_obj,
+            final_prompt_payload,
+            extra_tools,
+            run_output_type,
+            task_guardrails,
+        ) = self._parse_task_prompt(prompt)
 
         dynamic_caps = []
         combined_guardrails = self._guardrails + task_guardrails
@@ -673,7 +683,6 @@ class Agent(
         await run_scoped_cap.before_run(context)
         context.capabilities = run_scoped_cap.capabilities
 
-        # 保证日志与记忆系统获取到纯文本，但不破坏用于生成的 final_prompt_payload
         if final_prompt_payload is not None:
             if isinstance(final_prompt_payload, str):
                 context.run.user_input = final_prompt_payload

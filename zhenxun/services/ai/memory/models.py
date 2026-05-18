@@ -2,8 +2,8 @@
 记忆域类型定义
 """
 
-import time
 from enum import Enum
+import time
 from typing import Any
 
 from nonebot.adapters import Bot, Event
@@ -96,14 +96,17 @@ def generate_session_meta(
     if use_user and user_id:
         parts.append(f"u_{user_id}")
 
-    if isolation_level in (MemoryIsolationLevel.PLUGIN_USER, MemoryIsolationLevel.AGENT_USER):
+    if isolation_level in (
+        MemoryIsolationLevel.PLUGIN_USER,
+        MemoryIsolationLevel.AGENT_USER,
+    ):
         parts.append(f"ns_{namespace or 'unknown'}")
 
     if isolation_level == MemoryIsolationLevel.AGENT_USER:
         parts.append(f"ag_{agent_name or 'unknown'}")
 
     session_id = "/" + "/".join(parts)
-    scope_prefix = session_id  # 当前设计下，session_id 本身即为完美的树状层级 Scope Path
+    scope_prefix = session_id
 
     return SessionMetadata(
         session_id=session_id,
@@ -115,6 +118,19 @@ def generate_session_meta(
         agent_name=agent_name,
         isolation_level=isolation_level,
     )
+
+
+class MemoryQuery(BaseModel):
+    """长记忆泛化查询对象"""
+
+    text: str = Field(description="原始查询文本")
+    embedding: list[float] | None = Field(
+        default=None, description="用于向量检索的 Embedding 数组"
+    )
+    metadata_filters: dict[str, Any] | None = Field(
+        default=None, description="元数据过滤条件"
+    )
+    limit: int = Field(default=10, description="返回的最大条数")
 
 
 class MemoryRecord(BaseModel):
@@ -165,7 +181,9 @@ class AgentMemory(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    isolation_level: MemoryIsolationLevel = Field(default=MemoryIsolationLevel.GROUP_USER)
+    isolation_level: MemoryIsolationLevel = Field(
+        default=MemoryIsolationLevel.GROUP_USER
+    )
     """记忆隔离级别"""
     working_memory: Any | None = Field(default=None)
     """BaseWorkingMemory 短期工作记忆实例"""
@@ -173,19 +191,24 @@ class AgentMemory(BaseModel):
     """MemoryScope 长期记忆实例"""
 
     context_threshold: float | None = Field(default=None)
-    """触发记忆压缩的 Token 阈值。<=1.0 为比例，>1.0 为绝对 Token 数"""
+    """(局部重写) 触发记忆压缩的 Token 阈值"""
     max_history_turns: int | None = Field(default=None)
-    """触发记忆压缩的对话轮数上限"""
-    memory_reducers: list[str | Any] | None = Field(default=None)
-    """记忆压缩策略列表"""
+    """(局部重写) 触发记忆压缩的对话轮数上限"""
+
+    vision_window: int | None = Field(default=None)
+    """多模态滑动窗口大小。0表示关闭该功能，>0表示仅保留最近N轮包含多模态数据的消息，None表示跟随全局配置。"""
+
+    policy: list[Any] | None = Field(default=None)
+    """核心记忆压缩策略管线 (List[BaseMemoryReducer])。为 None 时将应用全局默认策略。"""
 
 
 __all__ = [
     "AgentMemory",
     "MemoryConfig",
-    "MemoryMatch",
-    "MemoryRecord",
     "MemoryIsolationLevel",
+    "MemoryMatch",
+    "MemoryQuery",
+    "MemoryRecord",
     "SessionMetadata",
     "generate_session_meta",
 ]

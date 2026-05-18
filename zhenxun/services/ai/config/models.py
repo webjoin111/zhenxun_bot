@@ -1,3 +1,5 @@
+from typing import Any, Literal
+
 from pydantic import BaseModel, Field
 
 from zhenxun.services.ai.core.models import ModelDetail
@@ -35,20 +37,34 @@ class ClientSettings(BaseModel):
 class ContextManagementSettings(BaseModel):
     """智能上下文管理与压缩算法设置"""
 
-    enabled: bool = True
-    """是否启用智能上下文管理"""
-    enable_summarization: bool = False
-    """是否启用大模型智能总结"""
-    use_structured_summarizer: bool = False
-    """是否使用强制结构化状态压缩（适合 RPG 游戏或长线任务）"""
-    summarization_model: str = "Gemini/gemini-2.5-flash"
-    """用于执行总结任务的模型名称"""
-    summarization_prompt: str = "请概括以下对话内容，保留关键的约束条件、用户偏好、已完成的任务状态和未解决的问题。"
-    """总结任务的系统提示词模板"""
+    default_strategy: Literal[
+        "unlimited", "sliding_window", "llm_summary", "structured_summary"
+    ] = "unlimited"
+    """全局默认记忆策略"""
+
     trigger_threshold: float = 0.8
-    """触发压缩的阈值。<=1.0 为比例，>1.0 为绝对 Token 数"""
+    """触发压缩的 Token 阈值。<=1.0 为比例，>1.0 为绝对 Token 数"""
     max_history_turns: int | None = None
     """触发压缩的最大历史对话轮数"""
+
+    strategy_kwargs: dict[str, dict[str, Any]] = Field(
+        default_factory=lambda: {
+            "sliding_window": {"max_turns": 50},
+            "llm_summary": {
+                "summarization_model": "Gemini/gemini-2.5-flash",
+                "summarization_prompt": "请概括以下对话内容，保留关键的约束条件、用户偏好、已完成的任务状态和未解决的问题。",
+                "keep_recent_turns": 0,
+            },
+            "structured_summary": {
+                "summarization_model": "Gemini/gemini-2.5-flash",
+                "keep_recent_turns": 0,
+            },
+        }
+    )
+    """各模式专属的特有参数字典"""
+
+    vision_window_size: int = Field(default=5)
+    """多模态滑动窗口大小。0表示无限制，>0表示仅保留最近N轮包含多模态真实数据的消息，超龄则自动降级为占位符"""
 
 
 class ProviderConfig(BaseModel):
@@ -91,7 +107,14 @@ class LLMConfig(BaseModel):
         default_factory=ContextManagementSettings
     )
     """上下文管理相关配置"""
-    model_groups: dict[str, list[str]] = Field(default_factory=dict)
+    model_groups: dict[str, list[str]] = Field(
+        default_factory=lambda: {
+            "cheap_models": [
+                "Gemini/gemini-2.5-flash",
+                "Doubao/doubao-seed-1-6-250615",
+            ],
+        }
+    )
     """虚拟模型路由组配置 (Virtual Router Groups)"""
 
     def validate_model_name(self, provider_model_name: str) -> bool:
@@ -108,4 +131,3 @@ class LLMConfig(BaseModel):
                     if m.model_name == m_name:
                         return True
         return False
-

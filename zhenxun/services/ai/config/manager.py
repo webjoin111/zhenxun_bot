@@ -118,7 +118,7 @@ def register_llm_configs():
     Config.add_plugin_config(
         AI_CONFIG_GROUP,
         "debug_log",
-        {"show_tools": True, "show_schema": True, "show_safety": True},
+        model_dump(llm_config.debug_log),
         help=(
             "LLM日志详情开关。示例: {'show_tools': True, 'show_schema': False, "
             "'show_safety': False}"
@@ -145,8 +145,9 @@ def register_llm_configs():
         model_dump(llm_config.context_settings),
         help=(
             "智能上下文管理与压缩配置。\n"
-            "包含: enabled(总开关), enable_summarization(总结开关), use_structured_summarizer(结构化压缩), "
-            "summarization_model(总结模型), trigger_threshold(触发阈值比例)"
+            "包含: default_strategy(默认策略: unlimited为不压缩, sliding_window为滑动窗口, llm_summary为模型总结, structured_summary为结构化总结), "
+            "trigger_threshold(触发阈值), max_history_turns(最大轮数), "
+            "strategy_kwargs(各模式特有参数), vision_window_size(多模态保留轮数)"
         ),
         type=dict,
     )
@@ -154,12 +155,7 @@ def register_llm_configs():
     Config.add_plugin_config(
         AI_CONFIG_GROUP,
         "MODEL_GROUPS",
-        {
-            "cheap_models": [
-                "Gemini/gemini-2.5-flash",
-                "Doubao/doubao-seed-1-6-250615",
-            ],
-        },
+        llm_config.model_groups,
         help=(
             "虚拟模型路由组配置 (Virtual Router Groups)。\n"
             "键为组名，值为模型名称或其它组名的列表。\n"
