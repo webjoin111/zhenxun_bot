@@ -1,10 +1,11 @@
 
+from .analyzer import LLMMemoryConsolidator
 from .long_term_memory import (
     MemoryScope,
 )
 from .models import (
-    AgentMemory,
     MemoryConfig,
+    MemoryScoringConfig,
     MemoryIsolationLevel,
     MemoryMatch,
     MemoryQuery,
@@ -15,13 +16,14 @@ from .models import (
 from .policy import MemoryPolicy
 from .working_memory import (
     AbstractMemoryRecord,
-    get_orm_working_memory,
+    get_orm_chat_context,
 )
+from .manager import memory_manager
 
 __all__ = [
     "AbstractMemoryRecord",
-    "AgentMemory",
-    "MemoryConfig",
+    "LLMMemoryConsolidator",
+    "MemoryScoringConfig",
     "MemoryIsolationLevel",
     "MemoryMatch",
     "MemoryPolicy",
@@ -29,6 +31,8 @@ __all__ = [
     "MemoryRecord",
     "MemoryScope",
     "SessionMetadata",
+    "MemoryConfig",
     "generate_session_meta",
-    "get_orm_working_memory",
+    "get_orm_chat_context",
+    "memory_manager",
 ]

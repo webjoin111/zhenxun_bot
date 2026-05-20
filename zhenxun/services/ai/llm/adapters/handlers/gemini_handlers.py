@@ -460,11 +460,11 @@ class GeminiToolSerializer(ToolSerializer):
             [
                 RootRefInlineTransformer(),
                 GeminiCyclicRefTransformer(schema),
-                RemoveUnsupportedKeysTransformer(unsupported_keys),
                 GeminiEnumTransformer(),
                 GeminiNullableUnionTransformer(),
                 GeminiFormatTransformer(),
                 RefComplianceTransformer(),
+                RemoveUnsupportedKeysTransformer(unsupported_keys),
             ]
         )
         return pipeline.run(schema)

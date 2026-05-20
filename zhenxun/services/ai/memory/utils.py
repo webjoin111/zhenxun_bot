@@ -3,7 +3,7 @@ import time
 
 import numpy as np
 
-from zhenxun.services.ai.memory.models import MemoryConfig, MemoryRecord
+from zhenxun.services.ai.memory.models import MemoryRecord, MemoryScoringConfig
 
 
 def normalize_scope_path(path: str) -> str:
@@ -47,7 +47,7 @@ def cosine_similarity(vec1: list[float], vec2: list[float]) -> float:
 
 
 def compute_composite_score(
-    record: MemoryRecord, semantic_score: float, config: MemoryConfig
+    record: MemoryRecord, semantic_score: float, config: MemoryScoringConfig
 ) -> tuple[float, list[str]]:
     """计算复合相关性得分：结合语义相似度、时间衰减与重要性权重"""
     age_seconds = time.time() - record.created_at
@@ -67,4 +67,3 @@ def compute_composite_score(
         reasons.append("importance")
 
     return composite, reasons
-

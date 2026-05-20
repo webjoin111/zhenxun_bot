@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from zhenxun.services.ai.core.exceptions import ConcurrencyRejectException
 from zhenxun.services.ai.flow.base import ConcurrencyPolicy
-from zhenxun.services.ai.memory.working_memory import _get_default_memory
+
 from zhenxun.services.ai.memory.models import SessionMetadata
 from zhenxun.services.ai.run.models import CancellationToken
 
@@ -119,9 +119,12 @@ class AgentSessionManager:
     async def delete(self, session_id: str):
         async with self._get_lock(session_id):
             self._sessions.pop(session_id, None)
-            await _get_default_memory().clear_history(
-                SessionMetadata(session_id=session_id)
-            )
+            from zhenxun.services.ai.memory.manager import memory_manager
+            from zhenxun.services.ai.memory.models import MemoryConfig, SessionMetadata
+            # 获取全局默认短期记忆后端进行清理
+            default_ctx = memory_manager.get_chat_context(MemoryConfig())
+            if default_ctx:
+                await default_ctx.clear(SessionMetadata(session_id=session_id))
 
 
 session_manager = AgentSessionManager()

@@ -4,12 +4,16 @@ import uuid
 
 from tortoise import fields
 
-from zhenxun.services.ai.memory.interfaces import StorageBackend
+from zhenxun.services.ai.memory.interfaces import (
+    MemoryConsolidator,
+    StorageBackend,
+)
 from zhenxun.services.ai.memory.models import (
-    MemoryConfig,
+    ConsolidationPlan,
     MemoryMatch,
     MemoryQuery,
     MemoryRecord,
+    MemoryScoringConfig,
 )
 from zhenxun.services.ai.memory.utils import (
     compute_composite_score,
@@ -18,6 +22,15 @@ from zhenxun.services.ai.memory.utils import (
 )
 from zhenxun.services.db_context import Model
 from zhenxun.services.log import logger
+
+
+class NullConsolidator(MemoryConsolidator):
+    """默认的空整合器：不做任何合并，永远直接插入新记忆 (向下兼容真寻旧版逻辑)"""
+
+    async def consolidate(
+        self, new_content: str, existing_records: list[MemoryRecord]
+    ) -> ConsolidationPlan:
+        return ConsolidationPlan(actions=[], insert_new=True)
 
 
 class AbstractVectorRecord(Model):
@@ -95,6 +108,15 @@ class TortoiseStorageBackend(StorageBackend):
         results.sort(key=lambda x: x[1], reverse=True)
         return results[: query.limit]
 
+    async def update(self, record: MemoryRecord) -> None:
+        await self.model_class.filter(id=record.id).update(
+            content=record.content,
+            scope=record.scope,
+            importance=record.importance,
+            embedding=record.embedding,
+            meta_data=record.metadata,
+        )
+
     async def delete(
         self, scope_prefix: str | None = None, record_ids: list[str] | None = None
     ) -> int:
@@ -116,22 +138,25 @@ class MemoryScope:
         storage: StorageBackend,
         root_path: str = "/",
         embedding_model: str | None = None,
+        consolidator: MemoryConsolidator | None = None,
         rerank_model: str | None = None,
-        config: MemoryConfig | None = None,
+        config: MemoryScoringConfig | None = None,
     ):
         self.storage = storage
         self.root_path = root_path
         self.embedding_model = embedding_model
+        self.consolidator = consolidator or NullConsolidator()
         self.rerank_model = rerank_model
-        self.config = config or MemoryConfig()
+        self.config = config or MemoryScoringConfig()
 
     async def _get_embedding(self, text: str) -> list[float]:
-        if not self.embedding_model or not text.strip():
+        if not text.strip():
             return []
-        from zhenxun.services.ai.llm.api import embed
+        from zhenxun.services.ai.llm.api import embed as api_embed
+        from zhenxun.services.log import logger
 
         try:
-            response = await embed([text], model=self.embedding_model)
+            response = await api_embed(text, model=self.embedding_model, task="document")
             return response.vector
         except Exception as e:
             logger.warning(f"获取记忆向量失败，将降级处理: {e}")
@@ -143,20 +168,53 @@ class MemoryScope:
         importance: float = 0.5,
         inner_scope: str = "",
         metadata: dict[str, Any] | None = None,
-    ) -> MemoryRecord:
+    ) -> MemoryRecord | None:
         final_scope = join_scope_paths(self.root_path, inner_scope)
         vector = await self._get_embedding(content)
-        record = MemoryRecord(
-            id=str(uuid.uuid4()),
-            content=content,
-            scope=final_scope,
-            importance=importance,
-            embedding=vector,
-            metadata=metadata or {},
-            created_at=time.time(),
-        )
-        await self.storage.save([record])
-        return record
+
+        memory_query = MemoryQuery(text=content, embedding=vector, limit=5)
+        raw_results = await self.storage.search(memory_query, scope_prefix=final_scope)
+        similar_records = [
+            r
+            for r, score in raw_results
+            if score >= self.config.consolidation_threshold
+        ]
+
+        plan = await self.consolidator.consolidate(content, similar_records)
+
+        to_delete = []
+        updated_record = None
+        similar_dict = {r.id: r for r in similar_records}
+
+        for action in plan.actions:
+            if action.action == "delete":
+                to_delete.append(action.record_id)
+            elif action.action == "update" and action.new_content:
+                old_record = similar_dict.get(action.record_id)
+                if old_record:
+                    old_record.content = action.new_content
+                    old_record.embedding = await self._get_embedding(action.new_content)
+                    old_record.importance = importance
+                    await self.storage.update(old_record)
+                    updated_record = old_record
+
+        if to_delete:
+            await self.storage.delete(scope_prefix=final_scope, record_ids=to_delete)
+
+        if plan.insert_new:
+            record = MemoryRecord(
+                id=str(uuid.uuid4()),
+                content=content,
+                scope=final_scope,
+                importance=importance,
+                embedding=vector,
+                metadata=metadata or {},
+                created_at=time.time(),
+            )
+            await self.storage.save([record])
+            return record
+
+        return updated_record
 
     async def recall(
         self,
@@ -229,6 +287,7 @@ def get_plugin_memory_scope(
     group_id: str | None = None,
     user_id: str | None = None,
     embedding_model: str | None = None,
+    consolidator: MemoryConsolidator | None = None,
     rerank_model: str | None = None,
 ) -> MemoryScope:
     root_path = f"/{plugin_name}"
@@ -240,6 +299,7 @@ def get_plugin_memory_scope(
         storage=storage,
         root_path=root_path,
         embedding_model=embedding_model,
+        consolidator=consolidator,
         rerank_model=rerank_model,
     )
 
@@ -284,6 +344,10 @@ class DictStorageBackend(StorageBackend):
 
         results.sort(key=lambda x: x[1], reverse=True)
         return results[: query.limit]
+
+    async def update(self, record: MemoryRecord) -> None:
+        if record.id in self._records:
+            self._records[record.id] = record
 
     async def delete(
         self,

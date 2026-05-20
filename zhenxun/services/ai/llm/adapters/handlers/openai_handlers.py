@@ -281,9 +281,9 @@ class OpenAIToolSerializer(ToolSerializer):
             [
                 RootRefInlineTransformer(),
                 RefComplianceTransformer(),
-                RemoveUnsupportedKeysTransformer(unsupported_keys),
                 OpenAIUnionFlattenTransformer(),
                 TypeEnforcerTransformer(),
+                RemoveUnsupportedKeysTransformer(unsupported_keys),
                 StrictObjectTransformer(),
             ]
         )

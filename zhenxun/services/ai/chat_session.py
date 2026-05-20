@@ -4,7 +4,7 @@ from zhenxun.services.ai.core.configs import GenerationConfig
 from zhenxun.services.ai.core.messages import LLMMessage, PromptInput
 from zhenxun.services.ai.flow.agent import Agent
 from zhenxun.services.ai.flow.agent.models import AgentRuntimeConfig
-from zhenxun.services.ai.memory.models import AgentMemory, SessionMetadata
+from zhenxun.services.ai.memory.models import MemoryConfig, SessionMetadata
 from zhenxun.services.ai.run import AgentRunResult, RunContext
 
 
@@ -17,7 +17,7 @@ class ChatSession:
         self,
         instruction: str = "",
         model: str | None = None,
-        memory: bool | dict[str, Any] | AgentMemory = True,
+        memory: bool | dict[str, Any] | MemoryConfig = True,
         generation_config: GenerationConfig | dict | None = None,
     ):
         """
@@ -28,8 +28,8 @@ class ChatSession:
             model: 指定使用的模型名称。若不指定，将使用系统的全局默认模型。
             memory: 记忆配置。
                 - bool: True 启用默认记忆（GROUP_USER 隔离），False 禁用记忆。
-                - dict: 传递给 AgentMemory 的配置参数。
-                - AgentMemory: 直接传入预定义的记忆对象。
+                - dict: 传递给 MemoryConfig 的配置参数。
+                - MemoryConfig: 直接传入预定义的配置对象。
             generation_config: 模型生成配置（如 temperature, max_tokens 等）。
                 - dict: 自动转换为 GenerationConfig 对象。
                 - GenerationConfig: 直接传入配置对象。
@@ -53,18 +53,20 @@ class ChatSession:
     async def clear_memory(self, session_id: str | None = None) -> None:
         """清空当前用户的历史记忆"""
         sid = self._get_implicit_session_id(session_id)
-        if sid and self.agent.memory_facade and self.agent.memory_facade.working_memory:
-            await self.agent.memory_facade.working_memory.clear_history(
-                SessionMetadata(session_id=sid)
-            )
+        if sid and self.agent.memory_config:
+            from zhenxun.services.ai.memory.manager import memory_manager
+            chat_ctx = memory_manager.get_chat_context(self.agent.memory_config)
+            if chat_ctx:
+                await chat_ctx.clear(SessionMetadata(session_id=sid))
 
     async def get_history(self, session_id: str | None = None) -> list[LLMMessage]:
         """获取当前用户的历史记忆"""
         sid = self._get_implicit_session_id(session_id)
-        if sid and self.agent.memory_facade and self.agent.memory_facade.working_memory:
-            return await self.agent.memory_facade.working_memory.get_history(
-                SessionMetadata(session_id=sid)
-            )
+        if sid and self.agent.memory_config:
+            from zhenxun.services.ai.memory.manager import memory_manager
+            chat_ctx = memory_manager.get_chat_context(self.agent.memory_config)
+            if chat_ctx:
+                return await chat_ctx.get_messages(SessionMetadata(session_id=sid))
         return []
 
     async def chat(self, prompt: PromptInput, **kwargs: Any) -> AgentRunResult[str]:

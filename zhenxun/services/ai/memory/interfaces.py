@@ -2,52 +2,41 @@ from abc import ABC, abstractmethod
 from typing import Protocol, runtime_checkable
 
 from zhenxun.services.ai.core.messages import LLMMessage
-from zhenxun.services.ai.memory.models import MemoryQuery, MemoryRecord, SessionMetadata
+from zhenxun.services.ai.memory.models import (
+    ConsolidationPlan,
+    MemoryQuery,
+    MemoryRecord,
+    SessionMetadata,
+)
 
 
-class BaseMessageStore(ABC):
-    """底层存储接口"""
+class MemoryConsolidator(Protocol):
+    """记忆整合器协议。决定新记忆与相似旧记忆之间的合并、覆盖或删除关系。"""
+
+    async def consolidate(
+        self, new_content: str, existing_records: list[MemoryRecord]
+    ) -> ConsolidationPlan:
+        """分析并返回整合计划"""
+        ...
+
+
+class BaseChatContext(ABC):
+    """短期对话历史记忆接口 (取代原 WorkingMemory 和 MessageStore)"""
 
     @abstractmethod
     async def get_messages(self, session: SessionMetadata) -> list[LLMMessage]: ...
 
     @abstractmethod
-    async def search(
-        self, query: str, session: SessionMetadata, limit: int = 10
-    ) -> list[LLMMessage]: ...
+    async def search(self, query: str, session: SessionMetadata, limit: int = 10) -> list[LLMMessage]: ...
 
     @abstractmethod
-    async def add_messages(
-        self, session: SessionMetadata, messages: list[LLMMessage]
-    ) -> None: ...
+    async def add_messages(self, session: SessionMetadata, messages: list[LLMMessage]) -> None: ...
 
     @abstractmethod
-    async def set_messages(
-        self, session: SessionMetadata, messages: list[LLMMessage]
-    ) -> None: ...
+    async def set_messages(self, session: SessionMetadata, messages: list[LLMMessage]) -> None: ...
 
     @abstractmethod
     async def clear(self, session: SessionMetadata) -> None: ...
-
-
-class BaseWorkingMemory(ABC):
-    """短期工作记忆系统逻辑基类"""
-
-    @abstractmethod
-    async def get_history(self, session: SessionMetadata) -> list[LLMMessage]: ...
-
-    @abstractmethod
-    async def add_messages(
-        self, session: SessionMetadata, messages: list[LLMMessage]
-    ) -> None: ...
-
-    @abstractmethod
-    async def clear_history(self, session: SessionMetadata) -> None: ...
-
-    @abstractmethod
-    async def set_history(
-        self, session: SessionMetadata, messages: list[LLMMessage]
-    ) -> None: ...
 
 
 @runtime_checkable
@@ -69,6 +58,10 @@ class StorageBackend(Protocol):
         """在指定的前缀作用域内，检索与 query_embedding 相似的记忆。
         返回元组列表：(记忆记录, 相似度得分0-1)
         """
+        ...
+
+    async def update(self, record: MemoryRecord) -> None:
+        """更新现有的记忆实体"""
         ...
 
     async def delete(

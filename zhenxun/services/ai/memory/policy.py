@@ -1,7 +1,6 @@
 from zhenxun.services.ai.memory.compression import (
     LLMSummarizerReducer,
     MessageDropper,
-    SlidingWindowReducer,
     StructuredSummaryReducer,
     ToolOutputCompactor,
 )
@@ -19,11 +18,6 @@ class MemoryPolicy:
     def unlimited() -> list[BaseMemoryReducer]:
         """无限制模式。不进行任何形式的截断和总结，适用于短对话或纯 Agent 内部流转。"""
         return []
-
-    @staticmethod
-    def sliding_window(max_turns: int = 50) -> list[BaseMemoryReducer]:
-        """物理滑动窗口模式。强制丢弃超过设定轮数的最早对话。"""
-        return [SlidingWindowReducer(max_turns=max_turns)]
 
     @staticmethod
     def llm_summarize(

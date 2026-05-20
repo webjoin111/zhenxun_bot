@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 import contextlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generic, cast
@@ -33,7 +33,7 @@ from zhenxun.services.ai.flow.agent.models import (
 from zhenxun.services.ai.flow.base import BaseRunnable
 from zhenxun.services.ai.llm.config.generation import IntentBuilder
 from zhenxun.services.ai.llm.manager import get_model_instance
-from zhenxun.services.ai.memory.models import AgentMemory, SessionMetadata
+from zhenxun.services.ai.memory.models import MemoryConfig, SessionMetadata
 from zhenxun.services.ai.protocols.capabilities import (
     AbstractCapability,
     HitlCapability,
@@ -59,6 +59,7 @@ from zhenxun.utils.pydantic_compat import model_construct, model_copy
 
 if TYPE_CHECKING:
     from zhenxun.services.ai.flow.agent.models import AgentSpec
+    from zhenxun.services.ai.run.models import StreamedRunResult
 
 
 class Agent(
@@ -81,7 +82,7 @@ class Agent(
         generation_config: GenerationConfig | IntentBuilder | dict | None = None,
         response_model: BaseOutputDefinition | type[OutputDataT] | None = None,
         dynamic_prompts: list[Callable] | None = None,
-        memory: bool | dict[str, Any] | AgentMemory = False,
+        memory: bool | dict[str, Any] | MemoryConfig = False,
         runtime_config: AgentRuntimeConfig | dict | None = None,
         prepare_tools: ToolsPrepareFunc | None = None,
         guardrails: list[Any] | None = None,
@@ -158,26 +159,23 @@ class Agent(
         self._guardrails = parse_guardrails(guardrails)
         self.prepare_tools = prepare_tools
 
-        from zhenxun.services.ai.memory.models import AgentMemory
-        from zhenxun.services.ai.memory.policy import MemoryPolicy
+        from zhenxun.services.ai.memory.models import MemoryConfig
 
         if isinstance(memory, bool):
             if memory:
-                self.memory_facade = AgentMemory(
-                    policy=MemoryPolicy.sliding_window(max_turns=50)
-                )
+                self.memory_config = MemoryConfig(enable_short_term=True)
             else:
-                self.memory_facade = None
+                self.memory_config = MemoryConfig(enable_short_term=False)
         elif isinstance(memory, dict):
-            self.memory_facade = AgentMemory(**memory)
+            self.memory_config = MemoryConfig(**memory)
         else:
-            self.memory_facade = memory
+            self.memory_config = memory
 
         if isinstance(runtime_config, dict):
             runtime_config = AgentRuntimeConfig(**runtime_config)
         self.runtime_config = runtime_config or AgentRuntimeConfig()
 
-        self.runtime_config.stateless = self.memory_facade is None
+        self.runtime_config.stateless = not self.memory_config.enable_short_term
 
         self.capabilities: list[AbstractCapability] = []
 
@@ -403,7 +401,7 @@ class Agent(
         message_history: list[LLMMessage] | None = None,
         tool_filter: GlobalToolFilter | None = None,
         config: ExecutionConfig | None = None,
-        memory: bool | dict[str, Any] | AgentMemory | None = None,
+        memory: bool | dict[str, Any] | MemoryConfig | None = None,
         generation_config: GenerationConfig | None = None,
         **kwargs: Any,
     ) -> AgentRunResult[OutputDataT]:
@@ -446,11 +444,11 @@ class Agent(
         message_history: list[LLMMessage] | None = None,
         tool_filter: GlobalToolFilter | None = None,
         config: ExecutionConfig | None = None,
-        memory: bool | dict[str, Any] | AgentMemory | None = None,
+        memory: bool | dict[str, Any] | MemoryConfig | None = None,
         generation_config: GenerationConfig | None = None,
         event_streamer: EventStreamer | None = None,
         **kwargs: Any,
-    ):
+    ) -> "AsyncIterator[StreamedRunResult[OutputDataT]]":
         """
         智能体流式运行入口。
         返回上下文管理器，可安全、解耦地获取底层事件或纯净文本结果。
@@ -568,13 +566,13 @@ class Agent(
 
     async def _run_step(
         self,
-        prompt: str | Task | None = None,
+        prompt: PromptInput | Task | None = None,
         *,
         context: RunContext[AgentDepsT],
         message_history: list[LLMMessage] | None = None,
         tool_filter: GlobalToolFilter | None = None,
         config: ExecutionConfig | None = None,
-        memory: bool | dict[str, Any] | AgentMemory | None = None,
+        memory: bool | dict[str, Any] | MemoryConfig | None = None,
         generation_config: GenerationConfig | None = None,
         cancellation_token: Any = None,
         event_streamer: Any = None,
@@ -596,8 +594,8 @@ class Agent(
 
                 isolation_level = getattr(self.runtime_config, "isolation_level", None)
                 if isolation_level is None:
-                    if self.memory_facade:
-                        isolation_level = self.memory_facade.isolation_level
+                    if self.memory_config:
+                        isolation_level = self.memory_config.isolation_level
                     else:
                         from zhenxun.services.ai.memory.models import (
                             MemoryIsolationLevel,
@@ -646,18 +644,21 @@ class Agent(
 
             dynamic_caps.append(OutputValidationCapability(None, combined_guardrails))
 
-        from zhenxun.services.ai.memory.models import AgentMemory
+        from zhenxun.services.ai.memory.manager import memory_manager
+        from zhenxun.utils.pydantic_compat import model_copy
 
-        effective_memory = self.memory_facade
+        effective_memory = model_copy(self.memory_config, deep=True)
         if memory is not None:
             if isinstance(memory, bool):
-                effective_memory = AgentMemory() if memory else None
+                effective_memory.enable_short_term = memory
             elif isinstance(memory, dict):
-                effective_memory = AgentMemory(**memory)
+                for k, v in memory.items():
+                    setattr(effective_memory, k, v)
             else:
                 effective_memory = memory
 
-        actual_ltm = effective_memory.long_term_memory if effective_memory else None
+        actual_ltm = memory_manager.get_long_term_memory(effective_memory)
+        actual_chat_ctx = memory_manager.get_chat_context(effective_memory)
         if actual_ltm:
             from zhenxun.services.ai.flow.agent.capabilities import (
                 LongTermMemoryCapability,
@@ -745,20 +746,9 @@ class Agent(
 
         session_metadata = SessionMetadata(session_id=context.session_id)
 
-        actual_wm = effective_memory.working_memory if effective_memory else None
-        if effective_memory and actual_wm is None:
-            from zhenxun.services.ai.memory.working_memory import _get_default_memory
-
-            actual_wm = _get_default_memory()
-            effective_memory.working_memory = actual_wm
-
-        if actual_wm is None:
-            from zhenxun.services.ai.memory.working_memory import _get_default_memory
-
-            actual_wm = _get_default_memory()
-
         if message_history:
-            await actual_wm.set_history(session_metadata, message_history)
+            if actual_chat_ctx:
+                await actual_chat_ctx.set_messages(session_metadata, message_history)
 
         try:
             messages_for_run = await ContextBuilder.build_context_messages(
@@ -767,7 +757,8 @@ class Agent(
                 base_system_prompt=system_prompt,
                 injected_prompts=tool_payload.injected_prompts,
                 session_metadata=session_metadata,
-                memory_facade=effective_memory,
+                memory_config=effective_memory,
+                chat_context=actual_chat_ctx,
                 run_context=context,
             )
 
@@ -776,9 +767,10 @@ class Agent(
                 and messages_for_run
                 and messages_for_run[-1].role == "user"
             ):
-                await actual_wm.add_messages(
-                    session_metadata, [cast(LLMMessage, messages_for_run[-1])]
-                )
+                if actual_chat_ctx:
+                    await actual_chat_ctx.add_messages(
+                        session_metadata, [cast(LLMMessage, messages_for_run[-1])]
+                    )
 
             async with ToolBuilder.mount_toolkits(
                 tool_payload.toolkits, context.session_id, context
@@ -821,8 +813,8 @@ class Agent(
                     early_output = getattr(_run_result, "output", None)
 
             new_msgs = final_messages[len(messages_for_run) :]
-            if new_msgs:
-                await actual_wm.add_messages(session_metadata, new_msgs)
+            if new_msgs and actual_chat_ctx:
+                await actual_chat_ctx.add_messages(session_metadata, new_msgs)
 
             last_msg = final_messages[-1]
             final_text = (

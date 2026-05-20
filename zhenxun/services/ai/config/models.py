@@ -38,7 +38,7 @@ class ContextManagementSettings(BaseModel):
     """智能上下文管理与压缩算法设置"""
 
     default_strategy: Literal[
-        "unlimited", "sliding_window", "llm_summary", "structured_summary"
+        "unlimited", "llm_summary", "structured_summary"
     ] = "unlimited"
     """全局默认记忆策略"""
 
@@ -49,7 +49,6 @@ class ContextManagementSettings(BaseModel):
 
     strategy_kwargs: dict[str, dict[str, Any]] = Field(
         default_factory=lambda: {
-            "sliding_window": {"max_turns": 50},
             "llm_summary": {
                 "summarization_model": "Gemini/gemini-2.5-flash",
                 "summarization_prompt": "请概括以下对话内容，保留关键的约束条件、用户偏好、已完成的任务状态和未解决的问题。",

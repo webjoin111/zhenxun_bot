@@ -18,8 +18,7 @@ from zhenxun.services.ai.core.messages import (
     UserMessage,
 )
 from zhenxun.services.ai.memory.interfaces import (
-    BaseMessageStore,
-    BaseWorkingMemory,
+    BaseChatContext,
 )
 from zhenxun.services.ai.memory.long_term_memory import MemoryScope
 from zhenxun.services.ai.memory.models import SessionMetadata
@@ -33,7 +32,7 @@ from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_dump
 
 
-class InMemoryMessageStore(BaseMessageStore):
+class InMemoryChatContext(BaseChatContext):
     def __init__(self):
         self._messages: dict[str, list[LLMMessage]] = {}
 
@@ -82,7 +81,7 @@ class AbstractMemoryRecord(Model):
         abstract = True
 
 
-class TortoiseMessageStore(BaseMessageStore):
+class TortoiseChatContext(BaseChatContext):
     def __init__(
         self,
         model_class: type[AbstractMemoryRecord],
@@ -241,62 +240,18 @@ class TortoiseMessageStore(BaseMessageStore):
         await self.model_class.filter(session_id=session.session_id).delete()
 
 
-def get_orm_working_memory(
+def get_orm_chat_context(
     model_class: type[AbstractMemoryRecord],
-    max_messages: int = 50,
     custom_save_hook: Callable[[AbstractMemoryRecord, LLMMessage, SessionMetadata], Any]
     | None = None,
-) -> "ChatWorkingMemory":
+) -> TortoiseChatContext:
     """
     [工厂方法] 供第三方开发者调用，
-    将 Tortoise ORM 表直接包装为带有滚动窗口截断能力的工作记忆系统。
+    将 Tortoise ORM 表直接包装为对话历史记录系统。
     """
-    store = TortoiseMessageStore(
+    return TortoiseChatContext(
         model_class=model_class, custom_save_hook=custom_save_hook
     )
-    return ChatWorkingMemory(store=store, max_messages=max_messages)
-
-
-class ChatWorkingMemory(BaseWorkingMemory):
-    def __init__(self, store: BaseMessageStore, max_messages: int = 50):
-        self.store = store
-        self._max_messages = max_messages
-
-    async def get_history(self, session: SessionMetadata) -> list[LLMMessage]:
-        return await self.store.get_messages(session)
-
-    async def add_messages(
-        self, session: SessionMetadata, messages: list[LLMMessage]
-    ) -> None:
-        await self.store.add_messages(session, messages)
-
-    async def clear_history(self, session: SessionMetadata) -> None:
-        await self.store.clear(session)
-
-    async def set_history(
-        self, session: SessionMetadata, messages: list[LLMMessage]
-    ) -> None:
-        await self.store.set_messages(session, messages)
-
-
-_default_memory_factory: Callable[[], BaseWorkingMemory] | None = None
-_global_default_memory_instance: BaseWorkingMemory | None = None
-
-
-def set_default_memory_backend(factory: Callable[[], BaseWorkingMemory]):
-    global _default_memory_factory
-    _default_memory_factory = factory
-
-
-def _get_default_memory() -> BaseWorkingMemory:
-    global _global_default_memory_instance
-    if _default_memory_factory:
-        return _default_memory_factory()
-    if _global_default_memory_instance is None:
-        _global_default_memory_instance = ChatWorkingMemory(
-            store=InMemoryMessageStore()
-        )
-    return _global_default_memory_instance
 
 
 class MemoryMiddleware(BaseLLMMiddleware):
@@ -305,11 +260,11 @@ class MemoryMiddleware(BaseLLMMiddleware):
     def __init__(
         self,
         session_meta: SessionMetadata,
-        working_memory: BaseWorkingMemory | None = None,
+        chat_context: BaseChatContext | None = None,
         long_term_memory: MemoryScope | None = None,
         sanitizer: Callable[[LLMMessage], LLMMessage] | None = None,
     ):
-        self.wm = working_memory
+        self.chat_ctx = chat_context
         self.ltm = long_term_memory
         self.session_meta = session_meta
         self.session_id = session_meta.session_id
@@ -329,13 +284,13 @@ class MemoryMiddleware(BaseLLMMiddleware):
                 context.messages.insert(0, sys_msg)
                 logger.debug(f"已动态注入 {len(matches)} 条长期记忆。")
 
-        if self.wm:
-            history = await self.wm.get_history(self.session_meta)
+        if self.chat_ctx:
+            history = await self.chat_ctx.get_messages(self.session_meta)
             context.messages = history + context.messages
 
         response = await next_call(context)
 
-        if self.wm and context.messages:
+        if self.chat_ctx and context.messages:
             user_msg = context.messages[-1]
             if self.sanitizer:
                 user_msg = self.sanitizer(user_msg)
@@ -343,6 +298,6 @@ class MemoryMiddleware(BaseLLMMiddleware):
             if response.content_parts:
                 ast_msg = LLMMessage(role="assistant", content=response.content_parts)
                 msgs_to_save.append(ast_msg)
-            await self.wm.add_messages(self.session_meta, msgs_to_save)
+            await self.chat_ctx.add_messages(self.session_meta, msgs_to_save)
 
         return response

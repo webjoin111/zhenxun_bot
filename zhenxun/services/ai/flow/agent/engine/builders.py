@@ -104,7 +104,8 @@ class ContextBuilder:
         base_system_prompt: str,
         injected_prompts: list[str],
         session_metadata: SessionMetadata,
-        memory_facade: Any,
+        memory_config: Any,
+        chat_context: Any,
         run_context: RunContext | None = None,
     ) -> list[LLMMessage]:
         """融合系统提示词、压缩后的历史记忆和用户输入，生成最终的消息数组"""
@@ -132,10 +133,9 @@ class ContextBuilder:
                 normalized_user_msg = msgs[-1]
 
         current_history: list[LLMMessage] = []
-        working_memory = memory_facade.working_memory if memory_facade else None
 
-        if working_memory:
-            current_history = await working_memory.get_history(session_metadata)
+        if memory_config and memory_config.enable_short_term and chat_context:
+            current_history = await chat_context.get_messages(session_metadata)
 
             from zhenxun.services.ai.config import get_llm_config
             from zhenxun.services.ai.memory.compression import CondenserPipeline
@@ -146,10 +146,10 @@ class ContextBuilder:
 
             vw = config.vision_window_size
             if (
-                memory_facade
-                and getattr(memory_facade, "vision_window", None) is not None
+                memory_config
+                and getattr(memory_config, "vision_window", None) is not None
             ):
-                vw = memory_facade.vision_window
+                vw = memory_config.vision_window
             if vw > 0:
                 from zhenxun.services.ai.memory.compression import (
                     MultimodalPlaceholderReducer,
@@ -157,7 +157,7 @@ class ContextBuilder:
 
                 pipeline_reducers.append(MultimodalPlaceholderReducer(window_size=vw))
 
-            policy = getattr(memory_facade, "policy", None) if memory_facade else None
+            policy = getattr(memory_config, "policy", None) if memory_config else None
             if policy is not None:
                 pipeline_reducers.extend(policy)
             else:
@@ -168,10 +168,10 @@ class ContextBuilder:
 
                 threshold = config.trigger_threshold
                 if (
-                    memory_facade
-                    and getattr(memory_facade, "context_threshold", None) is not None
+                    memory_config
+                    and getattr(memory_config, "context_threshold", None) is not None
                 ):
-                    threshold = memory_facade.context_threshold
+                    threshold = memory_config.context_threshold
 
                 from zhenxun.services.ai.llm.capabilities import get_model_capabilities
 
@@ -184,10 +184,10 @@ class ContextBuilder:
 
                 max_turns = config.max_history_turns
                 if (
-                    memory_facade
-                    and getattr(memory_facade, "max_history_turns", None) is not None
+                    memory_config
+                    and getattr(memory_config, "max_history_turns", None) is not None
                 ):
-                    max_turns = memory_facade.max_history_turns
+                    max_turns = memory_config.max_history_turns
 
                 if strategy == "unlimited":
                     pipeline_reducers.extend(MemoryPolicy.unlimited())
@@ -202,9 +202,7 @@ class ContextBuilder:
                         MemoryPolicy.structured_summarize(**s_kwargs)
                     )
                 else:
-                    if max_turns is not None:
-                        s_kwargs["max_turns"] = max_turns
-                    pipeline_reducers.extend(MemoryPolicy.sliding_window(**s_kwargs))
+                    pipeline_reducers.extend(MemoryPolicy.unlimited())
 
             if pipeline_reducers:
                 from zhenxun.services.log import logger
@@ -217,7 +215,7 @@ class ContextBuilder:
                 )
 
                 if changed:
-                    await working_memory.set_history(session_metadata, new_history)
+                    await chat_context.set_messages(session_metadata, new_history)
                     logger.info(
                         f"💾 [上下文管线] 压缩/截断完毕，已同步覆写数据库。压缩后条数: {len(new_history)}"
                     )

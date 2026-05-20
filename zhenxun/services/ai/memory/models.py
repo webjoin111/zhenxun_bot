@@ -4,7 +4,7 @@
 
 from enum import Enum
 import time
-from typing import Any
+from typing import Any, Literal
 
 from nonebot.adapters import Bot, Event
 from pydantic import BaseModel, ConfigDict, Field
@@ -163,7 +163,7 @@ class MemoryMatch(BaseModel):
     """匹配原因(如 semantic, recency, importance)"""
 
 
-class MemoryConfig(BaseModel):
+class MemoryScoringConfig(BaseModel):
     """长期记忆的复合打分与检索配置"""
 
     recency_weight: float = Field(default=0.3)
@@ -174,21 +174,52 @@ class MemoryConfig(BaseModel):
     """重要性权重"""
     recency_half_life_days: int = Field(default=30)
     """时间衰减的半衰期(天)"""
+    consolidation_threshold: float = Field(default=0.85)
+    """触发记忆整合的相似度阈值 (高于此阈值的旧记忆将参与合并判断)"""
 
 
-class AgentMemory(BaseModel):
-    """统一的记忆门面配置 (Unified Memory Facade)"""
+class ConsolidationAction(BaseModel):
+    """记忆整合单步动作"""
+
+    action: Literal["keep", "update", "delete"] = Field(
+        description="对旧记忆执行的动作"
+    )
+    record_id: str = Field(description="目标旧记忆的 ID")
+    new_content: str | None = Field(
+        default=None, description="更新后的文本内容（仅在 update 时需要）"
+    )
+
+
+class ConsolidationPlan(BaseModel):
+    """整体记忆整合计划"""
+
+    actions: list[ConsolidationAction] = Field(
+        default_factory=list, description="对历史记录的操作列表"
+    )
+    insert_new: bool = Field(
+        default=True, description="是否将当前的新内容作为一条独立记忆插入数据库"
+    )
+
+
+class MemoryConfig(BaseModel):
+    """统一的记忆配置项声明 (Declarative Memory Config)"""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    enable_short_term: bool = Field(default=True)
+    """是否启用短期对话记忆上下文"""
+    long_term_scope: str | None = Field(default=None)
+    """长期记忆的独立作用域前缀，为 None 则不启用长期向量记忆"""
+
+    chat_backend: str | None = Field(default=None)
+    """指定底层短期记忆数据库注册名称，为空则使用全局默认"""
+    ltm_backend: str | None = Field(default=None)
+    """指定底层长期向量数据库注册名称，为空则使用全局默认"""
 
     isolation_level: MemoryIsolationLevel = Field(
         default=MemoryIsolationLevel.GROUP_USER
     )
     """记忆隔离级别"""
-    working_memory: Any | None = Field(default=None)
-    """BaseWorkingMemory 短期工作记忆实例"""
-    long_term_memory: Any | None = Field(default=None)
-    """MemoryScope 长期记忆实例"""
 
     context_threshold: float | None = Field(default=None)
     """(局部重写) 触发记忆压缩的 Token 阈值"""
@@ -203,12 +234,14 @@ class AgentMemory(BaseModel):
 
 
 __all__ = [
-    "AgentMemory",
-    "MemoryConfig",
+    "ConsolidationAction",
+    "ConsolidationPlan",
     "MemoryIsolationLevel",
     "MemoryMatch",
     "MemoryQuery",
     "MemoryRecord",
+    "MemoryScoringConfig",
+    "MemoryConfig",
     "SessionMetadata",
     "generate_session_meta",
 ]

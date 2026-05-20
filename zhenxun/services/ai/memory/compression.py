@@ -18,30 +18,6 @@ from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_copy
 
 
-class SlidingWindowReducer(BaseMemoryReducer):
-    """物理滑动窗口：强制丢弃超过设定轮数的最早对话，保证数据库和上下文不无限膨胀"""
-
-    def __init__(self, max_turns: int = 50):
-        self.max_turns = max_turns
-
-    async def reduce(self, messages, current_tokens, model_name, base_overhead=0):
-        user_msgs = [m for m in messages if m.role == "user"]
-        if len(user_msgs) > self.max_turns:
-            keep_user_msgs = user_msgs[-self.max_turns :]
-            earliest_user_msg = keep_user_msgs[0]
-            idx = messages.index(earliest_user_msg)
-            has_system = messages and isinstance(messages[0], SystemMessage)
-            if has_system and idx > 0:
-                new_messages = [messages[0], *messages[idx:]]
-            else:
-                new_messages = messages[idx:]
-            new_tokens = global_estimator.estimate_context(
-                new_messages, model_name, base_overhead
-            )
-            return new_messages, True, new_tokens
-        return messages, False, current_tokens
-
-
 class MultimodalPlaceholderReducer(BaseMemoryReducer):
     """视觉媒体降级：将超过一定轮数的老图片/视频替换为 <图片> 占位符文本"""
 
