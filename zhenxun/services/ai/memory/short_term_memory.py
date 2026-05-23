@@ -273,7 +273,7 @@ class MemoryMiddleware(BaseLLMMiddleware):
     async def __call__(self, context: LLMContext, next_call: NextCall) -> LLMResponse:
         if self.ltm and context.messages:
             last_content = str(context.messages[-1].content)
-            matches = await self.ltm.recall(last_content)
+            matches = await self.ltm.recall(session=self.session_meta, query=last_content)
             if matches:
                 fact_str = "\n".join(
                     f"- {m.record.content} (相关性: {m.score:.2f})" for m in matches

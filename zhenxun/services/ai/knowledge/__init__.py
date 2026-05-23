@@ -1,12 +1,10 @@
 from .base import BaseKnowledge
 from .filesystem import FileSystemKnowledge
-from .models import Document
 from .readers import get_reader_for_file
 from .vector import VectorKnowledge
 
 __all__ = [
     "BaseKnowledge",
-    "Document",
     "FileSystemKnowledge",
     "VectorKnowledge",
     "get_reader_for_file",

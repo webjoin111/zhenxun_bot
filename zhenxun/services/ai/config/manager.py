@@ -51,6 +51,8 @@ def get_default_providers() -> list[dict[str, Any]]:
             "api_type": "openai",
             "models": [
                 {"model_name": "deepseek-ai/DeepSeek-V3"},
+                {"model_name": "BAAI/bge-m3"},
+                {"model_name": "BAAI/bge-reranker-v2-m3"},
             ],
         },
         {
@@ -75,6 +77,9 @@ def get_default_providers() -> list[dict[str, Any]]:
                 {"model_name": "gemini-2.5-flash"},
                 {"model_name": "gemini-2.5-pro"},
                 {"model_name": "gemini-2.5-flash-lite"},
+                {"model_name": "gemini-2.5-flash-image"},
+                {"model_name": "gemini-embedding-2"},
+                {"model_name": "gemini-3.1-flash-tts-preview"},
             ],
         },
         {
@@ -99,10 +104,10 @@ def register_llm_configs():
 
     Config.add_plugin_config(
         AI_CONFIG_GROUP,
-        "default_model_name",
-        llm_config.default_model_name,
-        help="LLM服务全局默认使用的模型名称 (格式: ProviderName/ModelName)",
-        type=str,
+        "default_models",
+        model_dump(llm_config.default_models),
+        help="不同任务类型的全局默认模型配置字典",
+        type=dict,
     )
     Config.add_plugin_config(
         AI_CONFIG_GROUP,
@@ -200,7 +205,7 @@ def get_llm_config() -> LLMConfig:
         debug_log_val = raw_debug
 
     config_data = {
-        "default_model_name": ai_config.get("default_model_name"),
+        "default_models": ai_config.get("default_models", {}),
         "client_settings": ai_config.get("client_settings", {}),
         "debug_log": debug_log_val,
         PROVIDERS_CONFIG_KEY: ai_config.get(PROVIDERS_CONFIG_KEY, []),
@@ -257,11 +262,10 @@ def validate_llm_config() -> tuple[bool, list[str]]:
                             )
                         model_names.add(model.model_name)
 
-        if llm_config.default_model_name:
-            if not llm_config.validate_model_name(llm_config.default_model_name):
-                errors.append(
-                    f"默认模型 {llm_config.default_model_name} 在配置中不存在"
-                )
+        for task, m_name in model_dump(llm_config.default_models).items():
+            if m_name:
+                if not llm_config.validate_model_name(m_name):
+                    errors.append(f"任务 {task} 的默认模型 {m_name} 在配置中不存在")
 
     except Exception as e:
         errors.append(f"配置解析失败: {e!s}")
@@ -269,7 +273,7 @@ def validate_llm_config() -> tuple[bool, list[str]]:
     return len(errors) == 0, errors
 
 
-def set_default_model(provider_model_name: str | None) -> bool:
+def set_default_model(task: str, provider_model_name: str | None) -> bool:
     """设置默认模型名称"""
     if provider_model_name:
         llm_config = get_llm_config()
@@ -277,13 +281,17 @@ def set_default_model(provider_model_name: str | None) -> bool:
             logger.error(f"模型 {provider_model_name} 在配置中不存在")
             return False
 
+    ai_config = get_ai_config()
+    current_defaults = ai_config.get("default_models", {})
+    current_defaults[task] = provider_model_name
+
     Config.set_config(
-        AI_CONFIG_GROUP, "default_model_name", provider_model_name, auto_save=True
+        AI_CONFIG_GROUP, "default_models", current_defaults, auto_save=True
     )
 
     if provider_model_name:
-        logger.info(f"默认模型已设置为: {provider_model_name}")
+        logger.info(f"任务 {task} 的默认模型已设置为: {provider_model_name}")
     else:
-        logger.info("默认模型已清除")
+        logger.info(f"任务 {task} 的默认模型已清除")
 
     return True

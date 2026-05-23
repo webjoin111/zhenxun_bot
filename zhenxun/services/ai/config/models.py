@@ -91,11 +91,20 @@ class ProviderConfig(BaseModel):
     """针对该提供商的特定代理设置"""
 
 
+class DefaultModelsConfig(BaseModel):
+    """按任务分类的默认模型配置"""
+    chat: str | None = Field(default="Gemini/gemini-2.5-flash")
+    embedding: str | None = Field(default="Gemini/gemini-embedding-2")
+    tts: str | None = Field(default="Gemini/gemini-3.1-flash-tts-preview")
+    image: str | None = Field(default="Gemini/gemini-2.5-flash-image")
+    rerank: str | None = Field(default="siliconflow/BAAI/bge-reranker-v2-m3")
+
+
 class LLMConfig(BaseModel):
     """AI 模块全局持久化配置总模型"""
 
-    default_model_name: str | None = None
-    """全局默认使用的模型名称 (格式: ProviderName/ModelName)"""
+    default_models: DefaultModelsConfig = Field(default_factory=DefaultModelsConfig)
+    """全局按任务分类的默认模型路由表"""
     client_settings: ClientSettings = Field(default_factory=ClientSettings)
     """客户端通用连接配置"""
     providers: list[ProviderConfig] = Field(default_factory=list)

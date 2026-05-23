@@ -13,6 +13,7 @@ from zhenxun.services.ai.core.events.event_types import (
 )
 from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
 from zhenxun.services.ai.memory.long_term_memory import MemoryScope
+from zhenxun.services.ai.memory.models import SessionMetadata
 from zhenxun.services.ai.protocols.capabilities import AbstractCapability
 from zhenxun.services.ai.run import AgentRunResult, RunContext, Task
 from zhenxun.services.log import logger
@@ -103,8 +104,9 @@ class OutputValidationCapability(AbstractCapability):
 class LongTermMemoryCapability(AbstractCapability):
     """长期记忆 (RAG) 检索增强能力组件"""
 
-    def __init__(self, memory_scope: MemoryScope):
+    def __init__(self, memory_scope: MemoryScope, session_meta: SessionMetadata):
         self.memory_scope = memory_scope
+        self.session_meta = session_meta
 
     async def get_system_prompts(self, context: RunContext) -> list[str]:
         """
@@ -115,7 +117,9 @@ class LongTermMemoryCapability(AbstractCapability):
         if not user_input:
             return []
 
-        matches = await self.memory_scope.recall(user_input)
+        matches = await self.memory_scope.recall(
+            session=self.session_meta, query=user_input
+        )
         if not matches:
             return []
 

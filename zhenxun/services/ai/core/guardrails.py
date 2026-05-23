@@ -109,7 +109,7 @@ class LLMGuardrail(BaseGuardrail):
             return GuardrailResult(success=True)
 
         from zhenxun.services.ai.llm.api import generate_structured
-        from zhenxun.services.ai.llm.manager import get_global_default_model_name
+        from zhenxun.services.ai.llm.manager import get_default_model
 
         rules_str = "\n".join([f"{i + 1}. {r}" for i, r in enumerate(self.rules)])
         if self.config.system_prompt_template:
@@ -130,7 +130,7 @@ class LLMGuardrail(BaseGuardrail):
         if not model and context and context.run.current_model:
             model = context.run.current_model
         if not model:
-            model = get_global_default_model_name()
+            model = get_default_model("chat")
 
         try:
             res = await generate_structured(

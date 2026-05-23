@@ -659,12 +659,13 @@ class Agent(
 
         actual_ltm = memory_manager.get_long_term_memory(effective_memory)
         actual_chat_ctx = memory_manager.get_chat_context(effective_memory)
+        session_metadata = SessionMetadata(session_id=context.session_id)
         if actual_ltm:
             from zhenxun.services.ai.flow.agent.capabilities import (
                 LongTermMemoryCapability,
             )
 
-            dynamic_caps.append(LongTermMemoryCapability(actual_ltm))
+            dynamic_caps.append(LongTermMemoryCapability(actual_ltm, session_metadata))
 
         if task_obj:
             from zhenxun.services.ai.flow.agent.capabilities import (
@@ -682,75 +683,89 @@ class Agent(
         run_scoped_cap = cast(CombinedCapability, await combined_cap.for_run(context))
 
         await run_scoped_cap.before_run(context)
+
+        original_capabilities = getattr(context, "capabilities", [])
         context.capabilities = run_scoped_cap.capabilities
 
-        if final_prompt_payload is not None:
-            if isinstance(final_prompt_payload, str):
-                context.run.user_input = final_prompt_payload
-            elif hasattr(final_prompt_payload, "extract_plain_text"):
-                context.run.user_input = final_prompt_payload.extract_plain_text()
-            else:
-                context.run.user_input = str(final_prompt_payload)
-        context.run.agent_name = self.name
-
-        system_prompt = await ContextBuilder.build_system_prompt(
-            instruction=self.instruction,
-            system_prompts=self.dynamic_prompts,
-            run_context=context,
-            run_scoped_cap=run_scoped_cap,
-            persona=self.persona,
-        )
-        tool_payload = await ToolBuilder.resolve_tools(
-            tool_definitions=self.tool_definitions,
-            toolset_funcs=getattr(self, "toolset_funcs", []),
-            system_tools=(
-                getattr(self.default_config, "system_tools", [])
-                if self.default_config
-                else []
-            ),
-            namespace=self.namespace or "unknown",
-            tool_filter=tool_filter,
-            run_context=context,
-            run_scoped_cap=run_scoped_cap,
-        )
-        effective_tools = tool_payload.tools
-        if extra_tools:
-            effective_tools.extend(extra_tools)
-
-        final_gen_config = model_copy(self.default_config, deep=True)
-
-        cap_dynamic_config = await run_scoped_cap.get_generation_config(context)
-        if cap_dynamic_config:
-            final_gen_config = final_gen_config.merge_with(cap_dynamic_config)
-
-        if generation_config:
-            final_gen_config = final_gen_config.merge_with(generation_config)
-        exec_config = config or ExecutionConfig()
-        model_name_resolved = (
-            self.model_name() if callable(self.model_name) else self.model_name
-        )
-
-        if not model_name_resolved and context and context.run.current_model:
-            model_name_resolved = context.run.current_model
-
-        if not model_name_resolved:
-            from zhenxun.services.ai.llm.manager import get_global_default_model_name
-
-            model_name_resolved = get_global_default_model_name()
-
-        context.run.current_model = (
-            str(model_name_resolved) if model_name_resolved else ""
-        )
-        context.run.cancellation_token = cancellation_token
-        context.run.streamer = event_streamer
-
-        session_metadata = SessionMetadata(session_id=context.session_id)
-
-        if message_history:
-            if actual_chat_ctx:
-                await actual_chat_ctx.set_messages(session_metadata, message_history)
-
         try:
+            if final_prompt_payload is not None:
+                if isinstance(final_prompt_payload, str):
+                    context.run.user_input = final_prompt_payload
+                elif hasattr(final_prompt_payload, "extract_plain_text"):
+                    context.run.user_input = final_prompt_payload.extract_plain_text()
+                else:
+                    context.run.user_input = str(final_prompt_payload)
+            context.run.agent_name = self.name
+
+            system_prompt = await ContextBuilder.build_system_prompt(
+                instruction=self.instruction,
+                system_prompts=self.dynamic_prompts,
+                run_context=context,
+                run_scoped_cap=run_scoped_cap,
+                persona=self.persona,
+            )
+            tool_payload = await ToolBuilder.resolve_tools(
+                tool_definitions=self.tool_definitions,
+                toolset_funcs=getattr(self, "toolset_funcs", []),
+                system_tools=(
+                    getattr(self.default_config, "system_tools", [])
+                    if self.default_config
+                    else []
+                ),
+                namespace=self.namespace or "unknown",
+                tool_filter=tool_filter,
+                run_context=context,
+                run_scoped_cap=run_scoped_cap,
+            )
+            effective_tools = tool_payload.tools
+            if extra_tools:
+                effective_tools.extend(extra_tools)
+
+            if actual_ltm and getattr(effective_memory, "enable_ltm", False):
+                from zhenxun.services.ai.tools.providers.builtin.memory import (
+                    MemoryManagementToolkit,
+                )
+
+                ltm_toolkit = MemoryManagementToolkit(
+                    memory_scope=actual_ltm, session_meta=session_metadata
+                )
+                ltm_payload = await ltm_toolkit.resolve(context)
+                effective_tools.extend(ltm_payload.tools)
+                tool_payload.injected_prompts.extend(ltm_payload.injected_prompts)
+                tool_payload.toolkits.extend(ltm_payload.toolkits)
+
+            final_gen_config = model_copy(self.default_config, deep=True)
+
+            cap_dynamic_config = await run_scoped_cap.get_generation_config(context)
+            if cap_dynamic_config:
+                final_gen_config = final_gen_config.merge_with(cap_dynamic_config)
+
+            if generation_config:
+                final_gen_config = final_gen_config.merge_with(generation_config)
+            exec_config = config or ExecutionConfig()
+            model_name_resolved = (
+                self.model_name() if callable(self.model_name) else self.model_name
+            )
+
+            if not model_name_resolved and context and context.run.current_model:
+                model_name_resolved = context.run.current_model
+
+            if not model_name_resolved:
+                from zhenxun.services.ai.llm.manager import get_default_model
+                model_name_resolved = get_default_model("chat")
+
+            context.run.current_model = (
+                str(model_name_resolved) if model_name_resolved else ""
+            )
+            context.run.cancellation_token = cancellation_token
+            context.run.streamer = event_streamer
+
+            if message_history:
+                if actual_chat_ctx:
+                    await actual_chat_ctx.set_messages(
+                        session_metadata, message_history
+                    )
+
             messages_for_run = await ContextBuilder.build_context_messages(
                 model_name=str(model_name_resolved) if model_name_resolved else "",
                 user_input=final_prompt_payload,
@@ -849,3 +864,5 @@ class Agent(
                 return await run_scoped_cap.on_run_error(context, e)
             except Exception as final_e:
                 raise final_e
+        finally:
+            context.capabilities = original_capabilities

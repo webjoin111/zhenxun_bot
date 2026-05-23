@@ -27,7 +27,6 @@ from .service import LLMModel
 
 AI_CONFIG_GROUP = "AI"
 PROVIDERS_CONFIG_KEY = "PROVIDERS"
-DEFAULT_MODEL_NAME_KEY = "default_model_name"
 
 _model_cache: dict[str, tuple[LLMModel, float]] = {}
 _cache_ttl = 3600
@@ -436,6 +435,7 @@ def list_embedding_models() -> list[dict[str, Any]]:
 async def get_model_instance(
     provider_model_name: str | None = None,
     override_config: dict[str, Any] | GenerationConfig | None = None,
+    task: str = "chat",
 ) -> LLMModel:
     """[内部 API] 获取底层 LLMModel 状态机实例。"""
     cache_key = _make_cache_key(provider_model_name, override_config)
@@ -453,7 +453,7 @@ async def get_model_instance(
 
     resolved_model_name_str = provider_model_name
     if resolved_model_name_str is None:
-        resolved_model_name_str = get_global_default_model_name()
+        resolved_model_name_str = get_default_model(task)
         if resolved_model_name_str is None:
             available_models_list = list_available_models()
             if not available_models_list:
@@ -482,10 +482,8 @@ async def get_model_instance(
 
     config_tuple_found = find_model_config(prov_name_str, mod_name_str)
     if not config_tuple_found:
-        all_models = list_available_models()
         raise LLMException(
-            f"未找到模型: '{resolved_model_name_str}'. "
-            f"可用: {[m['full_name'] for m in all_models]}",
+            f"未找到模型: '{resolved_model_name_str}'. ",
             code=LLMErrorCode.MODEL_NOT_FOUND,
         )
 
@@ -558,40 +556,16 @@ async def get_model_instance(
         )
 
 
-def get_global_default_model_name() -> str | None:
-    """获取全局默认模型名称"""
-    ai_config = get_ai_config()
-    return ai_config.get(DEFAULT_MODEL_NAME_KEY)
+def get_default_model(task: str = "chat") -> str | None:
+    """根据任务类型获取默认模型名称"""
+    config = get_llm_config()
+    return getattr(config.default_models, task, None)
 
 
-def set_global_default_model_name(provider_model_name: str | None) -> bool:
+def set_global_default_model_name(task: str, provider_model_name: str | None) -> bool:
     """设置全局默认模型名称。"""
-    if provider_model_name:
-        group_name = _get_group_name(provider_model_name)
-        if group_name is not None:
-            if group_name not in get_llm_config().model_groups:
-                logger.error(f"尝试设置的全局默认模型路由组 '{group_name}' 不存在。")
-                return False
-        else:
-            prov_name, mod_name = parse_provider_model_string(provider_model_name)
-            if (
-                not prov_name
-                or not mod_name
-                or not find_model_config(prov_name, mod_name)
-            ):
-                logger.error(
-                    f"尝试设置的全局默认模型 '{provider_model_name}' 无效或未配置。"
-                )
-                return False
-
-    Config.set_config(
-        AI_CONFIG_GROUP, DEFAULT_MODEL_NAME_KEY, provider_model_name, auto_save=True
-    )
-    if provider_model_name:
-        logger.info(f"LLM 服务全局默认模型已更新为: {provider_model_name}")
-    else:
-        logger.info("LLM 服务全局默认模型已清除。")
-    return True
+    from zhenxun.services.ai.config import set_default_model as _set_default_model
+    return _set_default_model(task, provider_model_name)
 
 
 async def get_key_usage_stats() -> dict[str, Any]:

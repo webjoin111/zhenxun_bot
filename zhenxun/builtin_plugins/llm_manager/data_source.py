@@ -4,7 +4,9 @@ from typing import Any
 from zhenxun.services.ai.core.messages import LLMMessage
 from zhenxun.services.ai.llm import LLMException
 from zhenxun.services.ai.llm.manager import (
-    get_global_default_model_name,
+    get_default_model as _get_default_model,
+)
+from zhenxun.services.ai.llm.manager import (
     get_model_instance,
     list_available_models,
     reset_key_status,
@@ -39,12 +41,12 @@ class DataSource:
     @staticmethod
     async def get_default_model() -> str | None:
         """获取全局默认模型"""
-        return get_global_default_model_name()
+        return _get_default_model("chat")
 
     @staticmethod
     async def set_default_model(model_name_str: str) -> tuple[bool, str]:
         """设置全局默认模型"""
-        success = set_global_default_model_name(model_name_str)
+        success = set_global_default_model_name("chat", model_name_str)
         if success:
             return True, f"✅ 成功将默认模型设置为: {model_name_str}"
         else:

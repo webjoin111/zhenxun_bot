@@ -34,7 +34,7 @@ from .ai.llm.manager import (
     get_model_instance,
     list_available_models,
     list_embedding_models,
-    set_global_default_model_name,
+    get_default_model,
 )
 from .avatar_service import avatar_service
 from .db_context import Model, disconnect, with_db_timeout
@@ -75,6 +75,6 @@ __all__ = [
     "logger",
     "renderer_service",
     "scheduler_manager",
-    "set_global_default_model_name",
+    "get_default_model",
     "with_db_timeout",
 ]

@@ -1,6 +1,7 @@
 from typing import Any
 
 from zhenxun.services.ai.memory.long_term_memory import MemoryScope
+from zhenxun.services.ai.memory.models import SessionMetadata
 from zhenxun.services.ai.run import Inject, RunContext
 from zhenxun.services.ai.tools.core.decorators import silent, tool
 from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
@@ -23,9 +24,10 @@ class MemoryManagementToolkit(BaseToolkit):
         "4. **隐式服务**：除非用户询问，否则无需显式汇报『已记住』，直接在后续对话中体现即可。"
     )
 
-    def __init__(self, memory_scope: MemoryScope, **kwargs: Any):
+    def __init__(self, memory_scope: MemoryScope, session_meta: SessionMetadata, **kwargs: Any):
         super().__init__(**kwargs)
         self.memory_scope = memory_scope
+        self.session_meta = session_meta
 
     @tool(
         name="save_memory",
@@ -33,14 +35,12 @@ class MemoryManagementToolkit(BaseToolkit):
     )
     @silent()
     async def save_memory(self, content: str, importance: float = 0.5) -> ToolResult:
-        record = await self.memory_scope.remember(
-            content=content, importance=importance
-        )
+        await self.memory_scope.remember(session=self.session_meta, content=content, importance=importance)
 
         logger.info(
             f"[Agentic Memory] AI 主动存入记忆: {content} (重要性: {importance})"
         )
-        return ToolResult(output=f"记忆已成功保存。唯一ID: {record.id}").with_log(
+        return ToolResult(output=f"记忆已成功排入系统后台合并存入。").with_log(
             f"🧠 主动保存记忆: {content}"
         )
 
@@ -53,7 +53,7 @@ class MemoryManagementToolkit(BaseToolkit):
         self, query: str, filters: dict[str, str] | None = None
     ) -> ToolResult:
         matches = await self.memory_scope.recall(
-            query=query, limit=5, metadata_filter=filters
+            session=self.session_meta, query=query, limit=5, metadata_filter=filters
         )
         if not matches:
             return ToolResult(output="未检索到相关记忆。")
@@ -70,7 +70,7 @@ class MemoryManagementToolkit(BaseToolkit):
     )
     @silent()
     async def delete_memory(self, record_id: str) -> ToolResult:
-        deleted_count = await self.memory_scope.forget(record_ids=[record_id])
+        deleted_count = await self.memory_scope.forget(session=self.session_meta, record_ids=[record_id])
         if deleted_count > 0:
             logger.info(f"[Agentic Memory] AI 主动删除记忆: {record_id}")
             return ToolResult(output=f"记忆 {record_id} 删除成功。")
@@ -107,9 +107,9 @@ class MemoryManagementToolkit(BaseToolkit):
         if tags:
             meta.update(tags)
 
-        record = await self.memory_scope.remember(content=doc.content, metadata=meta)
+        await self.memory_scope.remember(session=self.session_meta, content=doc.content, metadata=meta)
 
         logger.info(f"[Agentic Memory] AI 将网页存入记忆: {url}")
         return ToolResult(
-            output=f"网页阅读成功并已入库！提取了 {len(doc.content)} 个字符。记忆 ID: {record.id}"
+            output=f"网页阅读成功！提取了 {len(doc.content)} 个字符，已放入后台记忆库归档。"
         ).with_log(f"🌐 已将网页存入长期记忆: {url}")

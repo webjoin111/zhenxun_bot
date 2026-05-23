@@ -455,7 +455,8 @@ class AgentExecutor:
             fallback_response = await model_instance.generate_response(
                 messages=execution_history,
                 config=gen_config,
-                tools=None,
+                tools=[],
+                tool_choice="none",
                 extra=current_extra,
                 cancellation_token=cancellation_token,
             )

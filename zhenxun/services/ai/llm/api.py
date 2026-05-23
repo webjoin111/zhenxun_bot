@@ -157,7 +157,7 @@ async def embed(
         final_config.task_type = task_map.get(task)
 
     try:
-        async with await get_model_instance(model) as model_instance:
+        async with await get_model_instance(model, task="embedding") as model_instance:
             return await model_instance.generate_embeddings(texts, config=final_config)
     except LLMException:
         raise
@@ -188,7 +188,7 @@ async def rerank(
         model: 重排模型名称 (如 BAAI/bge-reranker-v2-m3)
     """
     try:
-        async with await get_model_instance(model) as model_instance:
+        async with await get_model_instance(model, task="rerank") as model_instance:
             return await model_instance.rerank(query, documents, top_n)
     except Exception as e:
         friendly_msg = get_user_friendly_error_message(e)
@@ -350,7 +350,7 @@ async def generate(
             resolved_config = config
 
         async with await get_model_instance(
-            model, override_config=None
+            model, override_config=None, task="chat"
         ) as model_instance:
             response = await model_instance.generate_response(
                 messages,
@@ -426,7 +426,7 @@ async def create_image(
     try:
         from zhenxun.services.ai.protocols.middleware import LLMContext
 
-        async with await get_model_instance(model) as model_instance:
+        async with await get_model_instance(model, task="image") as model_instance:
             if not model_instance.capabilities.accepts_output(ModelModality.IMAGE):
                 raise LLMException(
                     f"模型 {model_instance.model_name} 声明不支持图像生成能力"
@@ -472,7 +472,7 @@ async def create_speech(
         raise LLMException("TTS 输入文本不能为空")
 
     try:
-        async with await get_model_instance(model) as model_instance:
+        async with await get_model_instance(model, task="tts") as model_instance:
             return await model_instance.generate_speech(
                 input_text=text, voice=voice, config=config
             )

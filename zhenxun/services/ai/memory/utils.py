@@ -3,7 +3,10 @@ import time
 
 import numpy as np
 
-from zhenxun.services.ai.memory.models import MemoryRecord, MemoryScoringConfig
+from zhenxun.services.ai.memory.models import (
+    MemoryRecord,
+    MemoryScoringConfig,
+)
 
 
 def normalize_scope_path(path: str) -> str:
@@ -22,7 +25,6 @@ def join_scope_paths(root: str | None, inner: str | None) -> str:
     """拼接根作用域和内部作用域"""
     root = root.rstrip("/") if root else ""
     inner = inner.strip("/") if inner else ""
-
     if root and inner:
         result = f"{root}/{inner}"
     elif root:
@@ -31,7 +33,6 @@ def join_scope_paths(root: str | None, inner: str | None) -> str:
         result = f"/{inner}"
     else:
         result = "/"
-
     return normalize_scope_path(result)
 
 
@@ -59,11 +60,9 @@ def compute_composite_score(
         + config.recency_weight * decay
         + config.importance_weight * record.importance
     )
-
     reasons: list[str] = ["semantic"]
     if decay > 0.5:
         reasons.append("recency")
     if record.importance > 0.5:
         reasons.append("importance")
-
     return composite, reasons

@@ -28,6 +28,7 @@ from .api import (
 from .config import (
     IntentBuilder,
 )
+from .manager import get_default_model
 
 __all__ = [
     "AudioResponse",
@@ -39,6 +40,7 @@ __all__ = [
     "LLMResponse",
     "ModelName",
     "TTSConfig",
+    "get_default_model",
     "chat",
     "create_image",
     "create_speech",

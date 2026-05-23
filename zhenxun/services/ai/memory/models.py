@@ -4,7 +4,7 @@
 
 from enum import Enum
 import time
-from typing import Any, Literal
+from typing import Any
 
 from nonebot.adapters import Bot, Event
 from pydantic import BaseModel, ConfigDict, Field
@@ -46,6 +46,8 @@ class SessionMetadata(BaseModel):
     """生成此会话时的隔离级别。"""
     scope_prefix: str = Field(default="/")
     """基于隔离级别生成的路径作用域，用于长期记忆 (RAG) 的向量检索前缀过滤。"""
+    accessible_scopes: list[str] = Field(default_factory=lambda: ["/"])
+    """当前会话有权访问的作用域列表，用于 Slice 联合检索。自动推导，包含从全局根路径到最深层路径的所有父节点。"""
 
     def __str__(self) -> str:
         return self.session_id
@@ -108,9 +110,16 @@ def generate_session_meta(
     session_id = "/" + "/".join(parts)
     scope_prefix = session_id
 
+    accessible_scopes = ["/"]
+    current_path = ""
+    for part in parts:
+        current_path += f"/{part}"
+        accessible_scopes.append(current_path)
+
     return SessionMetadata(
         session_id=session_id,
         scope_prefix=scope_prefix,
+        accessible_scopes=accessible_scopes,
         platform=platform,
         group_id=group_id,
         user_id=user_id,
@@ -118,19 +127,6 @@ def generate_session_meta(
         agent_name=agent_name,
         isolation_level=isolation_level,
     )
-
-
-class MemoryQuery(BaseModel):
-    """长记忆泛化查询对象"""
-
-    text: str = Field(description="原始查询文本")
-    embedding: list[float] | None = Field(
-        default=None, description="用于向量检索的 Embedding 数组"
-    )
-    metadata_filters: dict[str, Any] | None = Field(
-        default=None, description="元数据过滤条件"
-    )
-    limit: int = Field(default=10, description="返回的最大条数")
 
 
 class MemoryRecord(BaseModel):
@@ -178,29 +174,6 @@ class MemoryScoringConfig(BaseModel):
     """触发记忆整合的相似度阈值 (高于此阈值的旧记忆将参与合并判断)"""
 
 
-class ConsolidationAction(BaseModel):
-    """记忆整合单步动作"""
-
-    action: Literal["keep", "update", "delete"] = Field(
-        description="对旧记忆执行的动作"
-    )
-    record_id: str = Field(description="目标旧记忆的 ID")
-    new_content: str | None = Field(
-        default=None, description="更新后的文本内容（仅在 update 时需要）"
-    )
-
-
-class ConsolidationPlan(BaseModel):
-    """整体记忆整合计划"""
-
-    actions: list[ConsolidationAction] = Field(
-        default_factory=list, description="对历史记录的操作列表"
-    )
-    insert_new: bool = Field(
-        default=True, description="是否将当前的新内容作为一条独立记忆插入数据库"
-    )
-
-
 class MemoryConfig(BaseModel):
     """统一的记忆配置项声明 (Declarative Memory Config)"""
 
@@ -208,13 +181,23 @@ class MemoryConfig(BaseModel):
 
     enable_short_term: bool = Field(default=True)
     """是否启用短期对话记忆上下文"""
+    enable_ltm: bool = Field(default=False)
+    """是否启用长期记忆（开启后自动赋予 Agent 存取记忆的工具，并附加 RAG 召回能力）"""
+    ltm_auto_consolidate: bool = Field(default=True)
+    """是否开启大模型记忆反思与融合"""
     long_term_scope: str | None = Field(default=None)
     """长期记忆的独立作用域前缀，为 None 则不启用长期向量记忆"""
 
     chat_backend: str | None = Field(default=None)
     """指定底层短期记忆数据库注册名称，为空则使用全局默认"""
     ltm_backend: str | None = Field(default=None)
-    """指定底层长期向量数据库注册名称，为空则使用全局默认"""
+    """指定底层长期向量数据库 (Storage) 注册名称，为空则使用全局默认"""
+    ltm_consolidator: str | None = Field(default=None)
+    """指定底层记忆融合器 (Consolidator) 注册名称，为空则使用全局默认（不融合，仅追加）"""
+    ltm_embedder: str | None = Field(default=None)
+    """指定底层向量化引擎 (Embedder) 注册名称，为空则使用全局默认"""
+    ltm_async_write: bool = Field(default=True)
+    """是否开启长期记忆后台异步写入队列防阻塞"""
 
     isolation_level: MemoryIsolationLevel = Field(
         default=MemoryIsolationLevel.GROUP_USER
@@ -234,14 +217,11 @@ class MemoryConfig(BaseModel):
 
 
 __all__ = [
-    "ConsolidationAction",
-    "ConsolidationPlan",
+    "MemoryConfig",
     "MemoryIsolationLevel",
     "MemoryMatch",
-    "MemoryQuery",
     "MemoryRecord",
     "MemoryScoringConfig",
-    "MemoryConfig",
     "SessionMetadata",
     "generate_session_meta",
 ]

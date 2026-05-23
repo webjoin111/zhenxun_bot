@@ -28,7 +28,7 @@ import zhenxun.services.ai.llm.config.generation
 import zhenxun.services.ai.protocols
 import zhenxun.services.ai.tools
 
-zhenxun.services.ai.llm.config.LLMGenerationConfig = (
+zhenxun.services.ai.llm.config.LLMGenerationConfig = (  # type: ignore
     zhenxun.services.ai.core.configs.GenerationConfig
 )
 
@@ -92,12 +92,13 @@ from zhenxun.services.ai.core.configs import GenerationConfig, OutputFormatConfi
 class OutputConfig(OutputFormatConfig):
     """向下兼容垫片：旧版 OutputConfig 等价于 OutputFormatConfig。"""
 
+
 AIConfig = GenerationConfig
 LLMGenerationConfig = GenerationConfig
-zhenxun.services.ai.llm.config.generation.OutputConfig = OutputConfig
+zhenxun.services.ai.llm.config.generation.OutputConfig = OutputConfig  # type: ignore
 from zhenxun.services.ai.llm import *  # noqa: F403
 from zhenxun.services.ai.llm.manager import (
-    get_global_default_model_name,
+    get_default_model,
     get_model_instance,
     list_available_models,
     list_embedding_models,
@@ -116,13 +117,13 @@ __all__ = [
     "AIConfig",
     "CommonOverrides",
     "GenerationConfig",
-    "OutputConfig",
     "LLMException",
     "LLMGenerationConfig",
     "LLMMessage",
     "LLMResponse",
+    "OutputConfig",
     "function_tool",
-    "get_global_default_model_name",
+    "get_default_model",
     "get_model_instance",
     "list_available_models",
     "list_embedding_models",

@@ -3,7 +3,7 @@ import csv
 from pathlib import Path
 from urllib.parse import urlparse
 
-from zhenxun.services.ai.knowledge.models import Document
+from zhenxun.services.ai.rag import BaseRecord
 from zhenxun.services.log import logger
 from zhenxun.utils.http_utils import AsyncHttpx
 from zhenxun.utils.user_agent import get_user_agent
@@ -12,17 +12,17 @@ from zhenxun.utils.user_agent import get_user_agent
 class BaseReader:
     """读取器基类"""
 
-    def read(self, file_path: Path) -> Document | None:
+    def read(self, file_path: Path) -> BaseRecord | None:
         raise NotImplementedError
 
 
 class TextReader(BaseReader):
     """处理 .txt, .md, .json 等纯文本"""
 
-    def read(self, file_path: Path) -> Document | None:
+    def read(self, file_path: Path) -> BaseRecord | None:
         try:
             content = file_path.read_text(encoding="utf-8", errors="ignore")
-            return Document(name=file_path.name, content=content)
+            return BaseRecord(content=content, metadata={"name": file_path.name})
         except Exception as e:
             logger.error(f"[TextReader] 读取文件失败 {file_path}: {e}")
             return None
@@ -34,7 +34,7 @@ class CSVReader(BaseReader):
     将其标准化为逗号分隔的文本块，便于后续的 RowChunking 处理。
     """
 
-    def read(self, file_path: Path) -> Document | None:
+    def read(self, file_path: Path) -> BaseRecord | None:
         try:
             with open(file_path, encoding="utf-8", errors="ignore") as f:
                 reader = csv.reader(f)
@@ -46,7 +46,7 @@ class CSVReader(BaseReader):
                     lines.append(",".join(clean_row))
 
             content = "\n".join(lines)
-            return Document(name=file_path.name, content=content)
+            return BaseRecord(content=content, metadata={"name": file_path.name})
         except Exception as e:
             logger.error(f"[CSVReader] 读取 CSV 失败 {file_path}: {e}")
             return None
@@ -79,7 +79,7 @@ class WebReader(BaseReader):
         self.timeout = timeout
         self.max_length = max_length
 
-    async def read_async(self, url: str) -> Document | None:
+    async def read_async(self, url: str) -> BaseRecord | None:
         try:
             headers = get_user_agent()
             response = await AsyncHttpx.get(
@@ -96,10 +96,13 @@ class WebReader(BaseReader):
             if len(text_content) > self.max_length:
                 text_content = text_content[: self.max_length] + "\n...[内容过长已截断]"
 
-            return Document(
-                name=urlparse(url).netloc,
+            return BaseRecord(
                 content=text_content,
-                meta_data={"source": "web_reader", "url": url},
+                metadata={
+                    "name": urlparse(url).netloc,
+                    "source": "web_reader",
+                    "url": url,
+                },
             )
         except Exception as e:
             logger.error(f"[WebReader] 读取网页失败 {url}: {e}")
@@ -124,4 +127,3 @@ def get_reader_for_url(url: str) -> WebReader | None:
     if url.startswith(("http://", "https://")):
         return WebReader()
     return None
-

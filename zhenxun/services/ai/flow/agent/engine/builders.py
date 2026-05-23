@@ -161,7 +161,7 @@ class ContextBuilder:
             if policy is not None:
                 pipeline_reducers.extend(policy)
             else:
-                from zhenxun.services.ai.memory.policy import MemoryPolicy
+                from zhenxun.services.ai.memory.compression import MemoryPolicy
 
                 strategy = config.default_strategy
                 s_kwargs = config.strategy_kwargs.get(strategy, {}).copy()
