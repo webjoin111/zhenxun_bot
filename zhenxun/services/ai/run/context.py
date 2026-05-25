@@ -212,15 +212,15 @@ class RunContext(Generic[AgentDepsT]):
         if not self.session_id and self.deps:
             from zhenxun.services.ai.memory.models import (
                 MemoryIsolationLevel,
-                generate_session_meta,
             )
+            from zhenxun.services.ai.memory.utils import generate_session_meta
 
             bot = self.get_bot()
             event = self.get_event()
 
             if bot and event:
                 meta = generate_session_meta(
-                    bot, event, isolation_level=MemoryIsolationLevel.GROUP_USER
+                    bot, event, isolation_level=MemoryIsolationLevel.AGENT_USER
                 )
                 self.session_id = meta.session_id
                 self._is_auto_session_id = True
@@ -291,7 +291,7 @@ class RunContext(Generic[AgentDepsT]):
     def clone_for_member(self, member_name: str = "unknown") -> "RunContext":
         """
         为团队子成员克隆上下文。
-        [阶段二重构]：强制清空消息历史并分配独立 SessionID，实现绝对的记忆沙箱物理隔离。
+        强制清空消息历史并分配独立 SessionID，实现绝对的记忆沙箱物理隔离。
         """
         new_ctx = self.clone_for_execution()
         new_ctx.run.delegate_depth = 0

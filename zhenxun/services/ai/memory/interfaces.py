@@ -1,12 +1,7 @@
 from abc import ABC, abstractmethod
-from typing import Any, Protocol, runtime_checkable
 
 from zhenxun.services.ai.core.messages import LLMMessage
-from zhenxun.services.ai.memory.models import (
-    MemoryMatch,
-    MemoryRecord,
-    SessionMetadata,
-)
+from zhenxun.services.ai.memory.models import SessionMetadata
 
 
 class BaseChatContext(ABC):
@@ -45,18 +40,3 @@ class BaseMemoryReducer(ABC):
         model_name: str,
         base_overhead: int = 0,
     ) -> tuple[list[LLMMessage], bool, int]: ...
-
-
-
-class MemoryRetriever(Protocol):
-    """记忆检索引擎协议。负责根据查询意图从底层存储中召回记忆。"""
-
-    async def retrieve(
-        self,
-        session: SessionMetadata,
-        query: str,
-        limit: int = 10,
-        metadata_filter: dict[str, Any] | None = None,
-    ) -> list[MemoryMatch]:
-        """根据用户输入，检索相关记忆。"""
-        ...

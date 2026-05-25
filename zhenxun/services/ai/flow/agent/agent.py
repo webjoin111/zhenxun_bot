@@ -33,6 +33,7 @@ from zhenxun.services.ai.flow.agent.models import (
 from zhenxun.services.ai.flow.base import BaseRunnable
 from zhenxun.services.ai.llm.config.generation import IntentBuilder
 from zhenxun.services.ai.llm.manager import get_model_instance
+from zhenxun.services.ai.memory.builder import MemoryBuilder
 from zhenxun.services.ai.memory.models import MemoryConfig, SessionMetadata
 from zhenxun.services.ai.protocols.capabilities import (
     AbstractCapability,
@@ -82,7 +83,7 @@ class Agent(
         generation_config: GenerationConfig | IntentBuilder | dict | None = None,
         response_model: BaseOutputDefinition | type[OutputDataT] | None = None,
         dynamic_prompts: list[Callable] | None = None,
-        memory: bool | dict[str, Any] | MemoryConfig = False,
+        memory: bool | dict[str, Any] | MemoryConfig | MemoryBuilder = False,
         runtime_config: AgentRuntimeConfig | dict | None = None,
         prepare_tools: ToolsPrepareFunc | None = None,
         guardrails: list[Any] | None = None,
@@ -159,23 +160,13 @@ class Agent(
         self._guardrails = parse_guardrails(guardrails)
         self.prepare_tools = prepare_tools
 
-        from zhenxun.services.ai.memory.models import MemoryConfig
-
-        if isinstance(memory, bool):
-            if memory:
-                self.memory_config = MemoryConfig(enable_short_term=True)
-            else:
-                self.memory_config = MemoryConfig(enable_short_term=False)
-        elif isinstance(memory, dict):
-            self.memory_config = MemoryConfig(**memory)
-        else:
-            self.memory_config = memory
+        self.memory_config = MemoryBuilder.resolve(memory)
 
         if isinstance(runtime_config, dict):
             runtime_config = AgentRuntimeConfig(**runtime_config)
         self.runtime_config = runtime_config or AgentRuntimeConfig()
 
-        self.runtime_config.stateless = not self.memory_config.enable_short_term
+        self.runtime_config.stateless = not self.memory_config.short_term.enable
 
         self.capabilities: list[AbstractCapability] = []
 
@@ -401,7 +392,7 @@ class Agent(
         message_history: list[LLMMessage] | None = None,
         tool_filter: GlobalToolFilter | None = None,
         config: ExecutionConfig | None = None,
-        memory: bool | dict[str, Any] | MemoryConfig | None = None,
+        memory: bool | dict[str, Any] | MemoryConfig | MemoryBuilder | None = None,
         generation_config: GenerationConfig | None = None,
         **kwargs: Any,
     ) -> AgentRunResult[OutputDataT]:
@@ -444,7 +435,7 @@ class Agent(
         message_history: list[LLMMessage] | None = None,
         tool_filter: GlobalToolFilter | None = None,
         config: ExecutionConfig | None = None,
-        memory: bool | dict[str, Any] | MemoryConfig | None = None,
+        memory: bool | dict[str, Any] | MemoryConfig | MemoryBuilder | None = None,
         generation_config: GenerationConfig | None = None,
         event_streamer: EventStreamer | None = None,
         **kwargs: Any,
@@ -572,7 +563,7 @@ class Agent(
         message_history: list[LLMMessage] | None = None,
         tool_filter: GlobalToolFilter | None = None,
         config: ExecutionConfig | None = None,
-        memory: bool | dict[str, Any] | MemoryConfig | None = None,
+        memory: bool | dict[str, Any] | MemoryConfig | MemoryBuilder | None = None,
         generation_config: GenerationConfig | None = None,
         cancellation_token: Any = None,
         event_streamer: Any = None,
@@ -590,12 +581,12 @@ class Agent(
             bot = context.get_bot()
             event = context.get_event()
             if bot and event:
-                from zhenxun.services.ai.memory.models import generate_session_meta
+                from zhenxun.services.ai.memory.utils import generate_session_meta
 
                 isolation_level = getattr(self.runtime_config, "isolation_level", None)
                 if isolation_level is None:
                     if self.memory_config:
-                        isolation_level = self.memory_config.isolation_level
+                        isolation_level = self.memory_config.short_term.isolation_level
                     else:
                         from zhenxun.services.ai.memory.models import (
                             MemoryIsolationLevel,
@@ -644,28 +635,29 @@ class Agent(
 
             dynamic_caps.append(OutputValidationCapability(None, combined_guardrails))
 
-        from zhenxun.services.ai.memory.manager import memory_manager
         from zhenxun.utils.pydantic_compat import model_copy
 
         effective_memory = model_copy(self.memory_config, deep=True)
         if memory is not None:
             if isinstance(memory, bool):
-                effective_memory.enable_short_term = memory
+                effective_memory.short_term.enable = memory
+            elif isinstance(memory, MemoryBuilder):
+                effective_memory = memory.build()
             elif isinstance(memory, dict):
-                for k, v in memory.items():
-                    setattr(effective_memory, k, v)
+                effective_memory = MemoryConfig(**memory)
             else:
                 effective_memory = memory
 
-        actual_ltm = memory_manager.get_long_term_memory(effective_memory)
-        actual_chat_ctx = memory_manager.get_chat_context(effective_memory)
         session_metadata = SessionMetadata(session_id=context.session_id)
-        if actual_ltm:
-            from zhenxun.services.ai.flow.agent.capabilities import (
-                LongTermMemoryCapability,
-            )
 
-            dynamic_caps.append(LongTermMemoryCapability(actual_ltm, session_metadata))
+        from zhenxun.services.ai.memory.engine import MemoryReader, MemoryWriter
+
+        reader = MemoryReader(
+            session_meta=session_metadata, memory_config=effective_memory
+        )
+        writer = MemoryWriter(
+            session_meta=session_metadata, memory_config=effective_memory
+        )
 
         if task_obj:
             from zhenxun.services.ai.flow.agent.capabilities import (
@@ -697,6 +689,12 @@ class Agent(
                     context.run.user_input = str(final_prompt_payload)
             context.run.agent_name = self.name
 
+            long_term_fact = ""
+            if context.run.user_input:
+                long_term_fact = await reader.get_long_term_context(
+                    context.run.user_input
+                )
+
             system_prompt = await ContextBuilder.build_system_prompt(
                 instruction=self.instruction,
                 system_prompts=self.dynamic_prompts,
@@ -704,6 +702,10 @@ class Agent(
                 run_scoped_cap=run_scoped_cap,
                 persona=self.persona,
             )
+
+            if long_term_fact:
+                system_prompt += f"\n\n{long_term_fact}"
+
             tool_payload = await ToolBuilder.resolve_tools(
                 tool_definitions=self.tool_definitions,
                 toolset_funcs=getattr(self, "toolset_funcs", []),
@@ -721,18 +723,23 @@ class Agent(
             if extra_tools:
                 effective_tools.extend(extra_tools)
 
-            if actual_ltm and getattr(effective_memory, "enable_ltm", False):
-                from zhenxun.services.ai.tools.providers.builtin.memory import (
-                    MemoryManagementToolkit,
-                )
+            if effective_memory and effective_memory.long_term.enable:
+                from zhenxun.services.ai.memory.manager import memory_manager
 
-                ltm_toolkit = MemoryManagementToolkit(
-                    memory_scope=actual_ltm, session_meta=session_metadata
-                )
-                ltm_payload = await ltm_toolkit.resolve(context)
-                effective_tools.extend(ltm_payload.tools)
-                tool_payload.injected_prompts.extend(ltm_payload.injected_prompts)
-                tool_payload.toolkits.extend(ltm_payload.toolkits)
+                ltm_scope = memory_manager.get_long_term_memory(effective_memory)
+                if ltm_scope:
+                    from zhenxun.services.ai.tools.providers.builtin.memory import (
+                        MemoryManagementToolkit,
+                    )
+
+                    mem_tk_payload = await MemoryManagementToolkit(
+                        memory_scope=ltm_scope, session_meta=session_metadata
+                    ).resolve(context)
+                    effective_tools.extend(mem_tk_payload.tools)
+                    tool_payload.injected_prompts.extend(
+                        mem_tk_payload.injected_prompts
+                    )
+                    tool_payload.toolkits.extend(mem_tk_payload.toolkits)
 
             final_gen_config = model_copy(self.default_config, deep=True)
 
@@ -752,6 +759,7 @@ class Agent(
 
             if not model_name_resolved:
                 from zhenxun.services.ai.llm.manager import get_default_model
+
                 model_name_resolved = get_default_model("chat")
 
             context.run.current_model = (
@@ -760,32 +768,32 @@ class Agent(
             context.run.cancellation_token = cancellation_token
             context.run.streamer = event_streamer
 
-            if message_history:
-                if actual_chat_ctx:
-                    await actual_chat_ctx.set_messages(
-                        session_metadata, message_history
-                    )
+            if tool_payload.injected_prompts:
+                system_prompt += "\n\n--- 工具箱专属使用说明 ---\n\n"
+                system_prompt += "\n\n".join(tool_payload.injected_prompts)
 
-            messages_for_run = await ContextBuilder.build_context_messages(
+            normalized_user_msg = None
+            if final_prompt_payload is not None:
+                from zhenxun.services.ai.message_builder import MessageBuilder
+
+                bot_inst = context.get_bot()
+                event_inst = context.get_event()
+                msgs = await MessageBuilder.normalize_to_llm_messages(
+                    final_prompt_payload, bot=bot_inst, event=event_inst
+                )
+                if msgs:
+                    normalized_user_msg = msgs[-1]
+
+            messages_for_run = await reader.get_short_term_context(
                 model_name=str(model_name_resolved) if model_name_resolved else "",
-                user_input=final_prompt_payload,
-                base_system_prompt=system_prompt,
-                injected_prompts=tool_payload.injected_prompts,
-                session_metadata=session_metadata,
-                memory_config=effective_memory,
-                chat_context=actual_chat_ctx,
-                run_context=context,
+                override_history=message_history,
             )
 
-            if (
-                final_prompt_payload is not None
-                and messages_for_run
-                and messages_for_run[-1].role == "user"
-            ):
-                if actual_chat_ctx:
-                    await actual_chat_ctx.add_messages(
-                        session_metadata, [cast(LLMMessage, messages_for_run[-1])]
-                    )
+            if system_prompt:
+                messages_for_run.insert(0, LLMMessage.system(system_prompt))
+            if normalized_user_msg:
+                messages_for_run.append(normalized_user_msg)
+                await writer.save_new_messages([normalized_user_msg])
 
             async with ToolBuilder.mount_toolkits(
                 tool_payload.toolkits, context.session_id, context
@@ -828,8 +836,8 @@ class Agent(
                     early_output = getattr(_run_result, "output", None)
 
             new_msgs = final_messages[len(messages_for_run) :]
-            if new_msgs and actual_chat_ctx:
-                await actual_chat_ctx.add_messages(session_metadata, new_msgs)
+
+            await writer.save_new_messages(new_msgs)
 
             last_msg = final_messages[-1]
             final_text = (

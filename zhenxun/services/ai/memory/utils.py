@@ -1,12 +1,11 @@
 import re
-import time
+from typing import TYPE_CHECKING
 
+from nonebot.adapters import Bot, Event
 import numpy as np
 
-from zhenxun.services.ai.memory.models import (
-    MemoryRecord,
-    MemoryScoringConfig,
-)
+if TYPE_CHECKING:
+    from zhenxun.services.ai.memory.models import MemoryIsolationLevel, SessionMetadata
 
 
 def normalize_scope_path(path: str) -> str:
@@ -47,22 +46,85 @@ def cosine_similarity(vec1: list[float], vec2: list[float]) -> float:
     return float(np.dot(v1, v2) / (norm1 * norm2))
 
 
-def compute_composite_score(
-    record: MemoryRecord, semantic_score: float, config: MemoryScoringConfig
-) -> tuple[float, list[str]]:
-    """计算复合相关性得分：结合语义相似度、时间衰减与重要性权重"""
-    age_seconds = time.time() - record.created_at
-    age_days = max(age_seconds / 86400.0, 0.0)
-    decay = 0.5 ** (age_days / config.recency_half_life_days)
+def generate_session_meta(
+    bot: Bot,
+    event: Event,
+    isolation_level: "MemoryIsolationLevel | None" = None,
+    prefix: str = "",
+    namespace: str | None = None,
+    agent_name: str | None = None,
+) -> "SessionMetadata":
+    """根据事件和隔离级别，自动提取生成基于路径作用域 (Scope Path) 的 SessionMetadata"""
+    from nonebot_plugin_session import extract_session
 
-    composite = (
-        config.semantic_weight * semantic_score
-        + config.recency_weight * decay
-        + config.importance_weight * record.importance
+    from zhenxun.services.ai.memory.models import (
+        MemoryIsolationLevel,
+        SessionMetadata,
     )
-    reasons: list[str] = ["semantic"]
-    if decay > 0.5:
-        reasons.append("recency")
-    if record.importance > 0.5:
-        reasons.append("importance")
-    return composite, reasons
+
+    if isolation_level is None:
+        isolation_level = MemoryIsolationLevel.AGENT_USER
+
+    session = extract_session(bot, event)
+    platform = session.platform
+    user_id = session.id1
+    group_id = session.id2 or session.id3
+
+    parts = []
+    if prefix:
+        prefix_clean = prefix.strip("/")
+        if prefix_clean:
+            parts.append(prefix_clean)
+
+    if platform:
+        parts.append(f"p_{platform}")
+
+    use_group = False
+    use_user = False
+
+    if isolation_level == MemoryIsolationLevel.GROUP_SHARED:
+        use_group = True
+    elif isolation_level == MemoryIsolationLevel.USER_GLOBAL:
+        use_user = True
+    elif isolation_level in (
+        MemoryIsolationLevel.GROUP_USER,
+        MemoryIsolationLevel.PLUGIN_USER,
+        MemoryIsolationLevel.AGENT_USER,
+    ):
+        use_group = True if group_id else False
+        use_user = True
+
+    if use_group and group_id:
+        parts.append(f"g_{group_id}")
+    if use_user and user_id:
+        parts.append(f"u_{user_id}")
+
+    if isolation_level in (
+        MemoryIsolationLevel.PLUGIN_USER,
+        MemoryIsolationLevel.AGENT_USER,
+    ):
+        parts.append(f"ns_{namespace or 'unknown'}")
+
+    if isolation_level == MemoryIsolationLevel.AGENT_USER:
+        parts.append(f"ag_{agent_name or 'unknown'}")
+
+    session_id = "/" + "/".join(parts)
+    scope_prefix = session_id
+
+    accessible_scopes = ["/"]
+    current_path = ""
+    for part in parts:
+        current_path += f"/{part}"
+        accessible_scopes.append(current_path)
+
+    return SessionMetadata(
+        session_id=session_id,
+        scope_prefix=scope_prefix,
+        accessible_scopes=accessible_scopes,
+        platform=platform,
+        group_id=group_id,
+        user_id=user_id,
+        namespace=namespace,
+        agent_name=agent_name,
+        isolation_level=isolation_level,
+    )

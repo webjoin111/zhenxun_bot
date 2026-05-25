@@ -3,14 +3,8 @@ from typing import Any
 
 from zhenxun.services.ai.knowledge.base import BaseKnowledge
 from zhenxun.services.ai.knowledge.readers import get_reader_for_file
-from zhenxun.services.ai.rag import (
-    BaseRecord,
-    IngestionPipeline,
-    KnowledgeScope,
-    KnowledgeSlice,
-    RowChunking,
-)
-from zhenxun.services.ai.rag.ingestion import ChunkingNode
+from zhenxun.services.ai.rag.engine import ScopedRAGClient
+from zhenxun.services.ai.rag.models import BaseRecord
 from zhenxun.services.ai.tools.core.decorators import tool
 from zhenxun.services.ai.tools.models import ToolResult
 from zhenxun.services.log import logger
@@ -33,23 +27,18 @@ class VectorKnowledge(BaseKnowledge):
 
     def __init__(
         self,
-        target_scope: KnowledgeScope,
-        search_slice: KnowledgeSlice,
-        ingestion_pipeline: IngestionPipeline,
+        rag_client: ScopedRAGClient,
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
-        self.target_scope = target_scope
-        self.search_slice = search_slice
-        self.ingestion_pipeline = ingestion_pipeline
+        self.rag_client = rag_client
 
     async def add_document(self, document: BaseRecord) -> int:
         """
         通过注入的 Ingestion Pipeline 处理并入库文档
         返回成功入库的 Chunk 数量。
         """
-        records = await self.ingestion_pipeline.run([document])
-        return len(records)
+        return await self.rag_client.ingest([document])
 
     async def add_file(self, file_path: str | Path) -> int:
         """
@@ -68,18 +57,7 @@ class VectorKnowledge(BaseKnowledge):
         if not doc:
             return 0
 
-        import copy
-
-        pipeline = self.ingestion_pipeline
-        if path.suffix.lower() == ".csv":
-            pipeline = copy.copy(self.ingestion_pipeline)
-            pipeline.nodes = list(pipeline.nodes)
-            for i, node in enumerate(pipeline.nodes):
-                if isinstance(node, ChunkingNode):
-                    pipeline.nodes[i] = ChunkingNode(RowChunking(rows_per_chunk=30))
-                    break
-
-        records = await pipeline.run([doc])
+        records = await self.rag_client.pipeline.run([doc])
         return len(records)
 
     async def add_directory(self, dir_path: str | Path) -> int:
@@ -98,7 +76,7 @@ class VectorKnowledge(BaseKnowledge):
     async def search_knowledge(
         self, query: str, filters: dict[str, Any] | None = None, limit: int = 5
     ) -> ToolResult:
-        results = await self.search_slice.search(
+        results = await self.rag_client.search(
             query=query, limit=limit, metadata_filters=filters
         )
 

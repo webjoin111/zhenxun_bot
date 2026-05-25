@@ -2,12 +2,13 @@ from pathlib import Path
 
 from nonebot.adapters import Bot, Event
 
+from zhenxun.services.ai.knowledge.vector import VectorKnowledge
 from zhenxun.services.ai.memory.models import (
     MemoryIsolationLevel,
-    generate_session_meta,
 )
-from zhenxun.services.ai.rag.engine import RAGManager
-from zhenxun.services.ai.rag.models import RAGConfig
+from zhenxun.services.ai.memory.utils import generate_session_meta
+from zhenxun.services.ai.rag.backends import DictStorageBackend
+from zhenxun.services.ai.rag.builder import RAGBuilder
 
 
 class SimpleRAG:
@@ -17,9 +18,11 @@ class SimpleRAG:
     无需关心数据库连接、向量化模型和隔离级别策略。
     """
 
+    _global_storage = DictStorageBackend()
+
     @classmethod
     def _get_kb(cls, event: Event, bot: Bot | None = None, isolation: str = "group"):
-        """获取底层挂载了独立沙箱的 VectorKnowledge 实例"""
+        """获取底层挂载了独立沙箱 of VectorKnowledge 实例"""
         iso_level = (
             MemoryIsolationLevel.GROUP_SHARED
             if isolation == "group"
@@ -30,8 +33,13 @@ class SimpleRAG:
             bot=bot, event=event, isolation_level=iso_level, namespace="simple_rag"
         )
 
-        config = RAGConfig()
-        return RAGManager.build_knowledge_base(session_meta, config)
+        client = (
+            RAGBuilder(cls._global_storage)
+            .with_scope(session_meta.accessible_scopes)
+            .build()
+        )
+
+        return VectorKnowledge(rag_client=client)
 
     @classmethod
     async def add_text(
@@ -72,7 +80,7 @@ class SimpleRAG:
     ) -> list[str]:
         """进行语义搜索，直接返回纯文本片段列表"""
         kb = cls._get_kb(event, bot, isolation)
-        results = await kb.search_slice.search(query, limit=limit)
+        results = await kb.rag_client.search(query, limit=limit)
         return [res.record.content for res in results]
 
     @classmethod

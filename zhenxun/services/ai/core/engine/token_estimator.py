@@ -129,6 +129,7 @@ class StaticTokenEngine(BaseTokenEstimator):
                 elif isinstance(part, ToolReturnPart) and part.output:
                     total_tokens += self._estimate_text(str(part.output))
 
+        msg.token_cost = total_tokens
         return total_tokens
 
     def estimate_context(
@@ -209,4 +210,3 @@ def parse_usage_info(usage_info: dict | None) -> UsageInfo:
         prompt_cache_miss_tokens=cache_miss,
         reasoning_tokens=reasoning,
     )
-

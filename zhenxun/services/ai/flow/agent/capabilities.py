@@ -12,8 +12,6 @@ from zhenxun.services.ai.core.events.event_types import (
     TaskRunStartEvent,
 )
 from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
-from zhenxun.services.ai.memory.long_term_memory import MemoryScope
-from zhenxun.services.ai.memory.models import SessionMetadata
 from zhenxun.services.ai.protocols.capabilities import AbstractCapability
 from zhenxun.services.ai.run import AgentRunResult, RunContext, Task
 from zhenxun.services.log import logger
@@ -99,38 +97,6 @@ class OutputValidationCapability(AbstractCapability):
                     code=LLMErrorCode.GENERATION_FAILED,
                 )
         return result
-
-
-class LongTermMemoryCapability(AbstractCapability):
-    """长期记忆 (RAG) 检索增强能力组件"""
-
-    def __init__(self, memory_scope: MemoryScope, session_meta: SessionMetadata):
-        self.memory_scope = memory_scope
-        self.session_meta = session_meta
-
-    async def get_system_prompts(self, context: RunContext) -> list[str]:
-        """
-        在系统构建 Prompt 时触发。
-        利用当前用户的输入去长期记忆中进行语义检索 (Recall)，并将结果转化为系统补充设定。
-        """
-        user_input = context.run.user_input
-        if not user_input:
-            return []
-
-        matches = await self.memory_scope.recall(
-            session=self.session_meta, query=user_input
-        )
-        if not matches:
-            return []
-
-        fact_str = "\n".join(
-            f"- {m.record.content} (相关性: {m.score:.2f})" for m in matches
-        )
-
-        logger.debug(
-            f"🧠 [LTM Capability] 成功召回 {len(matches)} 条长期记忆并注入上下文。"
-        )
-        return [f"[系统补充：有关用户的长期记忆设定]\n{fact_str}"]
 
 
 class TaskTrackingCapability(AbstractCapability):

@@ -1,7 +1,6 @@
 from abc import ABC, abstractmethod
 import asyncio
 import re
-from typing import Protocol, runtime_checkable
 
 from zhenxun.services.ai.memory.utils import cosine_similarity
 from zhenxun.services.ai.rag.models import BaseRecord
@@ -147,7 +146,7 @@ class RowChunking(ChunkingStrategy):
         chunk_index = 0
 
         for i in range(0, len(data_lines), self.rows_per_chunk):
-            chunk_lines = [header, *data_lines[i:i + self.rows_per_chunk]]
+            chunk_lines = [header, *data_lines[i : i + self.rows_per_chunk]]
             chunk_content = "\n".join(chunk_lines)
             chunks.append(self._create_chunk_record(record, chunk_index, chunk_content))
             chunk_index += 1
@@ -198,138 +197,220 @@ class DeduplicationProcessor:
         return kept_records
 
 
-class ScopeInjectionNode:
+class BaseBatchNode(ABC):
+    """批处理节点基类：一次性接收并处理全部记录"""
+
+    @abstractmethod
+    async def process_batch(self, records: list[BaseRecord]) -> list[BaseRecord]: ...
+
+
+class BaseMapNode(ABC):
+    """单映射节点基类：接收单条记录，引擎负责并发调度，返回None代表丢弃该数据"""
+
+    @abstractmethod
+    async def process_one(
+        self, record: BaseRecord
+    ) -> BaseRecord | list[BaseRecord] | None: ...
+
+
+class ScopeInjectionNode(BaseBatchNode):
     """作用域注入节点。针对独立知识库，在管线前端强制将指定前缀注入到元数据中。"""
+
     def __init__(self, scope_prefix: str):
         self.scope_prefix = scope_prefix
 
-    async def process(self, records: list[BaseRecord]) -> list[BaseRecord]:
+    async def process_batch(self, records: list[BaseRecord]) -> list[BaseRecord]:
         for r in records:
             r.metadata["scope"] = self.scope_prefix
         return records
 
 
-class ConsolidationNode:
-    """无状态的数据融合决策节点。在大模型研判下执行旧数据更新/删除。"""
-    def __init__(self, storage, consolidator, embedder, threshold: float = 0.85):
-        self.storage = storage
-        self.consolidator = consolidator
-        self.embedder = embedder
-        self.threshold = threshold
+class DynamicChunkingNode(BaseBatchNode):
+    """智能路由切块节点。根据记录的扩展名动态选择切块策略。"""
 
-    async def process(self, records: list[BaseRecord]) -> list[BaseRecord]:
-        from zhenxun.services.ai.rag.models import QueryRequest
-        
-        output_records = []
-        for record in records:
-            if not record.embedding:
-                output_records.append(record)
-                continue
+    def __init__(self, default_strategy: ChunkingStrategy):
+        self.default_strategy = default_strategy
+        self.strategies = {".csv": RowChunking(rows_per_chunk=30)}
 
-            scope = record.metadata.get("scope", "/")
-            rag_query = QueryRequest(text=record.content, embedding=record.embedding, limit=5)
-            rag_results = await self.storage.search(rag_query, scope_prefix=scope)
-            similar_records = [res.record for res in rag_results if res.score >= self.threshold]
-
-            plan = await self.consolidator.consolidate(record.content, similar_records)
-            to_delete = []
-            
-            for action in plan.actions:
-                if action.action == "delete":
-                    to_delete.append(action.record_id)
-                elif action.action == "update" and action.new_content:
-                    old_record = next((r for r in similar_records if r.id == action.record_id), None)
-                    if old_record:
-                        old_record.content = action.new_content
-                        new_vecs = await self.embedder([action.new_content], task="document")
-                        if new_vecs and new_vecs[0]:
-                            old_record.embedding = new_vecs[0]
-                        await self.storage.update(old_record)
-
-            if to_delete:
-                await self.storage.delete(record_ids=to_delete, scope_prefix=scope)
-
-            if plan.insert_new:
-                output_records.append(record)
-
-        return output_records
-
-
-@runtime_checkable
-class IngestionNode(Protocol):
-    """数据入库管线节点协议"""
-
-    async def process(self, records: list[BaseRecord]) -> list[BaseRecord]: ...
-
-
-class ChunkingNode:
-    """分块节点"""
-
-    def __init__(self, strategy):
-        self.strategy = strategy
-
-    async def process(self, records: list[BaseRecord]) -> list[BaseRecord]:
+    async def process_batch(self, records: list[BaseRecord]) -> list[BaseRecord]:
         chunks = []
         for record in records:
-            chunks.extend(self.strategy.chunk(record))
+            ext = record.metadata.get("extension", "")
+            strategy = self.strategies.get(ext, self.default_strategy)
+            chunks.extend(strategy.chunk(record))
         return chunks
 
 
-class EmbeddingNode:
+class ConsolidationNode(BaseMapNode):
+    """无状态的数据融合决策节点 (Map)。请求大模型生成合并/删除/插入意图。"""
+
+    def __init__(self, storage, consolidator, threshold: float = 0.85):
+        self.storage = storage
+        self.consolidator = consolidator
+        self.threshold = threshold
+
+    async def process_one(self, record: BaseRecord) -> list[BaseRecord]:
+        if not record.embedding:
+            return [record]
+
+        scope = record.metadata.get("scope", "/")
+        from zhenxun.services.ai.rag.models import QueryRequest
+
+        rag_query = QueryRequest(
+            text=record.content, embedding=record.embedding, limit=5
+        )
+        rag_results = await self.storage.search(rag_query, scope_prefix=scope)
+        similar_records = [
+            res.record for res in rag_results if res.score >= self.threshold
+        ]
+
+        plan = await self.consolidator.consolidate(record.content, similar_records)
+
+        results = []
+        for action in plan.actions:
+            if action.action == "delete":
+                results.append(
+                    BaseRecord(id=action.record_id, content="", action="delete")
+                )
+            elif action.action == "update" and action.new_content:
+                old_record = next(
+                    (r for r in similar_records if r.id == action.record_id), None
+                )
+                if old_record:
+                    old_record.content = action.new_content
+                    old_record.action = "update"
+                    results.append(old_record)
+
+        if plan.insert_new:
+            record.action = "insert"
+            results.append(record)
+        else:
+            record.action = "ignore"
+            results.append(record)
+
+        return results
+
+
+class EmbeddingNode(BaseBatchNode):
     """并发向量化节点"""
 
     def __init__(self, embedder):
         self.embedder = embedder
 
-    async def process(self, records: list[BaseRecord]) -> list[BaseRecord]:
+    async def process_batch(self, records: list[BaseRecord]) -> list[BaseRecord]:
         if not self.embedder or not records:
             return records
 
-        async def _embed_single(record: BaseRecord):
-            if record.content.strip():
-                try:
-                    vecs = await self.embedder([record.content], task="document")
-                    if vecs and vecs[0]:
-                        record.embedding = vecs[0]
-                except Exception as e:
-                    logger.error(f"文档向量化失败 (ID: {record.id}): {e}")
-            return record
+        texts_to_embed = [r.content for r in records if r.content.strip()]
+        if not texts_to_embed:
+            return records
 
-        embedded = await asyncio.gather(*[_embed_single(r) for r in records])
-        return list(embedded)
+        try:
+            vecs = await self.embedder(texts_to_embed, task="document")
+
+            vec_idx = 0
+            for r in records:
+                if r.content.strip():
+                    if vecs and vec_idx < len(vecs) and vecs[vec_idx]:
+                        r.embedding = vecs[vec_idx]
+                    vec_idx += 1
+        except Exception as e:
+            logger.error(f"批量向量化失败: {e}")
+
+        return records
 
 
-class DedupNode:
+class UpdateEmbeddingNode(BaseBatchNode):
+    """
+    更新向量化节点。
+    专门负责为被 Consolidator 融合更新 (action == 'update') 的记录重新生成 Embedding。
+    彻底解耦模型推理与数据库提交。
+    """
+
+    def __init__(self, embedder):
+        self.embedder = embedder
+
+    async def process_batch(self, records: list[BaseRecord]) -> list[BaseRecord]:
+        if not self.embedder or not records:
+            return records
+
+        records_to_re_embed = [
+            r for r in records if r.action == "update" and r.content.strip()
+        ]
+        if not records_to_re_embed:
+            return records
+
+        texts = [r.content for r in records_to_re_embed]
+        try:
+            vecs = await self.embedder(texts, task="document")
+            for i, r in enumerate(records_to_re_embed):
+                if vecs and i < len(vecs) and vecs[i]:
+                    r.embedding = vecs[i]
+        except Exception as e:
+            logger.error(f"融合更新记录时重新向量化失败: {e}")
+
+        return records
+
+
+class DedupNode(BaseBatchNode):
     """批次内查重节点"""
 
     def __init__(self, threshold: float):
         self.processor = DeduplicationProcessor(threshold=threshold)
 
-    async def process(self, records: list[BaseRecord]) -> list[BaseRecord]:
+    async def process_batch(self, records: list[BaseRecord]) -> list[BaseRecord]:
         return await self.processor.process(records)
 
 
-class StorageWriteNode:
-    """持久化落盘节点"""
+class StorageCommitNode(BaseBatchNode):
+    """持久化事务提交节点 (Reduce)。统一收集意图并执行并发数据库 I/O。"""
 
     def __init__(self, storage):
         self.storage = storage
 
-    async def process(self, records: list[BaseRecord]) -> list[BaseRecord]:
+    async def process_batch(self, records: list[BaseRecord]) -> list[BaseRecord]:
         if not records:
             return records
-        await self.storage.save(records)
-        logger.info(f"💾 成功将 {len(records)} 个知识块落盘。")
-        return records
+
+        to_delete = set()
+        to_update = []
+        to_insert = []
+
+        for record in records:
+            if record.action == "delete":
+                to_delete.add(record.id)
+            elif record.action == "update":
+                to_update.append(record)
+            elif record.action == "insert":
+                to_insert.append(record)
+
+        if to_delete:
+            await self.storage.delete(record_ids=list(to_delete))
+
+        if to_update:
+            await asyncio.gather(*[self.storage.update(r) for r in to_update])
+
+        if to_insert:
+            await self.storage.save(to_insert)
+
+        logger.info(
+            f"💾 RAG 事务提交完成：插入 {len(to_insert)} 条, 更新 {len(to_update)} 条, 删除 {len(to_delete)} 条。"
+        )
+        return to_insert + to_update
 
 
-class IngestionPipeline:
-    """统一入库流水线"""
+class IndexPipeline:
+    """统一入库流水线 (Map-Reduce 范式并发调度引擎)"""
 
-    def __init__(self, nodes: list[IngestionNode] | None = None):
+    def __init__(
+        self,
+        nodes: list[BaseBatchNode | BaseMapNode] | None = None,
+        max_workers: int = 5,
+    ):
         self.nodes = nodes or []
+        self.max_workers = max_workers
 
-    def add_node(self, node: IngestionNode):
+    def add_node(self, node: BaseBatchNode | BaseMapNode):
         self.nodes.append(node)
 
     async def run(self, records: list[BaseRecord]) -> list[BaseRecord]:
@@ -338,7 +419,30 @@ class IngestionPipeline:
 
         current_records = records
         for node in self.nodes:
-            current_records = await node.process(current_records)
             if not current_records:
                 break
+
+            if isinstance(node, BaseBatchNode):
+                current_records = await node.process_batch(current_records)
+            elif isinstance(node, BaseMapNode):
+                sem = asyncio.Semaphore(self.max_workers)
+                map_node: BaseMapNode = node
+
+                async def _process_with_sem(r: BaseRecord):
+                    async with sem:
+                        return await map_node.process_one(r)
+
+                tasks = [_process_with_sem(r) for r in current_records]
+                results = await asyncio.gather(*tasks)
+
+                next_records = []
+                for r in results:
+                    if isinstance(r, list):
+                        next_records.extend(r)
+                    elif r is not None:
+                        next_records.append(r)
+                current_records = next_records
+            else:
+                raise ValueError(f"未知的管道节点类型: {type(node)}")
+
         return current_records

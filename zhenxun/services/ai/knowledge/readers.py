@@ -3,7 +3,7 @@ import csv
 from pathlib import Path
 from urllib.parse import urlparse
 
-from zhenxun.services.ai.rag import BaseRecord
+from zhenxun.services.ai.rag.models import BaseRecord
 from zhenxun.services.log import logger
 from zhenxun.utils.http_utils import AsyncHttpx
 from zhenxun.utils.user_agent import get_user_agent
@@ -22,7 +22,7 @@ class TextReader(BaseReader):
     def read(self, file_path: Path) -> BaseRecord | None:
         try:
             content = file_path.read_text(encoding="utf-8", errors="ignore")
-            return BaseRecord(content=content, metadata={"name": file_path.name})
+            return BaseRecord(content=content, metadata={"name": file_path.name, "extension": file_path.suffix.lower()})
         except Exception as e:
             logger.error(f"[TextReader] 读取文件失败 {file_path}: {e}")
             return None
@@ -46,7 +46,7 @@ class CSVReader(BaseReader):
                     lines.append(",".join(clean_row))
 
             content = "\n".join(lines)
-            return BaseRecord(content=content, metadata={"name": file_path.name})
+            return BaseRecord(content=content, metadata={"name": file_path.name, "extension": file_path.suffix.lower()})
         except Exception as e:
             logger.error(f"[CSVReader] 读取 CSV 失败 {file_path}: {e}")
             return None
@@ -101,6 +101,7 @@ class WebReader(BaseReader):
                 metadata={
                     "name": urlparse(url).netloc,
                     "source": "web_reader",
+                    "extension": ".html",
                     "url": url,
                 },
             )

@@ -40,12 +40,12 @@ __all__ = [
     "LLMResponse",
     "ModelName",
     "TTSConfig",
-    "get_default_model",
     "chat",
     "create_image",
     "create_speech",
     "embed",
     "generate",
     "generate_structured",
+    "get_default_model",
     "rerank",
 ]

@@ -1,0 +1,162 @@
+from zhenxun.services.ai.config import get_llm_config
+from zhenxun.services.ai.core.messages import LLMMessage
+from zhenxun.services.ai.memory.compression import (
+    CondenserPipeline,
+    MemoryPolicy,
+    MultimodalPlaceholderReducer,
+)
+from zhenxun.services.ai.memory.manager import memory_manager
+from zhenxun.services.ai.memory.models import MemoryConfig, SessionMetadata
+from zhenxun.services.log import logger
+
+
+class MemoryReader:
+    """
+    记忆读取器 (Memory Reader)。
+    负责从数据库中提取短期上下文历史，召回长期的背景知识，并执行自动压缩。
+    """
+
+    def __init__(
+        self, session_meta: SessionMetadata, memory_config: MemoryConfig | None
+    ):
+        self.session_meta = session_meta
+        self.memory_config = memory_config
+
+    async def get_long_term_context(self, user_input: str) -> str:
+        """
+        基于用户输入召回长期记忆（RAG），返回格式化后的背景提示词。
+        """
+        if (
+            not self.memory_config
+            or not self.memory_config.long_term.enable
+            or not user_input
+        ):
+            return ""
+
+        ltm_scope = memory_manager.get_long_term_memory(self.memory_config)
+        if not ltm_scope:
+            return ""
+
+        matches = await ltm_scope.recall(session=self.session_meta, query=user_input)
+        if matches:
+            fact_str = "\n".join(
+                f"- {m.record.content} (相关性: {m.score:.2f})" for m in matches
+            )
+            logger.debug(f"🧠 [MemoryReader] 成功召回 {len(matches)} 条长期记忆。")
+            return f"[系统补充：有关用户的长期记忆设定]\n{fact_str}"
+        return ""
+
+    async def get_short_term_context(
+        self,
+        model_name: str,
+        override_history: list[LLMMessage] | None = None,
+    ) -> list[LLMMessage]:
+        """
+        拉取短期对话历史，并执行 Token 压缩。
+        """
+        current_history: list[LLMMessage] = []
+        chat_context = memory_manager.get_chat_context(self.memory_config)
+
+        if self.memory_config and self.memory_config.short_term.enable and chat_context:
+            if override_history is not None:
+                await chat_context.set_messages(self.session_meta, override_history)
+                current_history = override_history
+            else:
+                current_history = await chat_context.get_messages(self.session_meta)
+
+            config = get_llm_config().context_settings
+            pipeline_reducers = []
+
+            vw = config.vision_window_size
+            if (
+                self.memory_config
+                and self.memory_config.compression.vision_window is not None
+            ):
+                vw = self.memory_config.compression.vision_window
+            if vw > 0:
+                pipeline_reducers.append(MultimodalPlaceholderReducer(window_size=vw))
+
+            policy = (
+                self.memory_config.compression.policy if self.memory_config else None
+            )
+            if policy is not None:
+                pipeline_reducers.extend(policy)
+            else:
+                strategy = config.default_strategy
+                s_kwargs = config.strategy_kwargs.get(strategy, {}).copy()
+
+                threshold = config.trigger_threshold
+                if (
+                    self.memory_config
+                    and self.memory_config.compression.threshold is not None
+                ):
+                    threshold = self.memory_config.compression.threshold
+
+                from zhenxun.services.ai.llm.capabilities import get_model_capabilities
+
+                caps = get_model_capabilities(model_name)
+                limit = (
+                    int(caps.max_input_tokens * threshold)
+                    if threshold <= 1.0
+                    else int(threshold)
+                )
+
+                max_turns = config.max_history_turns
+                if (
+                    self.memory_config
+                    and self.memory_config.compression.max_history_turns is not None
+                ):
+                    max_turns = self.memory_config.compression.max_history_turns
+
+                if strategy == "unlimited":
+                    pipeline_reducers.extend(MemoryPolicy.unlimited())
+                elif strategy == "llm_summary":
+                    s_kwargs["trigger_tokens"] = limit
+                    s_kwargs["max_turns"] = max_turns
+                    pipeline_reducers.extend(MemoryPolicy.llm_summarize(**s_kwargs))
+                elif strategy == "structured_summary":
+                    s_kwargs["trigger_tokens"] = limit
+                    s_kwargs["max_turns"] = max_turns
+                    pipeline_reducers.extend(
+                        MemoryPolicy.structured_summarize(**s_kwargs)
+                    )
+                else:
+                    pipeline_reducers.extend(MemoryPolicy.unlimited())
+
+            if pipeline_reducers:
+                pipeline = CondenserPipeline(pipeline_reducers)
+                new_history, changed = await pipeline.run(
+                    current_history, model_name=model_name, base_overhead=0
+                )
+                if changed:
+                    await chat_context.set_messages(self.session_meta, new_history)
+                    logger.info(
+                        f"💾 [MemoryReader] 压缩截断完毕，已同步覆写数据库。压缩后条数: {len(new_history)}"
+                    )
+                current_history = new_history
+
+        return current_history
+
+
+class MemoryWriter:
+    """
+    记忆写入器 (Memory Writer)。
+    负责将对话增量安全地写入数据库。
+    """
+
+    def __init__(
+        self, session_meta: SessionMetadata, memory_config: MemoryConfig | None
+    ):
+        self.session_meta = session_meta
+        self.memory_config = memory_config
+
+    async def save_new_messages(
+        self,
+        new_messages: list[LLMMessage],
+    ):
+        """将新产生的对话增量保存到数据库"""
+        if not new_messages:
+            return
+        chat_ctx = memory_manager.get_chat_context(self.memory_config)
+        if chat_ctx and self.memory_config and self.memory_config.short_term.enable:
+            await chat_ctx.add_messages(self.session_meta, new_messages)

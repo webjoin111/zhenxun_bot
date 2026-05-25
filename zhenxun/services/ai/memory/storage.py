@@ -12,7 +12,6 @@ from zhenxun.services.ai.core.messages import (
     AssistantMessage,
     LLMContentPart,
     LLMMessage,
-    LLMResponse,
     SystemMessage,
     ToolMessage,
     UserMessage,
@@ -20,16 +19,85 @@ from zhenxun.services.ai.core.messages import (
 from zhenxun.services.ai.memory.interfaces import (
     BaseChatContext,
 )
-from zhenxun.services.ai.memory.long_term_memory import MemoryScope
 from zhenxun.services.ai.memory.models import SessionMetadata
-from zhenxun.services.ai.protocols.middleware import (
-    BaseLLMMiddleware,
-    LLMContext,
-    NextCall,
-)
+from zhenxun.services.ai.rag import BaseRecord, SearchResult
+from zhenxun.services.ai.rag.engine import ScopedRAGClient
 from zhenxun.services.db_context import Model
-from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_dump
+
+
+class MemoryScope:
+    """长期记忆的作用域视图与 RAG 管线。"""
+
+    def __init__(
+        self,
+        rag_client: ScopedRAGClient,
+        async_write: bool = True,
+    ):
+        self.rag_client = rag_client
+        self.async_write = async_write
+
+    async def remember(
+        self,
+        session: SessionMetadata,
+        content: str,
+        importance: float = 0.5,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """通过 RAG Ingestion Pipeline 完成记忆落盘"""
+        meta = metadata.copy() if metadata else {}
+        meta.update(
+            {
+                "scope": session.scope_prefix,
+                "importance": importance,
+                "created_at": time.time(),
+            }
+        )
+        record = BaseRecord(content=content, metadata=meta)
+
+        await self.rag_client.ingest([record], async_write=self.async_write)
+
+    async def recall(
+        self,
+        session: SessionMetadata,
+        query: str,
+        limit: int = 10,
+        metadata_filter: dict[str, Any] | None = None,
+    ) -> list[SearchResult]:
+        """委托至 Retriever 检索与重排"""
+        return await self.rag_client.search(
+            query=query,
+            limit=limit,
+            scopes=session.accessible_scopes,
+            metadata_filters=metadata_filter,
+        )
+
+    async def update(
+        self,
+        session: SessionMetadata,
+        record_id: str,
+        new_content: str,
+        importance: float = 0.5,
+        metadata: dict[str, Any] | None = None,
+    ) -> bool:
+        """原子更新：通过先删后插，确保底层向量(Embedding)能根据新文本被正确刷新"""
+        deleted_count = await self.forget(session, record_ids=[record_id])
+        if deleted_count > 0:
+            await self.remember(
+                session=session,
+                content=new_content,
+                importance=importance,
+                metadata=metadata,
+            )
+            return True
+        return False
+
+    async def forget(
+        self, session: SessionMetadata, record_ids: list[str] | None = None
+    ) -> int:
+        return await self.rag_client.delete(
+            record_ids=record_ids,
+        )
 
 
 class InMemoryChatContext(BaseChatContext):
@@ -252,52 +320,3 @@ def get_orm_chat_context(
     return TortoiseChatContext(
         model_class=model_class, custom_save_hook=custom_save_hook
     )
-
-
-class MemoryMiddleware(BaseLLMMiddleware):
-    """记忆中间件：接管大模型调用的上下文加载与保存。"""
-
-    def __init__(
-        self,
-        session_meta: SessionMetadata,
-        chat_context: BaseChatContext | None = None,
-        long_term_memory: MemoryScope | None = None,
-        sanitizer: Callable[[LLMMessage], LLMMessage] | None = None,
-    ):
-        self.chat_ctx = chat_context
-        self.ltm = long_term_memory
-        self.session_meta = session_meta
-        self.session_id = session_meta.session_id
-        self.sanitizer = sanitizer
-
-    async def __call__(self, context: LLMContext, next_call: NextCall) -> LLMResponse:
-        if self.ltm and context.messages:
-            last_content = str(context.messages[-1].content)
-            matches = await self.ltm.recall(session=self.session_meta, query=last_content)
-            if matches:
-                fact_str = "\n".join(
-                    f"- {m.record.content} (相关性: {m.score:.2f})" for m in matches
-                )
-                sys_msg = LLMMessage.system(
-                    f"[系统补充：有关用户的长期记忆设定]\n{fact_str}"
-                )
-                context.messages.insert(0, sys_msg)
-                logger.debug(f"已动态注入 {len(matches)} 条长期记忆。")
-
-        if self.chat_ctx:
-            history = await self.chat_ctx.get_messages(self.session_meta)
-            context.messages = history + context.messages
-
-        response = await next_call(context)
-
-        if self.chat_ctx and context.messages:
-            user_msg = context.messages[-1]
-            if self.sanitizer:
-                user_msg = self.sanitizer(user_msg)
-            msgs_to_save = [user_msg]
-            if response.content_parts:
-                ast_msg = LLMMessage(role="assistant", content=response.content_parts)
-                msgs_to_save.append(ast_msg)
-            await self.chat_ctx.add_messages(self.session_meta, msgs_to_save)
-
-        return response

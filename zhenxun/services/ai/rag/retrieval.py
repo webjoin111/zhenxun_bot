@@ -219,10 +219,12 @@ class TimeDecayPostProcessor(PostProcessor):
         half_life_days: int = 30,
         decay_weight: float = 0.3,
         semantic_weight: float = 0.7,
+        importance_weight: float = 0.0,
     ):
         self.half_life_days = half_life_days
         self.decay_weight = decay_weight
         self.semantic_weight = semantic_weight
+        self.importance_weight = importance_weight
 
     async def process(
         self, results: list[SearchResult], query: str
@@ -230,9 +232,10 @@ class TimeDecayPostProcessor(PostProcessor):
         now = time.time()
         for res in results:
             created_at = res.record.metadata.get("created_at", now)
+            importance = res.record.metadata.get("importance", 0.5)
             age_days = max(0.0, (now - created_at) / 86400.0)
             decay = 0.5 ** (age_days / self.half_life_days)
-            res.score = (self.semantic_weight * res.score) + (self.decay_weight * decay)
+            res.score = (self.semantic_weight * res.score) + (self.decay_weight * decay) + (self.importance_weight * importance)
 
         results.sort(key=lambda x: x.score, reverse=True)
         return results
