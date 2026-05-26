@@ -197,4 +197,5 @@ class RAGBuilder:
             retriever=base_retriever,
             pipeline=pipeline,
             scopes=scopes,
+            config=cfg,
         )

@@ -198,13 +198,15 @@ class Task(BaseModel):
     """预期输出的自然语言描述（指导大模型如何组织最终答案）"""
 
     response_model: Any | None = None
-    """强制要求返回的强类型结构 (Pydantic Model) 或 OutputDefinition，为空则返回普通文本"""
+    """强制要求返回的强类型结构 (Pydantic Model) 或
+    OutputDefinition，为空则返回普通文本"""
 
     tools: list[str | Any] | None = None
     """针对此特定任务动态追加或覆盖的工具列表"""
 
     guardrails: list[Any] | None = None
-    """护栏验证列表。支持传入函数、BaseGuardrail 实例，或直接传入自然语言字符串规则（自动转为 LLM 裁判）"""
+    """护栏验证列表。支持传入函数、BaseGuardrail 实例，
+    或直接传入自然语言字符串规则（自动转为 LLM 裁判）"""
 
     _parsed_guardrails: list[Any] = PrivateAttr(default_factory=list)
 

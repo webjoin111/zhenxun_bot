@@ -16,7 +16,6 @@ from zhenxun.services.ai.memory.models import (
 class MemoryBuilder:
     """
     记忆配置的链式构建器 (Fluent Builder)。
-    用于以无二义性、语义化的方式组装复杂的短/长期记忆与压缩策略。
     """
 
     def __init__(self):
@@ -45,17 +44,12 @@ class MemoryBuilder:
 
     @classmethod
     def resolve(
-        cls, memory: bool | dict[str, Any] | MemoryConfig | "MemoryBuilder" | None
+        cls, memory: bool | MemoryConfig | "MemoryBuilder" | None
     ) -> MemoryConfig:
-        """
-        统一解析记忆配置参数，消除 Agent 初始化的类型二义性。
-        """
         if isinstance(memory, MemoryConfig):
             return memory
         if isinstance(memory, cls):
             return memory.build()
-        if isinstance(memory, dict):
-            return MemoryConfig(**memory)
         if isinstance(memory, bool):
             return MemoryConfig(short_term=ShortTermConfig(enable=memory))
 
@@ -139,7 +133,7 @@ class MemoryBuilder:
         max_turns: int | None = None,
         keep_recent_turns: int = 0,
         summarization_model: str = "Gemini/gemini-2.5-flash",
-        summarization_prompt: str = "请概括以下对话内容，保留关键的约束条件、用户偏好、已完成的任务状态和未解决的问题。",
+        summarization_prompt: str = "请概括以下对话内容，保留关键的约束条件、用户偏好、已完成的任务状态和未解决的问题。",  # noqa: E501
     ) -> Self:
         """
         配置使用大模型自然语言总结作为上下文压缩策略。
@@ -195,11 +189,7 @@ class MemoryBuilder:
     def unlimited(self) -> Self:
         """
         配置为不进行任何截断和压缩的策略。
-
         适用于短程会话或者具备超长上下文窗口的底层语言模型。
-
-        返回:
-            Self: 链式构建器自身，用于链式调用。
         """
         self._config.compression.policy = MemoryPolicy.unlimited()
         return self
@@ -207,8 +197,5 @@ class MemoryBuilder:
     def build(self) -> MemoryConfig:
         """
         生成最终构建好的 MemoryConfig 配置对象。
-
-        返回:
-            MemoryConfig: 强类型的记忆配置对象。
         """
         return self._config

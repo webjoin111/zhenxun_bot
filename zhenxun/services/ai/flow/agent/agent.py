@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Any, Generic, cast
 from typing_extensions import Self
 
 from nonebot.utils import is_coroutine_callable
-import yaml
 
 from zhenxun.services.ai.core.configs import (
     BaseOutputDefinition,
@@ -31,6 +30,7 @@ from zhenxun.services.ai.flow.agent.models import (
     Persona,
 )
 from zhenxun.services.ai.flow.base import BaseRunnable
+from zhenxun.services.ai.knowledge.base import BaseKnowledge
 from zhenxun.services.ai.llm.config.generation import IntentBuilder
 from zhenxun.services.ai.llm.manager import get_model_instance
 from zhenxun.services.ai.memory.builder import MemoryBuilder
@@ -59,7 +59,6 @@ from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_construct, model_copy
 
 if TYPE_CHECKING:
-    from zhenxun.services.ai.flow.agent.models import AgentSpec
     from zhenxun.services.ai.run.models import StreamedRunResult
 
 
@@ -79,11 +78,11 @@ class Agent(
         persona: Persona | dict | None = None,
         model: str | Callable[[], str] | None = None,
         tools: list | None = None,
-        namespace: str | None = None,
         generation_config: GenerationConfig | IntentBuilder | dict | None = None,
         response_model: BaseOutputDefinition | type[OutputDataT] | None = None,
         dynamic_prompts: list[Callable] | None = None,
-        memory: bool | dict[str, Any] | MemoryConfig | MemoryBuilder = False,
+        memory: bool | MemoryConfig | MemoryBuilder = False,
+        knowledge: BaseKnowledge | list[BaseKnowledge] | None = None,
         runtime_config: AgentRuntimeConfig | dict | None = None,
         prepare_tools: ToolsPrepareFunc | None = None,
         guardrails: list[Any] | None = None,
@@ -97,15 +96,15 @@ class Agent(
             persona: 可选人设配置；传入 dict 时会自动构造成 `Persona`。
             model: 默认模型名（如 `Provider/Model`）或返回模型名的回调。
             tools: 初始工具定义列表，可混用工具对象与字符串工具名。
-            namespace: 工具解析命名空间；为空时自动推断，失败则回退为 `unknown`。
             generation_config: 默认生成配置，支持 `GenerationConfig`、`IntentBuilder` 或 dict。
             response_model: 结构化输出模型；为空时按纯文本输出。
             dynamic_prompts: 动态系统提示词函数列表，运行时追加到系统提示。
             memory: 是否开启长期记忆与上下文压缩 (可传布尔值，或传入 AgentMemory)。
+            knowledge: 挂载的知识库，支持单个或列表。底层会自动将其注册入工具链。
             runtime_config: 运行时行为配置；可传 `AgentRuntimeConfig` 或 dict。
             prepare_tools: 工具预处理钩子，在请求模型前可动态改写工具列表。
             guardrails: 护栏定义列表，支持可调用对象、规则字符串或护栏实例。
-        """
+        """  # noqa: E501
         self.name = name
 
         if description:
@@ -125,15 +124,15 @@ class Agent(
         self.model_name = model
 
         self.tool_definitions = tools or []
-        self.namespace = namespace
 
-        if self.namespace is None:
-            from zhenxun.utils.utils import infer_plugin_namespace
+        if knowledge:
+            if not isinstance(knowledge, list):
+                knowledge = [knowledge]
+            self.tool_definitions.extend(knowledge)
 
-            self.namespace = infer_plugin_namespace()
+        from zhenxun.utils.utils import infer_plugin_namespace
 
-        if self.namespace is None:
-            self.namespace = "unknown"
+        self.namespace = infer_plugin_namespace() or "unknown"
 
         self.tool_names = [t for t in (tools or []) if isinstance(t, str)]
         self.response_model = response_model
@@ -240,15 +239,6 @@ class Agent(
 
         return decorator if func is None else decorator(func)
 
-    def mount_knowledge(self, knowledge: Any | list[Any]) -> Self:
-        """挂载外部知识库/工具集"""
-        if not isinstance(knowledge, list):
-            knowledge = [knowledge]
-        if self.tool_definitions is None:
-            self.tool_definitions = []
-        self.tool_definitions.extend(knowledge)
-        return self
-
     def mount_private_skill(self, path: str | Path, as_catalog: bool = True) -> Self:
         """
         局部挂载私有技能。
@@ -302,87 +292,6 @@ class Agent(
 
         return [DelegateTool(self)]
 
-    @classmethod
-    async def from_spec(cls, spec: "AgentSpec", **kwargs: Any) -> "Agent[Any, Any]":
-        """
-        根据 AgentSpec 声明式配置契约完全实例化一个 Agent。
-
-        参数:
-            spec: AgentSpec 声明式配置契约对象。
-            **kwargs: 用于覆盖或补充 Spec 中定义的初始化参数（直接透传给 Agent.__init__）。
-
-        返回:
-            Agent[Any, Any]: 实例化后的 Agent 对象。
-        """
-        from zhenxun.services.ai.protocols.capabilities import CapabilityRegistry
-        from zhenxun.services.ai.tools.engine.registry import tool_provider_manager
-
-        caps = []
-        for c_spec in spec.capabilities:
-            caps.append(CapabilityRegistry.create_from_spec(c_spec))
-
-        resolved_tools = []
-        if spec.tools:
-            resolved_tools_collection = (
-                await tool_provider_manager.resolve_specific_tools(spec.tools)
-            )
-            resolved_tools.extend(list(resolved_tools_collection))
-
-        final_instr = kwargs.get("instruction") or spec.instructions or ""
-        if isinstance(final_instr, list):
-            final_instr = "\n".join(final_instr)
-
-        kwargs["name"] = kwargs.get("name") or spec.name or "SpecAgent"
-        kwargs["model"] = kwargs.get("model") or spec.model
-        kwargs["persona"] = kwargs.get("persona") or spec.persona
-        kwargs["instruction"] = final_instr
-        kwargs["tools"] = resolved_tools
-        kwargs["generation_config"] = (
-            kwargs.get("generation_config") or spec.model_settings
-        )
-
-        agent = cls(**kwargs)
-        agent.capabilities.extend(caps)
-        return cast("Agent[Any, Any]", agent)
-
-    @classmethod
-    async def from_yaml(
-        cls, path_or_str: str | Path, **kwargs: Any
-    ) -> "Agent[Any, Any]":
-        """
-        从 YAML 文件路径或 YAML 格式字符串直接反序列化并实例化 Agent。
-
-        参数:
-            path_or_str: YAML 文件的本地路径 (Path 或 str) 或直接包含 YAML 内容的字符串。
-            **kwargs: 用于覆盖或补充 YAML 声明中的初始化参数（直接透传给 Agent.__init__）。
-
-        返回:
-            Agent[Any, Any]: 实例化后的 Agent 对象。
-
-        异常:
-            FileNotFoundError: 当提供的路径不是一个合法的文件时抛出。
-        """
-
-        from zhenxun.services.ai.flow.agent.models import AgentSpec
-
-        if isinstance(path_or_str, Path) or (
-            isinstance(path_or_str, str)
-            and (path_or_str.endswith(".yaml") or path_or_str.endswith(".yml"))
-        ):
-            try:
-                import aiofiles
-
-                async with aiofiles.open(path_or_str, encoding="utf-8") as f:
-                    content = await f.read()
-                    yaml_data = yaml.safe_load(content)
-            except FileNotFoundError:
-                raise FileNotFoundError(f"找不到 Agent 配置文件: {path_or_str}")
-        else:
-            yaml_data = yaml.safe_load(path_or_str)
-
-        spec = AgentSpec.model_validate(yaml_data)
-        return await cls.from_spec(spec, **kwargs)
-
     async def run(
         self,
         prompt: PromptInput | Task | None = None,
@@ -392,7 +301,7 @@ class Agent(
         message_history: list[LLMMessage] | None = None,
         tool_filter: GlobalToolFilter | None = None,
         config: ExecutionConfig | None = None,
-        memory: bool | dict[str, Any] | MemoryConfig | MemoryBuilder | None = None,
+        memory: bool | MemoryConfig | MemoryBuilder | None = None,
         generation_config: GenerationConfig | None = None,
         **kwargs: Any,
     ) -> AgentRunResult[OutputDataT]:
@@ -412,7 +321,7 @@ class Agent(
 
         返回:
             AgentRunResult[OutputDataT]: 包含最终输出数据、消息历史和用量统计的运行结果对象。
-        """
+        """  # noqa: E501
         return await super().run(
             prompt=prompt,
             deps=deps,
@@ -435,7 +344,7 @@ class Agent(
         message_history: list[LLMMessage] | None = None,
         tool_filter: GlobalToolFilter | None = None,
         config: ExecutionConfig | None = None,
-        memory: bool | dict[str, Any] | MemoryConfig | MemoryBuilder | None = None,
+        memory: bool | MemoryConfig | MemoryBuilder | None = None,
         generation_config: GenerationConfig | None = None,
         event_streamer: EventStreamer | None = None,
         **kwargs: Any,
@@ -563,7 +472,7 @@ class Agent(
         message_history: list[LLMMessage] | None = None,
         tool_filter: GlobalToolFilter | None = None,
         config: ExecutionConfig | None = None,
-        memory: bool | dict[str, Any] | MemoryConfig | MemoryBuilder | None = None,
+        memory: bool | MemoryConfig | MemoryBuilder | None = None,
         generation_config: GenerationConfig | None = None,
         cancellation_token: Any = None,
         event_streamer: Any = None,
@@ -643,8 +552,6 @@ class Agent(
                 effective_memory.short_term.enable = memory
             elif isinstance(memory, MemoryBuilder):
                 effective_memory = memory.build()
-            elif isinstance(memory, dict):
-                effective_memory = MemoryConfig(**memory)
             else:
                 effective_memory = memory
 

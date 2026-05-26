@@ -1,9 +1,5 @@
 import asyncio
-import re
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    pass
+from typing import Any
 
 from zhenxun.services.ai.rag.backends import (
     StorageBackend,
@@ -13,24 +9,14 @@ from zhenxun.services.ai.rag.indexing import (
 )
 from zhenxun.services.ai.rag.models import (
     BaseRecord,
+    RAGConfig,
     SearchResult,
 )
 from zhenxun.services.ai.rag.retrieval import (
     BaseRetriever,
 )
+from zhenxun.services.ai.utils.scope import normalize_scope_path
 from zhenxun.services.log import logger
-
-
-def normalize_scope_path(path: str) -> str:
-    """标准化作用域路径，消除多余的斜杠并确保以 / 开头"""
-    if not path or path == "/":
-        return "/"
-    path = re.sub(r"/+", "/", path)
-    if not path.startswith("/"):
-        path = "/" + path
-    if len(path) > 1:
-        path = path.rstrip("/")
-    return path
 
 
 class ScopedRAGClient:
@@ -45,16 +31,18 @@ class ScopedRAGClient:
         retriever: BaseRetriever,
         pipeline: IndexPipeline,
         scopes: str | list[str] = "/",
+        config: RAGConfig | None = None,
     ):
         self.storage = storage
         self.retriever = retriever
         self.pipeline = pipeline
+        self.config = config or RAGConfig()
+        self._background_tasks = set()
         if isinstance(scopes, str):
             self.scopes = [normalize_scope_path(scopes)]
         else:
             self.scopes = [normalize_scope_path(s) for s in scopes]
 
-        # 默认写入数据时，使用 scopes 列表中的第一个作为主前缀
         self.scope_prefix = self.scopes[0] if self.scopes else "/"
 
     async def ingest(self, records: list[BaseRecord], async_write: bool = False) -> int:
@@ -62,14 +50,20 @@ class ScopedRAGClient:
         if async_write:
             import asyncio
 
-            asyncio.create_task(self.pipeline.run(records))
+            task = asyncio.create_task(self.pipeline.run(records))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
             return len(records)
         else:
             res = await self.pipeline.run(records)
             return len(res)
 
     async def search(
-        self, query: str, limit: int = 10, scopes: str | list[str] | None = None, **kwargs: Any
+        self,
+        query: str,
+        limit: int = 10,
+        scopes: str | list[str] | None = None,
+        **kwargs: Any,
     ) -> list[SearchResult]:
         """
         多作用域联合切片视图检索 (Union Search)。
@@ -77,7 +71,11 @@ class ScopedRAGClient:
         """
         target_scopes = self.scopes
         if scopes is not None:
-            target_scopes = [normalize_scope_path(scopes)] if isinstance(scopes, str) else [normalize_scope_path(s) for s in scopes]
+            target_scopes = (
+                [normalize_scope_path(scopes)]
+                if isinstance(scopes, str)
+                else [normalize_scope_path(s) for s in scopes]
+            )
 
         if not target_scopes:
             return []
@@ -93,9 +91,7 @@ class ScopedRAGClient:
             call_kwargs = kwargs.copy()
             call_kwargs["scope_prefix"] = scope
             tasks.append(
-                self.retriever.retrieve(
-                    query, limit=oversample_limit, **call_kwargs
-                )
+                self.retriever.retrieve(query, limit=oversample_limit, **call_kwargs)
             )
 
         results_lists = await asyncio.gather(*tasks, return_exceptions=True)

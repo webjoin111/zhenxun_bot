@@ -131,7 +131,8 @@ class MemoryReader:
                 if changed:
                     await chat_context.set_messages(self.session_meta, new_history)
                     logger.info(
-                        f"💾 [MemoryReader] 压缩截断完毕，已同步覆写数据库。压缩后条数: {len(new_history)}"
+                        "💾 [MemoryReader] 压缩截断完毕，已同步覆写数据库。"
+                        f"压缩后条数: {len(new_history)}"
                     )
                 current_history = new_history
 

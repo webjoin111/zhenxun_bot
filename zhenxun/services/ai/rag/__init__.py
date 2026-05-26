@@ -9,7 +9,6 @@ from .backends.storages import (
     TortoiseStorageBackend,
 )
 from .builder import RAGBuilder
-from .facade import SimpleRAG
 from .models import BaseRecord, RAGConfig, SearchResult
 
 __all__ = [
@@ -19,7 +18,6 @@ __all__ = [
     "RAGBuilder",
     "RAGConfig",
     "SearchResult",
-    "SimpleRAG",
     "StorageBackend",
     "TortoiseStorageBackend",
 ]

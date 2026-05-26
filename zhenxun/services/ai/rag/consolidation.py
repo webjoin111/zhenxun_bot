@@ -1,10 +1,13 @@
 from typing import Protocol
-from zhenxun.services.ai.rag.models import ConsolidationPlan, BaseRecord
+
 from zhenxun.services.ai.llm.api import generate_structured
+from zhenxun.services.ai.rag.models import BaseRecord, ConsolidationPlan
 from zhenxun.services.log import logger
+
 
 class Consolidator(Protocol):
     """数据融合器协议"""
+
     async def consolidate(
         self, new_content: str, existing_records: list[BaseRecord]
     ) -> ConsolidationPlan: ...
@@ -12,6 +15,7 @@ class Consolidator(Protocol):
 
 class NullConsolidator(Consolidator):
     """无作为的融合器：永远直接插入"""
+
     async def consolidate(
         self, new_content: str, existing_records: list[BaseRecord]
     ) -> ConsolidationPlan:
@@ -53,7 +57,7 @@ class LLMConsolidator(Consolidator):
    - 如果新内容与旧内容不冲突，对旧记录使用 keep。
 3. 决定是否将新内容作为全新的一条记录插入（insert_new）。
    - 如果你已经将新信息合并到了某个旧记录的 update 动作中，或者旧记录已经包含了新信息，请务必设置 insert_new=False。
-   - 如果这是一条完全独立的新信息，请设置 insert_new=True。"""
+   - 如果这是一条完全独立的新信息，请设置 insert_new=True。"""  # noqa: E501
 
         try:
             logger.debug("🧠 正在启动 RAG 数据融合分析 (Consolidation)...")

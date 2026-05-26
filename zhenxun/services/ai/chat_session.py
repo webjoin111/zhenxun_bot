@@ -4,6 +4,7 @@ from zhenxun.services.ai.core.configs import GenerationConfig
 from zhenxun.services.ai.core.messages import LLMMessage, PromptInput
 from zhenxun.services.ai.flow.agent import Agent
 from zhenxun.services.ai.flow.agent.models import AgentRuntimeConfig
+from zhenxun.services.ai.memory.builder import MemoryBuilder
 from zhenxun.services.ai.memory.models import MemoryConfig, SessionMetadata
 from zhenxun.services.ai.run import AgentRunResult, RunContext
 
@@ -17,7 +18,7 @@ class ChatSession:
         self,
         instruction: str = "",
         model: str | None = None,
-        memory: bool | dict[str, Any] | MemoryConfig = True,
+        memory: bool | MemoryConfig | MemoryBuilder = True,
         generation_config: GenerationConfig | dict | None = None,
     ):
         """
@@ -28,8 +29,8 @@ class ChatSession:
             model: 指定使用的模型名称。若不指定，将使用系统的全局默认模型。
             memory: 记忆配置。
                 - bool: True 启用默认记忆（GROUP_USER 隔离），False 禁用记忆。
-                - dict: 传递给 MemoryConfig 的配置参数。
                 - MemoryConfig: 直接传入预定义的配置对象。
+                - MemoryBuilder: 直接传入预定义的配置构建器。
             generation_config: 模型生成配置（如 temperature, max_tokens 等）。
                 - dict: 自动转换为 GenerationConfig 对象。
                 - GenerationConfig: 直接传入配置对象。
