@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 
 from zhenxun.services.ai.core.messages import LLMMessage
-from zhenxun.services.ai.memory.models import SessionMetadata
+from zhenxun.services.ai.memory.models import MemorySlot, SessionMetadata
 
 
 class BaseChatContext(ABC):
@@ -27,6 +27,26 @@ class BaseChatContext(ABC):
 
     @abstractmethod
     async def clear(self, session: SessionMetadata) -> None: ...
+
+
+class BaseSlotContext(ABC):
+    """中期记忆槽持久化接口"""
+
+    @abstractmethod
+    async def get_slot(
+        self, session: SessionMetadata, label: str
+    ) -> MemorySlot | None: ...
+
+    @abstractmethod
+    async def set_slot(self, session: SessionMetadata, slot: MemorySlot) -> None: ...
+
+    @abstractmethod
+    async def delete_slot(
+        self, session: SessionMetadata, label: str, scope: str
+    ) -> None: ...
+
+    @abstractmethod
+    async def list_pinned_slots(self, session: SessionMetadata) -> list[MemorySlot]: ...
 
 
 class BaseMemoryReducer(ABC):

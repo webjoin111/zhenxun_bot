@@ -11,6 +11,7 @@ from zhenxun.services.ai.core.events.event_types import (
     WorkflowErrorEvent,
     WorkflowStartedEvent,
 )
+from zhenxun.services.ai.core.messages import PromptInput
 from zhenxun.services.ai.flow.base import BaseRunnable, BaseRuntimeConfig
 from zhenxun.services.ai.flow.workflow.nodes import Steps
 from zhenxun.services.ai.flow.workflow.types import (
@@ -19,7 +20,6 @@ from zhenxun.services.ai.flow.workflow.types import (
     WorkflowRunResult,
 )
 from zhenxun.services.ai.run import RunContext
-from zhenxun.services.ai.core.messages import PromptInput
 from zhenxun.services.ai.tools.core.tool import FunctionTool
 from zhenxun.services.log import logger
 
@@ -142,7 +142,11 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
         return res
 
     async def run(
-        self, prompt: PromptInput | None = None, *, context: RunContext | None = None, **kwargs: Any
+        self,
+        prompt: PromptInput | None = None,
+        *,
+        context: RunContext | None = None,
+        **kwargs: Any,
     ) -> WorkflowRunResult:
         """
         工作流单次运行阻塞核心入口，遍历所有图元节点直至终止。
@@ -180,6 +184,13 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
             return self._build_result(initial_input, safe_context, final_output)
 
         except Exception as e:
+            from zhenxun.services.ai.core.exceptions import ControlFlowException
+
+            if isinstance(e, ControlFlowException):
+                logger.info(f"⏭️ 工作流执行被业务控制流安全中止: {e}")
+                dummy_output = StepOutput(content=str(e), success=False)
+                return self._build_result(initial_input, safe_context, dummy_output)
+
             logger.error(f"Workflow '{self.name}' 执行崩溃: {e}", e=e)
             await EventCenter.publish(
                 WorkflowErrorEvent(
@@ -192,7 +203,11 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
 
     @contextlib.asynccontextmanager
     async def run_stream(
-        self, prompt: PromptInput | None = None, *, context: RunContext | None = None, **kwargs: Any
+        self,
+        prompt: PromptInput | None = None,
+        *,
+        context: RunContext | None = None,
+        **kwargs: Any,
     ) -> AsyncIterator["StreamedRunResult[Any]"]:
         """对齐 BaseRunnable 接口的流式上下文管理器"""
         import asyncio
@@ -222,7 +237,10 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
                 task.cancel()
 
     async def _internal_stream(
-        self, prompt: PromptInput | None = None, context: RunContext | None = None, **kwargs: Any
+        self,
+        prompt: PromptInput | None = None,
+        context: RunContext | None = None,
+        **kwargs: Any,
     ) -> AsyncIterator[Any]:
         """原 arun_stream 逻辑改名，供内部 _execution_task 调用"""
         session_id = (

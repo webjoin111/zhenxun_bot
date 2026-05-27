@@ -5,7 +5,7 @@
 import asyncio
 from collections.abc import AsyncIterator
 import json
-from typing import Any, Generic
+from typing import Any, Generic, cast
 from typing_extensions import TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
@@ -98,10 +98,29 @@ class StreamedRunResult(Generic[OutputDataT]):
 
         async for event in self._streamer:
             if isinstance(event, AgentRunEnd):
-                self._result = event.result
+                self._result = cast(AgentRunResult[OutputDataT], event.result)
                 self.is_complete = True
             elif isinstance(event, AgentRunError):
-                raise event.error
+                from zhenxun.services.ai.core.exceptions import ControlFlowException
+
+                if isinstance(event.error, ControlFlowException):
+                    from zhenxun.services.ai.core.messages import UsageInfo
+                    from zhenxun.services.log import logger
+
+                    logger.info(f"⏭️ 任务执行被业务控制流安全中止: {event.error}")
+
+                    output_val = (
+                        getattr(event.error, "result_output", None)
+                        or getattr(event.error, "display", None)
+                        or str(event.error)
+                    )
+                    self._result = cast(
+                        AgentRunResult[OutputDataT],
+                        AgentRunResult(output=output_val, usage=UsageInfo()),
+                    )
+                    self.is_complete = True
+                else:
+                    raise event.error
             yield event
 
     async def stream_text(self, delta: bool = False) -> AsyncIterator[str]:
@@ -146,7 +165,6 @@ class StreamedRunResult(Generic[OutputDataT]):
             return self._result
 
         await self.get_output()
-        from typing import cast
 
         return cast(AgentRunResult[OutputDataT], self._result)
 

@@ -555,7 +555,14 @@ class Agent(
             else:
                 effective_memory = memory
 
-        session_metadata = SessionMetadata(session_id=context.session_id)
+        session_metadata = SessionMetadata(
+            session_id=context.session_id,
+            user_id=context.get_user_id(),
+            group_id=context.get_group_id(),
+            platform=context.get_platform(),
+            namespace=self.namespace,
+            agent_name=self.name,
+        )
 
         from zhenxun.services.ai.memory.engine import MemoryReader, MemoryWriter
 
@@ -602,6 +609,8 @@ class Agent(
                     context.run.user_input
                 )
 
+            slots_fact = await reader.get_slots_context()
+
             system_prompt = await ContextBuilder.build_system_prompt(
                 instruction=self.instruction,
                 system_prompts=self.dynamic_prompts,
@@ -612,6 +621,8 @@ class Agent(
 
             if long_term_fact:
                 system_prompt += f"\n\n{long_term_fact}"
+            if slots_fact:
+                system_prompt += f"\n\n{slots_fact}"
 
             tool_payload = await ToolBuilder.resolve_tools(
                 tool_definitions=self.tool_definitions,
@@ -647,6 +658,18 @@ class Agent(
                         mem_tk_payload.injected_prompts
                     )
                     tool_payload.toolkits.extend(mem_tk_payload.toolkits)
+
+            if effective_memory and effective_memory.slots.enable:
+                from zhenxun.services.ai.tools.providers.builtin.slots import (
+                    MemorySlotToolkit,
+                )
+
+                slot_tk_payload = await MemorySlotToolkit(
+                    session_meta=session_metadata, memory_config=effective_memory
+                ).resolve(context)
+                effective_tools.extend(slot_tk_payload.tools)
+                tool_payload.injected_prompts.extend(slot_tk_payload.injected_prompts)
+                tool_payload.toolkits.extend(slot_tk_payload.toolkits)
 
             final_gen_config = model_copy(self.default_config, deep=True)
 

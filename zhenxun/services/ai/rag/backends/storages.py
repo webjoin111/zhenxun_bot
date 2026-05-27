@@ -87,17 +87,32 @@ class DictStorageBackend(StorageBackend):
             return []
 
         results = []
-        if query.embedding:
+        if query.search_type == "sparse":
+            import jieba
+
+            tokens = set(jieba.lcut_for_search(query.text.lower()))
+            for r_id in candidate_ids:
+                record = self._records[r_id]
+                content = record.content.lower()
+                matched_count = sum(1 for t in tokens if t in content)
+                if matched_count > 0:
+                    score = matched_count / len(tokens)
+                    results.append(SearchResult(record=record, score=score))
+        elif query.search_type == "dense" and query.embedding:
             q_vec = normalize_vector(query.embedding)
             valid_ids = [r_id for r_id in candidate_ids if r_id in self._vectors]
 
             if valid_ids:
-                mat = np.array([self._vectors[r_id] for r_id in valid_ids])
-                scores = mat @ q_vec
-                for r_id, score in zip(valid_ids, scores):
-                    results.append(
-                        SearchResult(record=self._records[r_id], score=float(score))
-                    )
+                try:
+                    mat = np.array([self._vectors[r_id] for r_id in valid_ids])
+                    scores = mat @ q_vec
+                    for r_id, score in zip(valid_ids, scores):
+                        results.append(
+                            SearchResult(record=self._records[r_id], score=float(score))
+                        )
+                except ValueError as e:
+                    from zhenxun.services.log import logger
+                    logger.warning(f"⚠️ DictStorage 中缓存的向量维度与当前查询维度不匹配，跳过向量检索。原因: {e}")
 
             missing_ids = [r_id for r_id in candidate_ids if r_id not in self._vectors]
             for r_id in missing_ids:
@@ -175,7 +190,19 @@ class TortoiseStorageBackend(StorageBackend):
         query_orm = self.model_class.all()
         if scope_prefix and scope_prefix != "/":
             query_orm = query_orm.filter(scope__startswith=scope_prefix)
-        if not query.embedding and query.text:
+
+        if query.search_type == "sparse" and query.text:
+            import jieba
+            from tortoise.expressions import Q
+
+            tokens = [
+                t for t in jieba.lcut_for_search(query.text) if len(t.strip()) > 1
+            ] or [query.text]
+            q_expr = Q()
+            for token in tokens:
+                q_expr |= Q(content__icontains=token)
+            query_orm = query_orm.filter(q_expr)
+        elif query.search_type == "dense" and not query.embedding and query.text:
             query_orm = query_orm.filter(content__icontains=query.text)
 
         rows = await query_orm
@@ -191,7 +218,18 @@ class TortoiseStorageBackend(StorageBackend):
             return []
 
         results = []
-        if query.embedding:
+        if query.search_type == "sparse":
+            import jieba
+
+            tokens = set(jieba.lcut_for_search(query.text.lower()))
+            for row in valid_rows:
+                content = row.content.lower()
+                matched_count = sum(1 for t in tokens if t in content)
+                score = matched_count / len(tokens) if tokens else 0.1
+                results.append(
+                    SearchResult(record=self._to_base_record(row), score=score)
+                )
+        elif query.search_type == "dense" and query.embedding:
             q_vec = normalize_vector(query.embedding)
             vec_rows = []
             missing_rows = []
@@ -203,16 +241,20 @@ class TortoiseStorageBackend(StorageBackend):
                     missing_rows.append(row)
 
             if vec_rows:
-                raw_mat = np.array([r.embedding for r in vec_rows], dtype=np.float32)
-                norm_mat = normalize_matrix(raw_mat)
-                scores = norm_mat @ q_vec
+                try:
+                    raw_mat = np.array([r.embedding for r in vec_rows], dtype=np.float32)
+                    norm_mat = normalize_matrix(raw_mat)
+                    scores = norm_mat @ q_vec
 
-                for row, score in zip(vec_rows, scores):
-                    results.append(
-                        SearchResult(
-                            record=self._to_base_record(row), score=float(score)
+                    for row, score in zip(vec_rows, scores):
+                        results.append(
+                            SearchResult(
+                                record=self._to_base_record(row), score=float(score)
+                            )
                         )
-                    )
+                except ValueError as e:
+                    from zhenxun.services.log import logger
+                    logger.warning(f"⚠️ 数据库中缓存的向量维度与当前模型查询维度不匹配，已安全跳过向量检索(降级为稀疏匹配)。原因: {e}")
 
             for row in missing_rows:
                 results.append(
@@ -302,9 +344,10 @@ class QdrantStorageBackend(StorageBackend):
     async def search(
         self, query: QueryRequest, scope_prefix: str | None = None
     ) -> list[SearchResult]:
-        if not query.embedding:
+        if query.search_type == "dense" and not query.embedding:
             return []
-        await self._ensure_collection(len(query.embedding))
+        if query.embedding:
+            await self._ensure_collection(len(query.embedding))
 
         from qdrant_client.models import FieldCondition, Filter, MatchText, MatchValue
 
@@ -321,7 +364,31 @@ class QdrantStorageBackend(StorageBackend):
                     FieldCondition(key=f"metadata.{k}", match=MatchValue(value=v))
                 )
 
+        if query.search_type == "sparse":
+            must_conditions.append(
+                FieldCondition(key="content", match=MatchText(text=query.text))
+            )
+
         query_filter = Filter(must=must_conditions) if must_conditions else None
+
+        if query.search_type == "sparse":
+            results = await self.client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=query_filter,
+                limit=query.limit,
+                with_payload=True,
+            )
+            return [
+                SearchResult(
+                    record=BaseRecord(
+                        id=str(r.id),
+                        content=(r.payload or {}).get("content", ""),
+                        metadata=(r.payload or {}).get("metadata", {}),
+                    ),
+                    score=1.0,
+                )
+                for r in results[0]
+            ]
 
         results = await self.client.search(  # type: ignore
             collection_name=self.collection_name,
@@ -411,11 +478,24 @@ class LanceDBStorageBackend(StorageBackend):
     ) -> list[SearchResult]:
         if self.table_name not in self.db.table_names():
             return []
-        if not query.embedding:
+        if query.search_type == "dense" and not query.embedding:
             return []
 
         tbl = self.db.open_table(self.table_name)
-        results = tbl.search(query.embedding).limit(query.limit).to_list()
+        if query.search_type == "sparse":
+            try:
+                results = (
+                    tbl.search(query.text, query_type="fts")
+                    .limit(query.limit)
+                    .to_list()
+                )
+            except Exception as e:
+                from zhenxun.services.log import logger
+
+                logger.warning(f"LanceDB FTS 检索失败(可能是由于尚未创建FTS索引): {e}")
+                return []
+        else:
+            results = tbl.search(query.embedding).limit(query.limit).to_list()
 
         import ast
 

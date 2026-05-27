@@ -46,6 +46,38 @@ class MemoryReader:
             return f"[系统补充：有关用户的长期记忆设定]\n{fact_str}"
         return ""
 
+    async def get_slots_context(self) -> str:
+        """
+        读取并组装核心槽位记忆 (Memory Slots)，返回 XML 格式字符串供大模型使用。
+        """
+        if not self.memory_config or not self.memory_config.slots.enable:
+            return ""
+        slot_ctx = memory_manager.get_slot_context(self.memory_config)
+        if not slot_ctx:
+            return ""
+
+        if self.memory_config.slots.default_slots:
+            for default_slot in self.memory_config.slots.default_slots:
+                existing = await slot_ctx.get_slot(
+                    self.session_meta, default_slot.label
+                )
+                if not existing:
+                    await slot_ctx.set_slot(self.session_meta, default_slot)
+
+        slots = await slot_ctx.list_pinned_slots(self.session_meta)
+        if not slots:
+            return ""
+
+        xml_parts = ["<memory_slots>"]
+        for slot in slots:
+            xml_parts.append(
+                f'  <slot name="{slot.label}" scope="{slot.scope.value}">\n'
+                f"    {slot.content}\n"
+                "  </slot>"
+            )
+        xml_parts.append("</memory_slots>")
+        return "\n".join(xml_parts)
+
     async def get_short_term_context(
         self,
         model_name: str,

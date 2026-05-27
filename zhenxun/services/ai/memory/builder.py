@@ -10,6 +10,7 @@ from zhenxun.services.ai.memory.models import (
     MemoryConfig,
     MemoryIsolationLevel,
     ShortTermConfig,
+    SlotMemoryConfig,
 )
 
 
@@ -26,6 +27,7 @@ class MemoryBuilder:
         """
         self._config = MemoryConfig(
             short_term=ShortTermConfig(enable=False),
+            slots=SlotMemoryConfig(enable=False),
             long_term=LongTermConfig(enable=False),
             compression=ContextCompressionConfig(),
         )
@@ -76,6 +78,30 @@ class MemoryBuilder:
         self._config.short_term.isolation_level = isolation_level
         if backend is not None:
             self._config.short_term.backend = backend
+        return self
+
+    def with_slots(
+        self,
+        enable: bool = True,
+        default_slots: list[Any] | None = None,
+        backend: Any | None = None,
+    ) -> Self:
+        """
+        配置核心槽位记忆 (Memory Slots)。
+
+        参数:
+            enable: 是否启用槽位记忆。
+            default_slots: 首次初始化时自动写入的默认槽位列表。
+            backend: 槽位记忆存储后端，如果为 None 则使用全局默认后端。
+
+        返回:
+            Self: 链式构建器自身，用于链式调用。
+        """
+        self._config.slots.enable = enable
+        if default_slots is not None:
+            self._config.slots.default_slots = default_slots
+        if backend is not None:
+            self._config.slots.backend = backend
         return self
 
     def with_long_term(

@@ -36,6 +36,8 @@ class QueryRequest(BaseModel):
     """原始查询文本"""
     embedding: list[float] | None = Field(default=None)
     """用于向量检索的数组"""
+    search_type: Literal["dense", "sparse", "hybrid"] = Field(default="dense")
+    """检索类型标识：稠密向量、稀疏关键词或混合"""
     metadata_filters: dict[str, Any] | None = Field(default=None)
     """元数据精确匹配字典"""
     limit: int = Field(default=10)
@@ -91,6 +93,15 @@ class RerankConfig(BaseModel):
     """重排后保留的文档数量"""
 
 
+class HybridSearchConfig(BaseModel):
+    enable: bool = False
+    """是否开启双轨混合检索及 RRF 融合"""
+    dense_weight: float = 0.7
+    """向量检索权重"""
+    sparse_weight: float = 0.3
+    """BM25 检索权重"""
+
+
 class QueryRewriteConfig(BaseModel):
     enable: bool = False
     """是否开启查询意图重写"""
@@ -127,10 +138,14 @@ class RAGConfig(BaseModel):
     """记忆融合反思配置"""
     rerank: RerankConfig = Field(default_factory=RerankConfig)
     """重排配置"""
+    hybrid: HybridSearchConfig = Field(default_factory=HybridSearchConfig)
+    """混合检索与 RRF 融合配置"""
     time_decay: TimeDecayConfig = Field(default_factory=TimeDecayConfig)
     """时间衰减配置"""
     query_rewrite: QueryRewriteConfig = Field(default_factory=QueryRewriteConfig)
     """查询意图重写配置"""
+    synonyms: dict[str, list[str]] = Field(default_factory=dict)
+    """静态同义词扩展字典 (如 {"ys": ["原神"], "db": ["数据库"]})"""
     pre_processors: list[Any] = Field(default_factory=list)
     """自定义查询前处理器列表"""
     post_processors: list[Any] = Field(default_factory=list)

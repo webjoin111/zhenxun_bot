@@ -22,6 +22,7 @@ from zhenxun.services.ai.rag.retrieval import (
     PostProcessor,
     PreProcessor,
     RerankRetriever,
+    StaticSynonymPreProcessor,
     TimeDecayPostProcessor,
     VectorDBRetriever,
 )
@@ -80,6 +81,20 @@ class RAGBuilder:
         self._config.rerank.enable = True
         self._config.rerank.model_name = model_name
         self._config.rerank.top_n = top_n
+        return self
+
+    def with_synonyms(self, synonyms: dict[str, list[str]]) -> "RAGBuilder":
+        """挂载静态同义词字典"""
+        self._config.synonyms.update(synonyms)
+        return self
+
+    def enable_hybrid_search(
+        self, dense_weight: float = 0.7, sparse_weight: float = 0.3
+    ) -> "RAGBuilder":
+        """开启双轨混合检索"""
+        self._config.hybrid.enable = True
+        self._config.hybrid.dense_weight = dense_weight
+        self._config.hybrid.sparse_weight = sparse_weight
         return self
 
     def enable_query_rewrite(self, model_name: str) -> "RAGBuilder":
@@ -163,6 +178,20 @@ class RAGBuilder:
             scopes[0] if isinstance(scopes, list) else scopes,
         )
 
+        if cfg.hybrid.enable:
+            from zhenxun.services.ai.rag.hybrid import HybridRetriever
+            from zhenxun.services.ai.rag.retrieval import DatabaseSparseRetriever
+
+            database_sparse_retriever = DatabaseSparseRetriever(
+                storage, scopes[0] if isinstance(scopes, list) else scopes
+            )
+            base_retriever = HybridRetriever(
+                dense_retriever=base_retriever,
+                sparse_retriever=database_sparse_retriever,
+                dense_weight=cfg.hybrid.dense_weight,
+                sparse_weight=cfg.hybrid.sparse_weight,
+            )
+
         if cfg.rerank.enable and cfg.rerank.model_name:
             base_retriever = RerankRetriever(
                 base_retriever, cfg.rerank.model_name, cfg.rerank.top_n
@@ -173,6 +202,9 @@ class RAGBuilder:
             pre_processors.append(
                 LLMQueryRewritePreProcessor(model_name=cfg.query_rewrite.model_name)
             )
+
+        if cfg.synonyms:
+            pre_processors.append(StaticSynonymPreProcessor(synonyms=cfg.synonyms))
 
         post_processors = list(cfg.post_processors)
         if cfg.time_decay.enable:

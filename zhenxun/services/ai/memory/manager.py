@@ -3,9 +3,14 @@ from typing import Any, cast
 
 from zhenxun.services.ai.memory.interfaces import (
     BaseChatContext,
+    BaseSlotContext,
 )
 from zhenxun.services.ai.memory.models import MemoryConfig
-from zhenxun.services.ai.memory.storage import InMemoryChatContext, MemoryScope
+from zhenxun.services.ai.memory.storage import (
+    InMemoryChatContext,
+    InMemorySlotContext,
+    MemoryScope,
+)
 from zhenxun.services.ai.rag import Embedder, StorageBackend
 from zhenxun.services.ai.rag.consolidation import Consolidator as MemoryConsolidator
 from zhenxun.services.ai.rag.consolidation import NullConsolidator
@@ -20,6 +25,7 @@ class GlobalMemoryManager:
 
     def __init__(self):
         self.default_chat_backend: BaseChatContext = InMemoryChatContext()
+        self.default_slot_backend: BaseSlotContext = InMemorySlotContext()
 
         from zhenxun.services.ai.rag.backends import DictStorageBackend
 
@@ -34,6 +40,11 @@ class GlobalMemoryManager:
         """设置全局默认的短期记忆引擎实例"""
         self.default_chat_backend = backend
         logger.debug(f"已设置全局默认短期记忆存储后端: {backend.__class__.__name__}")
+
+    def set_default_slot_backend(self, backend: BaseSlotContext) -> None:
+        """设置全局默认的中期记忆槽存储后端实例"""
+        self.default_slot_backend = backend
+        logger.debug(f"已设置全局默认记忆槽存储后端: {backend.__class__.__name__}")
 
     def set_default_storage_factory(
         self, factory: Callable[[], StorageBackend]
@@ -69,6 +80,17 @@ class GlobalMemoryManager:
             return cast(BaseChatContext, backend_cfg)
 
         return self.default_chat_backend
+
+    def get_slot_context(self, config: MemoryConfig | None) -> BaseSlotContext | None:
+        """根据配置分配对应的槽位记忆实例"""
+        if not config or not config.slots.enable:
+            return None
+
+        backend_cfg = config.slots.backend
+        if backend_cfg is not None:
+            return cast(BaseSlotContext, backend_cfg)
+
+        return self.default_slot_backend
 
     def get_long_term_memory(self, config: MemoryConfig | None) -> MemoryScope | None:
         """根据声明式配置动态组装长期向量记忆实例"""

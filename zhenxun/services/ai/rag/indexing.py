@@ -96,6 +96,7 @@ class FixedSizeChunking(ChunkingStrategy):
             end = min(start + self.chunk_size, content_length)
 
             if end < content_length:
+                original_end = end
                 while end > start and content[end] not in [
                     " ",
                     "\n",
@@ -108,14 +109,15 @@ class FixedSizeChunking(ChunkingStrategy):
                     "?",
                 ]:
                     end -= 1
-                if end == start:
-                    end = start + self.chunk_size
+
+                if end <= start + self.overlap:
+                    end = original_end
 
             chunk_content = content[start:end]
             chunks.append(self._create_chunk_record(record, chunk_index, chunk_content))
 
             chunk_index += 1
-            start = end - self.overlap
+            start = max(start + 1, end - self.overlap)
 
         return chunks
 
@@ -306,7 +308,12 @@ class EmbeddingNode(BaseBatchNode):
             return records
 
         try:
-            vecs = await self.embedder(texts_to_embed, task="document")
+            vecs = []
+            batch_size = 80
+            for i in range(0, len(texts_to_embed), batch_size):
+                batch_texts = texts_to_embed[i : i + batch_size]
+                batch_vecs = await self.embedder(batch_texts, task="document")
+                vecs.extend(batch_vecs)
 
             vec_idx = 0
             for r in records:
@@ -342,7 +349,13 @@ class UpdateEmbeddingNode(BaseBatchNode):
 
         texts = [r.content for r in records_to_re_embed]
         try:
-            vecs = await self.embedder(texts, task="document")
+            vecs = []
+            batch_size = 80
+            for i in range(0, len(texts), batch_size):
+                batch_texts = texts[i : i + batch_size]
+                batch_vecs = await self.embedder(batch_texts, task="document")
+                vecs.extend(batch_vecs)
+
             for i, r in enumerate(records_to_re_embed):
                 if vecs and i < len(vecs) and vecs[i]:
                     r.embedding = vecs[i]
@@ -394,7 +407,9 @@ class StorageCommitNode(BaseBatchNode):
             await self.storage.save(to_insert)
 
         logger.info(
-            f"💾 RAG 事务提交完成：插入 {len(to_insert)} 条, 更新 {len(to_update)} 条, 删除 {len(to_delete)} 条。"
+            "💾 RAG 事务提交完成：插入 "
+            f"{len(to_insert)} 条, 更新 {len(to_update)} 条, "
+            f"删除 {len(to_delete)} 条。"
         )
         return to_insert + to_update
 

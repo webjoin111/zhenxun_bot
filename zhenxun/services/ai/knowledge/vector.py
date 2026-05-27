@@ -150,6 +150,14 @@ class VectorKnowledge(BaseKnowledge):
             self.readers[e] = reader
         return self
 
+    def get_instructions(self) -> str | None:
+        """
+        如果是自动/智能注入模式，对大模型完全隐藏检索提示词，防止其误调用。
+        """
+        if self.injection_mode != "tool":
+            return None
+        return super().get_instructions()
+
     async def before_llm_request(
         self, context: RunContext, messages: list[Any]
     ) -> None:
@@ -187,7 +195,7 @@ class VectorKnowledge(BaseKnowledge):
         all_results = []
         seen_ids = set()
         for q in queries_to_search:
-            results = await self.rag_client.search(query=q, limit=3)
+            results = await self.rag_client.search(query=q, limit=8)
             for res in results:
                 if res.record.id not in seen_ids:
                     seen_ids.add(res.record.id)
@@ -197,7 +205,7 @@ class VectorKnowledge(BaseKnowledge):
             return
 
         all_results.sort(key=lambda x: x.score, reverse=True)
-        all_results = all_results[:5]
+        all_results = all_results[:12]
 
         formatted_results = []
         for result in all_results:

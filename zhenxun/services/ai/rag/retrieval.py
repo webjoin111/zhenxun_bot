@@ -81,6 +81,30 @@ class VectorDBRetriever(BaseRetriever):
             text=query,
             embedding=query_vec,
             limit=limit,
+            search_type="dense",
+            metadata_filters=kwargs.get("metadata_filters"),
+        )
+        effective_scope = kwargs.get("scope_prefix", self.scope_prefix)
+        return await self.storage.search(req, scope_prefix=effective_scope)
+
+
+class DatabaseSparseRetriever(BaseRetriever):
+    """纯数据库下沉的稀疏检索器 (Keyword/FTS)"""
+
+    def __init__(self, storage: "StorageBackend", scope_prefix: str | None = None):
+        self.storage = storage
+        self.scope_prefix = scope_prefix
+
+    async def retrieve(
+        self, query: str, limit: int = 10, **kwargs: Any
+    ) -> list[SearchResult]:
+        if not query.strip():
+            return []
+
+        req = QueryRequest(
+            text=query,
+            limit=limit,
+            search_type="sparse",
             metadata_filters=kwargs.get("metadata_filters"),
         )
         effective_scope = kwargs.get("scope_prefix", self.scope_prefix)
@@ -173,6 +197,29 @@ class LLMQueryRewritePreProcessor(PreProcessor):
             return [query]
 
 
+class StaticSynonymPreProcessor(PreProcessor):
+    """零开销静态同义词扩展器"""
+
+    def __init__(self, synonyms: dict[str, list[str]]):
+        self.synonyms = synonyms
+
+    async def process(self, query: str) -> list[str]:
+        if not self.synonyms or not query.strip():
+            return [query]
+
+        queries = [query]
+        for key, value_list in self.synonyms.items():
+            if key in query:
+                for val in value_list:
+                    expanded_q = query.replace(key, val)
+                    if expanded_q not in queries:
+                        queries.append(expanded_q)
+                        logger.debug(
+                            f"🔄 [同义词扩展] '{query}' -> 扩展查询 '{expanded_q}'"
+                        )
+        return queries
+
+
 class PipelineRetriever(BaseRetriever):
     """支持挂载多个后处理器的流水线检索器"""
 
@@ -212,7 +259,7 @@ class PipelineRetriever(BaseRetriever):
 
 
 class TimeDecayPostProcessor(PostProcessor):
-    """时间衰减后处理器（将 Memory 中的打分逻辑提炼至此）"""
+    """时间衰减后处理器"""
 
     def __init__(
         self,
@@ -235,7 +282,11 @@ class TimeDecayPostProcessor(PostProcessor):
             importance = res.record.metadata.get("importance", 0.5)
             age_days = max(0.0, (now - created_at) / 86400.0)
             decay = 0.5 ** (age_days / self.half_life_days)
-            res.score = (self.semantic_weight * res.score) + (self.decay_weight * decay) + (self.importance_weight * importance)
+            res.score = (
+                (self.semantic_weight * res.score)
+                + (self.decay_weight * decay)
+                + (self.importance_weight * importance)
+            )
 
         results.sort(key=lambda x: x.score, reverse=True)
         return results

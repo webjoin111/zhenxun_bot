@@ -18,8 +18,9 @@ from zhenxun.services.ai.core.messages import (
 )
 from zhenxun.services.ai.memory.interfaces import (
     BaseChatContext,
+    BaseSlotContext,
 )
-from zhenxun.services.ai.memory.models import SessionMetadata
+from zhenxun.services.ai.memory.models import SessionMetadata, MemorySlot, SlotScope
 from zhenxun.services.ai.rag import BaseRecord, SearchResult
 from zhenxun.services.ai.rag.engine import ScopedRAGClient
 from zhenxun.services.db_context import Model
@@ -132,6 +133,55 @@ class InMemoryChatContext(BaseChatContext):
 
     async def clear(self, session: SessionMetadata) -> None:
         self._messages.pop(session.session_id, None)
+
+
+class InMemorySlotContext(BaseSlotContext):
+    """内存级记忆槽存储 (主要用于测试或无状态容器)"""
+
+    def __init__(self):
+        self._slots: dict[str, dict[str, MemorySlot]] = {}
+
+    def _get_target_session_id(self, session: SessionMetadata, scope: SlotScope) -> str:
+        if scope == SlotScope.GLOBAL:
+            return f"global_u_{session.user_id}" if session.user_id else f"global_s_{session.session_id}"
+        return session.session_id
+
+    async def get_slot(self, session: SessionMetadata, label: str) -> MemorySlot | None:
+        session_sid = self._get_target_session_id(session, SlotScope.SESSION)
+        if session_sid in self._slots and label in self._slots[session_sid]:
+            return self._slots[session_sid][label]
+            
+        global_sid = self._get_target_session_id(session, SlotScope.GLOBAL)
+        if global_sid in self._slots and label in self._slots[global_sid]:
+            return self._slots[global_sid][label]
+            
+        return None
+
+    async def set_slot(self, session: SessionMetadata, slot: MemorySlot) -> None:
+        target_sid = self._get_target_session_id(session, slot.scope)
+        if target_sid not in self._slots:
+            self._slots[target_sid] = {}
+        self._slots[target_sid][slot.label] = slot
+
+    async def delete_slot(self, session: SessionMetadata, label: str, scope: str) -> None:
+        target_sid = self._get_target_session_id(session, SlotScope(scope))
+        if target_sid in self._slots:
+            self._slots[target_sid].pop(label, None)
+
+    async def list_pinned_slots(self, session: SessionMetadata) -> list[MemorySlot]:
+        global_sid = self._get_target_session_id(session, SlotScope.GLOBAL)
+        session_sid = self._get_target_session_id(session, SlotScope.SESSION)
+        
+        merged = {}
+        if global_sid in self._slots:
+            for label, slot in self._slots[global_sid].items():
+                merged[label] = slot
+                
+        if session_sid in self._slots:
+            for label, slot in self._slots[session_sid].items():
+                merged[label] = slot
+                
+        return [s for s in merged.values() if s.pinned and s.content.strip()]
 
 
 class AbstractMemoryRecord(Model):
@@ -320,3 +370,103 @@ def get_orm_chat_context(
     return TortoiseChatContext(
         model_class=model_class, custom_save_hook=custom_save_hook
     )
+
+
+class AbstractSlotRecord(Model):
+    """Tortoise ORM 记忆槽持久化基类 (Mixin)。"""
+    id = fields.CharField(pk=True, max_length=128, description="复合主键: session_id + label")
+    session_id = fields.CharField(max_length=255, index=True)
+    label = fields.CharField(max_length=64, index=True)
+    content = fields.TextField()
+    size_limit = fields.IntField(default=2000)
+    pinned = fields.BooleanField(default=True)
+    scope = fields.CharField(max_length=32)
+    created_at = fields.FloatField()
+    updated_at = fields.FloatField()
+
+    class Meta:  # type: ignore
+        abstract = True
+
+
+class TortoiseSlotContext(BaseSlotContext):
+    def __init__(self, model_class: type[AbstractSlotRecord]):
+        self.model_class = model_class
+
+    def _get_target_session_id(self, session: SessionMetadata, scope: SlotScope) -> str:
+        if scope == SlotScope.GLOBAL:
+            return f"global_u_{session.user_id}" if session.user_id else f"global_s_{session.session_id}"
+        return session.session_id
+
+    def _row_to_slot(self, row: AbstractSlotRecord) -> MemorySlot:
+        return MemorySlot(
+            label=row.label,
+            content=row.content,
+            size_limit=row.size_limit,
+            pinned=row.pinned,
+            scope=SlotScope(row.scope),
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+
+    async def get_slot(self, session: SessionMetadata, label: str) -> MemorySlot | None:
+        session_sid = self._get_target_session_id(session, SlotScope.SESSION)
+        row = await self.model_class.filter(session_id=session_sid, label=label).first()
+        if row:
+            return self._row_to_slot(row)
+            
+        global_sid = self._get_target_session_id(session, SlotScope.GLOBAL)
+        row = await self.model_class.filter(session_id=global_sid, label=label).first()
+        if row:
+            return self._row_to_slot(row)
+        return None
+
+    async def set_slot(self, session: SessionMetadata, slot: MemorySlot) -> None:
+        target_sid = self._get_target_session_id(session, slot.scope)
+        composite_id = f"{target_sid}_{slot.label}"
+        
+        await self.model_class.update_or_create(
+            id=composite_id,
+            defaults={
+                "session_id": target_sid,
+                "label": slot.label,
+                "content": slot.content,
+                "size_limit": slot.size_limit,
+                "pinned": slot.pinned,
+                "scope": slot.scope.value,
+                "created_at": slot.created_at,
+                "updated_at": slot.updated_at,
+            }
+        )
+
+    async def delete_slot(self, session: SessionMetadata, label: str, scope: str) -> None:
+        target_sid = self._get_target_session_id(session, SlotScope(scope))
+        composite_id = f"{target_sid}_{label}"
+        await self.model_class.filter(id=composite_id).delete()
+
+    async def list_pinned_slots(self, session: SessionMetadata) -> list[MemorySlot]:
+        global_sid = self._get_target_session_id(session, SlotScope.GLOBAL)
+        session_sid = self._get_target_session_id(session, SlotScope.SESSION)
+        
+        rows = await self.model_class.filter(
+            session_id__in=[global_sid, session_sid], 
+            pinned=True
+        ).all()
+        
+        # 合并优先级：Session > Global
+        merged = {}
+        for row in rows:
+            if row.scope == SlotScope.GLOBAL.value:
+                merged[row.label] = self._row_to_slot(row)
+                
+        for row in rows:
+            if row.scope == SlotScope.SESSION.value:
+                merged[row.label] = self._row_to_slot(row)
+                
+        return [s for s in merged.values() if s.content.strip()]
+
+
+def get_orm_slot_context(model_class: type[AbstractSlotRecord]) -> TortoiseSlotContext:
+    """
+    [工厂方法] 供第三方开发者调用，将 Tortoise ORM 表直接包装为记忆槽存储系统。
+    """
+    return TortoiseSlotContext(model_class=model_class)

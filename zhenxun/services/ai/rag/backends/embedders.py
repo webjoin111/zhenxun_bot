@@ -70,7 +70,7 @@ class FastEmbedder(Embedder):
             return []
 
         def _sync_embed():
-            return [list(vec) for vec in self.model.embed(texts)]
+            return [vec.tolist() for vec in self.model.embed(texts)]
 
         return await asyncio.to_thread(_sync_embed)
 
