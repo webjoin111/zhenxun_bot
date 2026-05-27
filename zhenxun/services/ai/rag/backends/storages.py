@@ -1,5 +1,5 @@
 import os
-from typing import Protocol, runtime_checkable
+from typing import ClassVar, Protocol, runtime_checkable
 import uuid
 
 import numpy as np
@@ -34,6 +34,10 @@ class StorageBackend(Protocol):
         """删除数据块"""
         ...
 
+    async def get_all(self, scope_prefix: str | None = None) -> list[BaseRecord]:
+        """获取作用域下所有记录（用于容量控制）"""
+        ...
+
 
 def normalize_vector(vec: list[float] | np.ndarray) -> np.ndarray:
     """将一维向量转化为 float32 数组并进行 L2 归一化"""
@@ -54,8 +58,8 @@ def normalize_matrix(mat: np.ndarray) -> np.ndarray:
 class DictStorageBackend(StorageBackend):
     """基于内存字典的轻量级纯净 RAG 存储实现"""
 
-    _shared_records: dict[str, BaseRecord] = {}
-    _shared_vectors: dict[str, np.ndarray] = {}
+    _shared_records: ClassVar[dict[str, BaseRecord]] = {}
+    _shared_vectors: ClassVar[dict[str, np.ndarray]] = {}
 
     def __init__(self):
         self._records = self._shared_records
@@ -112,7 +116,11 @@ class DictStorageBackend(StorageBackend):
                         )
                 except ValueError as e:
                     from zhenxun.services.log import logger
-                    logger.warning(f"⚠️ DictStorage 中缓存的向量维度与当前查询维度不匹配，跳过向量检索。原因: {e}")
+
+                    logger.warning(
+                        "⚠️ DictStorage 中缓存的向量维度与当前查询维度不匹配，"
+                        f"跳过向量检索。原因: {e}"
+                    )
 
             missing_ids = [r_id for r_id in candidate_ids if r_id not in self._vectors]
             for r_id in missing_ids:
@@ -147,6 +155,15 @@ class DictStorageBackend(StorageBackend):
             del self._records[r_id]
             self._vectors.pop(r_id, None)
         return len(to_delete)
+
+    async def get_all(self, scope_prefix: str | None = None) -> list[BaseRecord]:
+        res = []
+        for r in self._records.values():
+            if scope_prefix and scope_prefix != "/":
+                if not r.metadata.get("scope", "").startswith(scope_prefix):
+                    continue
+            res.append(r)
+        return res
 
 
 class AbstractVectorRecord(Model):
@@ -242,7 +259,9 @@ class TortoiseStorageBackend(StorageBackend):
 
             if vec_rows:
                 try:
-                    raw_mat = np.array([r.embedding for r in vec_rows], dtype=np.float32)
+                    raw_mat = np.array(
+                        [r.embedding for r in vec_rows], dtype=np.float32
+                    )
                     norm_mat = normalize_matrix(raw_mat)
                     scores = norm_mat @ q_vec
 
@@ -254,7 +273,11 @@ class TortoiseStorageBackend(StorageBackend):
                         )
                 except ValueError as e:
                     from zhenxun.services.log import logger
-                    logger.warning(f"⚠️ 数据库中缓存的向量维度与当前模型查询维度不匹配，已安全跳过向量检索(降级为稀疏匹配)。原因: {e}")
+
+                    logger.warning(
+                        "⚠️ 数据库中缓存的向量维度与当前模型查询维度不匹配，"
+                        f"已安全跳过向量检索(降级为稀疏匹配)。原因: {e}"
+                    )
 
             for row in missing_rows:
                 results.append(
@@ -290,12 +313,22 @@ class TortoiseStorageBackend(StorageBackend):
 
         return await query.delete()
 
+    async def get_all(self, scope_prefix: str | None = None) -> list[BaseRecord]:
+        query = self.model_class.all()
+        if scope_prefix and scope_prefix != "/":
+            query = query.filter(scope__startswith=scope_prefix)
+        rows = await query
+        return [self._to_base_record(row) for row in rows]
+
 
 class QdrantStorageBackend(StorageBackend):
     """Qdrant 向量数据库可选存储后端"""
 
     def __init__(
-        self, location: str = ":memory:", collection_name: str = "zhenxun_rag", **kwargs
+        self,
+        location: str = ":memory:",
+        collection_name: str = "zhenxun_rag",
+        **kwargs,
     ):
         try:
             from qdrant_client import AsyncQdrantClient
@@ -434,6 +467,35 @@ class QdrantStorageBackend(StorageBackend):
             )
         return 1
 
+    async def get_all(self, scope_prefix: str | None = None) -> list[BaseRecord]:
+        if not await self.client.collection_exists(self.collection_name):
+            return []
+        from qdrant_client.models import FieldCondition, Filter, MatchText
+
+        q_filter = None
+        if scope_prefix and scope_prefix != "/":
+            q_filter = Filter(
+                must=[
+                    FieldCondition(
+                        key="metadata.scope", match=MatchText(text=scope_prefix)
+                    )
+                ]
+            )
+        res = await self.client.scroll(
+            collection_name=self.collection_name,
+            scroll_filter=q_filter,
+            limit=10000,
+            with_payload=True,
+        )
+        return [
+            BaseRecord(
+                id=str(r.id),
+                content=(r.payload or {}).get("content", ""),
+                metadata=(r.payload or {}).get("metadata", {}),
+            )
+            for r in res[0]
+        ]
+
 
 class LanceDBStorageBackend(StorageBackend):
     """LanceDB 向量数据库可选存储后端"""
@@ -518,3 +580,19 @@ class LanceDBStorageBackend(StorageBackend):
         self, record_ids: list[str] | None = None, scope_prefix: str | None = None
     ) -> int:
         return 0
+
+    async def get_all(self, scope_prefix: str | None = None) -> list[BaseRecord]:
+        if self.table_name not in self.db.table_names():
+            return []
+        tbl = self.db.open_table(self.table_name)
+        df = tbl.to_pandas()
+        import ast
+
+        res = []
+        for _, row in df.iterrows():
+            meta = ast.literal_eval(row["metadata"]) if "metadata" in row else {}
+            if scope_prefix and scope_prefix != "/":
+                if not meta.get("scope", "").startswith(scope_prefix):
+                    continue
+            res.append(BaseRecord(id=row["id"], content=row["content"], metadata=meta))
+        return res

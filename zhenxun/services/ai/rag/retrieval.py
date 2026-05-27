@@ -258,8 +258,8 @@ class PipelineRetriever(BaseRetriever):
         return results[:limit]
 
 
-class TimeDecayPostProcessor(PostProcessor):
-    """时间衰减后处理器"""
+class LifecyclePostProcessor(PostProcessor):
+    """生命周期后处理器（融合时间衰减与惰性访问强化）"""
 
     def __init__(
         self,
@@ -267,25 +267,32 @@ class TimeDecayPostProcessor(PostProcessor):
         decay_weight: float = 0.3,
         semantic_weight: float = 0.7,
         importance_weight: float = 0.0,
+        reinforcement_weight: float = 0.2,
     ):
         self.half_life_days = half_life_days
         self.decay_weight = decay_weight
         self.semantic_weight = semantic_weight
         self.importance_weight = importance_weight
+        self.reinforcement_weight = reinforcement_weight
 
     async def process(
         self, results: list[SearchResult], query: str
     ) -> list[SearchResult]:
         now = time.time()
+        import math
         for res in results:
             created_at = res.record.metadata.get("created_at", now)
             importance = res.record.metadata.get("importance", 0.5)
-            age_days = max(0.0, (now - created_at) / 86400.0)
+            access_count = res.record.metadata.get("access_count", 0)
+            last_accessed_at = res.record.metadata.get("last_accessed_at", created_at)
+            age_days = max(0.0, (now - last_accessed_at) / 86400.0)
             decay = 0.5 ** (age_days / self.half_life_days)
+            access_score = min(1.0, math.log1p(access_count) / 5.0)
             res.score = (
                 (self.semantic_weight * res.score)
                 + (self.decay_weight * decay)
                 + (self.importance_weight * importance)
+                + (self.reinforcement_weight * access_score)
             )
 
         results.sort(key=lambda x: x.score, reverse=True)

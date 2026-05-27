@@ -50,12 +50,15 @@ class ContextManagementSettings(BaseModel):
     strategy_kwargs: dict[str, dict[str, Any]] = Field(
         default_factory=lambda: {
             "llm_summary": {
-                "summarization_model": "Gemini/gemini-2.5-flash",
-                "summarization_prompt": "请概括以下对话内容，保留关键的约束条件、用户偏好、已完成的任务状态和未解决的问题。",
+                "summarization_model": None,
+                "summarization_prompt": (
+                    "请概括以下对话内容，保留关键的约束条件、用户偏好、"
+                    "已完成的任务状态和未解决的问题。"
+                ),
                 "keep_recent_turns": 0,
             },
             "structured_summary": {
-                "summarization_model": "Gemini/gemini-2.5-flash",
+                "summarization_model": None,
                 "keep_recent_turns": 0,
             },
         }

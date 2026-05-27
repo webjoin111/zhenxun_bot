@@ -20,7 +20,7 @@ from zhenxun.services.ai.memory.interfaces import (
     BaseChatContext,
     BaseSlotContext,
 )
-from zhenxun.services.ai.memory.models import SessionMetadata, MemorySlot, SlotScope
+from zhenxun.services.ai.memory.models import MemorySlot, SessionMetadata, SlotScope
 from zhenxun.services.ai.rag import BaseRecord, SearchResult
 from zhenxun.services.ai.rag.engine import ScopedRAGClient
 from zhenxun.services.db_context import Model
@@ -34,9 +34,14 @@ class MemoryScope:
         self,
         rag_client: ScopedRAGClient,
         async_write: bool = True,
+        capacity_limit: int = 500,
+        evict_ratio: float = 0.2,
     ):
         self.rag_client = rag_client
         self.async_write = async_write
+        self.capacity_limit = capacity_limit
+        self.evict_ratio = evict_ratio
+        self._background_tasks: set[Any] = set()
 
     async def remember(
         self,
@@ -58,6 +63,12 @@ class MemoryScope:
 
         await self.rag_client.ingest([record], async_write=self.async_write)
 
+        import asyncio
+
+        task = asyncio.create_task(self._evict_if_needed(session.scope_prefix))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
     async def recall(
         self,
         session: SessionMetadata,
@@ -65,13 +76,22 @@ class MemoryScope:
         limit: int = 10,
         metadata_filter: dict[str, Any] | None = None,
     ) -> list[SearchResult]:
-        """委托至 Retriever 检索与重排"""
-        return await self.rag_client.search(
+        """委托至 Retriever 检索与重排，并触发读时惰性强化"""
+        matches = await self.rag_client.search(
             query=query,
             limit=limit,
             scopes=session.accessible_scopes,
             metadata_filters=metadata_filter,
         )
+        if matches:
+            import asyncio
+
+            task = asyncio.create_task(
+                self._reinforce_memories([m.record for m in matches])
+            )
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+        return matches
 
     async def update(
         self,
@@ -99,6 +119,48 @@ class MemoryScope:
         return await self.rag_client.delete(
             record_ids=record_ids,
         )
+
+    async def _reinforce_memories(self, records: list[BaseRecord]):
+        import time
+
+        now = time.time()
+        for r in records:
+            r.metadata["access_count"] = r.metadata.get("access_count", 0) + 1
+            r.metadata["last_accessed_at"] = now
+            await self.rag_client.storage.update(r)
+
+    async def _evict_if_needed(self, scope_prefix: str):
+        records = await self.rag_client.storage.get_all(scope_prefix)
+        if len(records) > self.capacity_limit * 1.1:
+            import math
+            import time
+
+            now = time.time()
+            scored_records = []
+            for r in records:
+                meta = r.metadata
+                created_at = meta.get("created_at", now)
+                last_acc = meta.get("last_accessed_at", created_at)
+                imp = meta.get("importance", 0.5)
+                acc = meta.get("access_count", 0)
+                age_days = max(0.0, (now - last_acc) / 86400.0)
+                decay = 0.5 ** (age_days / 30.0)
+                acc_score = min(1.0, math.log1p(acc) / 5.0)
+                score = (0.3 * decay) + (0.3 * imp) + (0.4 * acc_score)
+                scored_records.append((score, r.id))
+
+            scored_records.sort(key=lambda x: x[0])
+            evict_count = int(self.capacity_limit * self.evict_ratio)
+            to_delete = [r_id for _, r_id in scored_records[:evict_count]]
+            if to_delete:
+                await self.rag_client.delete(to_delete, scope_prefix=scope_prefix)
+                from zhenxun.services.log import logger
+
+                logger.info(
+                    "🧹 [容量管理] 作用域 "
+                    f"{scope_prefix} 记忆数超限，已静默清理最冷数据 "
+                    f"{len(to_delete)} 条。"
+                )
 
 
 class InMemoryChatContext(BaseChatContext):
@@ -143,18 +205,22 @@ class InMemorySlotContext(BaseSlotContext):
 
     def _get_target_session_id(self, session: SessionMetadata, scope: SlotScope) -> str:
         if scope == SlotScope.GLOBAL:
-            return f"global_u_{session.user_id}" if session.user_id else f"global_s_{session.session_id}"
+            return (
+                f"global_u_{session.user_id}"
+                if session.user_id
+                else f"global_s_{session.session_id}"
+            )
         return session.session_id
 
     async def get_slot(self, session: SessionMetadata, label: str) -> MemorySlot | None:
         session_sid = self._get_target_session_id(session, SlotScope.SESSION)
         if session_sid in self._slots and label in self._slots[session_sid]:
             return self._slots[session_sid][label]
-            
+
         global_sid = self._get_target_session_id(session, SlotScope.GLOBAL)
         if global_sid in self._slots and label in self._slots[global_sid]:
             return self._slots[global_sid][label]
-            
+
         return None
 
     async def set_slot(self, session: SessionMetadata, slot: MemorySlot) -> None:
@@ -163,7 +229,9 @@ class InMemorySlotContext(BaseSlotContext):
             self._slots[target_sid] = {}
         self._slots[target_sid][slot.label] = slot
 
-    async def delete_slot(self, session: SessionMetadata, label: str, scope: str) -> None:
+    async def delete_slot(
+        self, session: SessionMetadata, label: str, scope: str
+    ) -> None:
         target_sid = self._get_target_session_id(session, SlotScope(scope))
         if target_sid in self._slots:
             self._slots[target_sid].pop(label, None)
@@ -171,16 +239,16 @@ class InMemorySlotContext(BaseSlotContext):
     async def list_pinned_slots(self, session: SessionMetadata) -> list[MemorySlot]:
         global_sid = self._get_target_session_id(session, SlotScope.GLOBAL)
         session_sid = self._get_target_session_id(session, SlotScope.SESSION)
-        
+
         merged = {}
         if global_sid in self._slots:
             for label, slot in self._slots[global_sid].items():
                 merged[label] = slot
-                
+
         if session_sid in self._slots:
             for label, slot in self._slots[session_sid].items():
                 merged[label] = slot
-                
+
         return [s for s in merged.values() if s.pinned and s.content.strip()]
 
 
@@ -374,7 +442,10 @@ def get_orm_chat_context(
 
 class AbstractSlotRecord(Model):
     """Tortoise ORM 记忆槽持久化基类 (Mixin)。"""
-    id = fields.CharField(pk=True, max_length=128, description="复合主键: session_id + label")
+
+    id = fields.CharField(
+        pk=True, max_length=128, description="复合主键: session_id + label"
+    )
     session_id = fields.CharField(max_length=255, index=True)
     label = fields.CharField(max_length=64, index=True)
     content = fields.TextField()
@@ -394,7 +465,11 @@ class TortoiseSlotContext(BaseSlotContext):
 
     def _get_target_session_id(self, session: SessionMetadata, scope: SlotScope) -> str:
         if scope == SlotScope.GLOBAL:
-            return f"global_u_{session.user_id}" if session.user_id else f"global_s_{session.session_id}"
+            return (
+                f"global_u_{session.user_id}"
+                if session.user_id
+                else f"global_s_{session.session_id}"
+            )
         return session.session_id
 
     def _row_to_slot(self, row: AbstractSlotRecord) -> MemorySlot:
@@ -413,7 +488,7 @@ class TortoiseSlotContext(BaseSlotContext):
         row = await self.model_class.filter(session_id=session_sid, label=label).first()
         if row:
             return self._row_to_slot(row)
-            
+
         global_sid = self._get_target_session_id(session, SlotScope.GLOBAL)
         row = await self.model_class.filter(session_id=global_sid, label=label).first()
         if row:
@@ -423,7 +498,7 @@ class TortoiseSlotContext(BaseSlotContext):
     async def set_slot(self, session: SessionMetadata, slot: MemorySlot) -> None:
         target_sid = self._get_target_session_id(session, slot.scope)
         composite_id = f"{target_sid}_{slot.label}"
-        
+
         await self.model_class.update_or_create(
             id=composite_id,
             defaults={
@@ -435,10 +510,12 @@ class TortoiseSlotContext(BaseSlotContext):
                 "scope": slot.scope.value,
                 "created_at": slot.created_at,
                 "updated_at": slot.updated_at,
-            }
+            },
         )
 
-    async def delete_slot(self, session: SessionMetadata, label: str, scope: str) -> None:
+    async def delete_slot(
+        self, session: SessionMetadata, label: str, scope: str
+    ) -> None:
         target_sid = self._get_target_session_id(session, SlotScope(scope))
         composite_id = f"{target_sid}_{label}"
         await self.model_class.filter(id=composite_id).delete()
@@ -446,22 +523,20 @@ class TortoiseSlotContext(BaseSlotContext):
     async def list_pinned_slots(self, session: SessionMetadata) -> list[MemorySlot]:
         global_sid = self._get_target_session_id(session, SlotScope.GLOBAL)
         session_sid = self._get_target_session_id(session, SlotScope.SESSION)
-        
+
         rows = await self.model_class.filter(
-            session_id__in=[global_sid, session_sid], 
-            pinned=True
+            session_id__in=[global_sid, session_sid], pinned=True
         ).all()
-        
-        # 合并优先级：Session > Global
+
         merged = {}
         for row in rows:
             if row.scope == SlotScope.GLOBAL.value:
                 merged[row.label] = self._row_to_slot(row)
-                
+
         for row in rows:
             if row.scope == SlotScope.SESSION.value:
                 merged[row.label] = self._row_to_slot(row)
-                
+
         return [s for s in merged.values() if s.content.strip()]
 
 

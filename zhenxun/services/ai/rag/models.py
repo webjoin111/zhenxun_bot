@@ -109,9 +109,9 @@ class QueryRewriteConfig(BaseModel):
     """意图重写使用的模型名称"""
 
 
-class TimeDecayConfig(BaseModel):
+class LifecycleConfig(BaseModel):
     enable: bool = False
-    """是否开启时间衰减打分后处理"""
+    """是否开启生命周期打分(时间衰减+访问强化)后处理"""
     half_life_days: int = 30
     """半衰期天数"""
     decay_weight: float = 0.3
@@ -120,6 +120,8 @@ class TimeDecayConfig(BaseModel):
     """语义相似度权重"""
     importance_weight: float = 0.0
     """重要性打分权重"""
+    reinforcement_weight: float = 0.2
+    """访问强化得分权重"""
 
 
 class RAGConfig(BaseModel):
@@ -128,6 +130,8 @@ class RAGConfig(BaseModel):
     """存储后端"""
     embedder: Any | None = None
     """向量化引擎"""
+    custom_retriever: Any | None = None
+    """自定义召回器"""
     scopes: str | list[str] = "/"
     """数据隔离作用域"""
     chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
@@ -140,8 +144,8 @@ class RAGConfig(BaseModel):
     """重排配置"""
     hybrid: HybridSearchConfig = Field(default_factory=HybridSearchConfig)
     """混合检索与 RRF 融合配置"""
-    time_decay: TimeDecayConfig = Field(default_factory=TimeDecayConfig)
-    """时间衰减配置"""
+    lifecycle: LifecycleConfig = Field(default_factory=LifecycleConfig)
+    """生命周期打分配置"""
     query_rewrite: QueryRewriteConfig = Field(default_factory=QueryRewriteConfig)
     """查询意图重写配置"""
     synonyms: dict[str, list[str]] = Field(default_factory=dict)

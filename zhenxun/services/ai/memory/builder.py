@@ -158,7 +158,7 @@ class MemoryBuilder:
         trigger_tokens: int = 4000,
         max_turns: int | None = None,
         keep_recent_turns: int = 0,
-        summarization_model: str = "Gemini/gemini-2.5-flash",
+        summarization_model: str | None = None,
         summarization_prompt: str = "请概括以下对话内容，保留关键的约束条件、用户偏好、已完成的任务状态和未解决的问题。",  # noqa: E501
     ) -> Self:
         """
@@ -188,7 +188,7 @@ class MemoryBuilder:
         trigger_tokens: int = 4000,
         max_turns: int | None = None,
         keep_recent_turns: int = 0,
-        summarization_model: str = "Gemini/gemini-2.5-flash",
+        summarization_model: str | None = None,
     ) -> Self:
         """
         配置使用结构化 JSON 提取作为上下文压缩策略。

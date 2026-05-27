@@ -43,6 +43,13 @@ class VectorKnowledge(BaseKnowledge):
         "4. **基于事实**：必须仅根据检索到的内容回答，严禁编造信息。"
     )
 
+    default_auto_inject_template = (
+        "### 📚 [本地知识库自动检索结果]\n"
+        "基于用户的最新提问，系统后台已自动为你检索了以下参考资料。"
+        "请你务必优先结合以下资料回答用户的问题，严禁编造：\n\n"
+        "{knowledge_text}"
+    )
+
     _global_storage: Any = None
 
     def __init__(
@@ -50,6 +57,7 @@ class VectorKnowledge(BaseKnowledge):
         rag_client: ScopedRAGClient | None = None,
         injection_mode: Literal["tool", "auto", "smart"] = "tool",
         query_rewrite_model: str | None = None,
+        auto_inject_template: str | None = None,
         **kwargs: Any,
     ):
         """
@@ -65,6 +73,9 @@ class VectorKnowledge(BaseKnowledge):
         """  # noqa: E501
         self.injection_mode = injection_mode
         self.query_rewrite_model = query_rewrite_model
+        self.auto_inject_template = (
+            auto_inject_template or self.default_auto_inject_template
+        )
 
         if injection_mode in ("auto", "smart"):
             config = kwargs.get("config")
@@ -215,12 +226,7 @@ class VectorKnowledge(BaseKnowledge):
             )
 
         knowledge_text = "\n\n======\n\n".join(formatted_results)
-        system_prompt = (
-            "### 📚 [本地知识库自动检索结果]\n"
-            "基于用户的最新提问，系统后台已自动为你检索了以下参考资料。"
-            "请你务必优先结合以下资料回答用户的问题，严禁编造：\n\n"
-            f"{knowledge_text}"
-        )
+        system_prompt = self.auto_inject_template.format(knowledge_text=knowledge_text)
 
         messages.insert(0, LLMMessage.system(system_prompt))
 

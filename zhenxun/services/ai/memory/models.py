@@ -109,6 +109,12 @@ class MemoryScoringConfig(BaseModel):
     """时间衰减的半衰期(天)"""
     consolidation_threshold: float = Field(default=0.85)
     """触发记忆整合的相似度阈值 (高于此阈值的旧记忆将参与合并判断)"""
+    reinforcement_weight: float = Field(default=0.2)
+    """访问强化的加权权重 (被检索越多得分越高)"""
+    capacity_limit: int = Field(default=500)
+    """单用户/群组长期记忆容量软上限，超载后触发惰性清理"""
+    evict_ratio: float = Field(default=0.2)
+    """触发容量上限后，淘汰冷数据的比例"""
 
 
 class ShortTermConfig(BaseModel):

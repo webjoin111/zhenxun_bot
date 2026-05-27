@@ -17,13 +17,13 @@ from zhenxun.services.ai.rag.indexing import (
 from zhenxun.services.ai.rag.models import RAGConfig
 from zhenxun.services.ai.rag.retrieval import (
     BaseRetriever,
+    LifecyclePostProcessor,
     LLMQueryRewritePreProcessor,
     PipelineRetriever,
     PostProcessor,
     PreProcessor,
     RerankRetriever,
     StaticSynonymPreProcessor,
-    TimeDecayPostProcessor,
     VectorDBRetriever,
 )
 from zhenxun.services.log import logger
@@ -45,6 +45,11 @@ class RAGBuilder:
     def with_embedder(self, embedder: Any) -> "RAGBuilder":
         """设置向量化引擎"""
         self._config.embedder = embedder
+        return self
+
+    def with_retriever(self, retriever: BaseRetriever) -> "RAGBuilder":
+        """替换底层的向量库查表算法，注入自定义召回器"""
+        self._config.custom_retriever = retriever
         return self
 
     def with_scope(self, scopes: str | list[str]) -> "RAGBuilder":
@@ -103,19 +108,21 @@ class RAGBuilder:
         self._config.query_rewrite.model_name = model_name
         return self
 
-    def enable_time_decay(
+    def enable_lifecycle_scoring(
         self,
         half_life_days: int = 30,
         decay_weight: float = 0.3,
         semantic_weight: float = 0.7,
         importance_weight: float = 0.0,
+        reinforcement_weight: float = 0.2,
     ) -> "RAGBuilder":
-        """开启时间衰减打分后处理"""
-        self._config.time_decay.enable = True
-        self._config.time_decay.half_life_days = half_life_days
-        self._config.time_decay.decay_weight = decay_weight
-        self._config.time_decay.semantic_weight = semantic_weight
-        self._config.time_decay.importance_weight = importance_weight
+        """开启生命周期打分后处理"""
+        self._config.lifecycle.enable = True
+        self._config.lifecycle.half_life_days = half_life_days
+        self._config.lifecycle.decay_weight = decay_weight
+        self._config.lifecycle.semantic_weight = semantic_weight
+        self._config.lifecycle.importance_weight = importance_weight
+        self._config.lifecycle.reinforcement_weight = reinforcement_weight
         return self
 
     def add_pre_processor(self, processor: PreProcessor) -> "RAGBuilder":
@@ -172,7 +179,7 @@ class RAGBuilder:
         nodes.append(StorageCommitNode(storage))
         pipeline = IndexPipeline(nodes)
 
-        base_retriever: BaseRetriever = VectorDBRetriever(
+        base_retriever: BaseRetriever = cfg.custom_retriever or VectorDBRetriever(
             storage,
             embedder,
             scopes[0] if isinstance(scopes, list) else scopes,
@@ -207,13 +214,14 @@ class RAGBuilder:
             pre_processors.append(StaticSynonymPreProcessor(synonyms=cfg.synonyms))
 
         post_processors = list(cfg.post_processors)
-        if cfg.time_decay.enable:
+        if cfg.lifecycle.enable:
             post_processors.append(
-                TimeDecayPostProcessor(
-                    half_life_days=cfg.time_decay.half_life_days,
-                    decay_weight=cfg.time_decay.decay_weight,
-                    semantic_weight=cfg.time_decay.semantic_weight,
-                    importance_weight=cfg.time_decay.importance_weight,
+                LifecyclePostProcessor(
+                    half_life_days=cfg.lifecycle.half_life_days,
+                    decay_weight=cfg.lifecycle.decay_weight,
+                    semantic_weight=cfg.lifecycle.semantic_weight,
+                    importance_weight=cfg.lifecycle.importance_weight,
+                    reinforcement_weight=cfg.lifecycle.reinforcement_weight,
                 )
             )
 

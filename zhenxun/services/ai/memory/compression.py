@@ -11,6 +11,7 @@ from zhenxun.services.ai.core.messages import (
     ToolMessage,
     VideoPart,
 )
+from zhenxun.services.ai.llm.manager import get_default_model
 from zhenxun.services.ai.memory.interfaces import (
     BaseMemoryReducer,
 )
@@ -71,7 +72,7 @@ class MultimodalPlaceholderReducer(BaseMemoryReducer):
             has_multimodal = False
             if isinstance(msg.content, list):
                 has_multimodal = any(
-                    isinstance(p, (ImagePart, AudioPart, VideoPart, FilePart))
+                    isinstance(p, ImagePart | AudioPart | VideoPart | FilePart)
                     or (isinstance(p, TextPart) and "[多模态内容:" in p.text)
                     for p in msg.content
                 )
@@ -115,7 +116,10 @@ class ToolOutputCompactor(BaseMemoryReducer):
                         head = text[:300]
                         tail = text[-300:]
                         omitted = len(text) - 600
-                        new_output = f"{head}\n\n...[由于上下文限制，已静默省略 {omitted} 个字符]...\n\n{tail}"
+                        new_output = (
+                            f"{head}\n\n...[由于上下文限制，已静默省略 "
+                            f"{omitted} 个字符]...\n\n{tail}"
+                        )
                         new_part = model_copy(
                             return_part, update={"output": new_output}
                         )
@@ -184,8 +188,11 @@ class LLMSummarizerReducer(BaseMemoryReducer):
         keep_recent_turns: int = 0,
         trigger_tokens: int = 4000,
         max_turns: int | None = None,
-        summarization_model: str = "Gemini/gemini-2.5-flash",
-        summarization_prompt: str = "请概括以下对话内容，保留关键的约束条件、用户偏好、已完成的任务状态和未解决的问题。",
+        summarization_model: str | None = None,
+        summarization_prompt: str = (
+            "请概括以下对话内容，保留关键的约束条件、用户偏好、"
+            "已完成的任务状态和未解决的问题。"
+        ),
     ):
         self.keep_recent_turns = keep_recent_turns
         self.trigger_tokens = trigger_tokens
@@ -245,9 +252,10 @@ class LLMSummarizerReducer(BaseMemoryReducer):
         from zhenxun.services.ai.llm.api import chat
 
         try:
+            model_to_use = self.summarization_model or get_default_model("chat")
             response = await chat(
                 prompt_text,
-                model=self.summarization_model,
+                model=model_to_use,
                 instruction="你是后台记忆整理引擎。请客观、简明输出当前对话全局摘要。",
             )
             new_summary_msg = LLMMessage.assistant_text_response(
@@ -274,7 +282,7 @@ class StructuredSummaryReducer(BaseMemoryReducer):
         keep_recent_turns: int = 0,
         trigger_tokens: int = 4000,
         max_turns: int | None = None,
-        summarization_model: str = "Gemini/gemini-2.5-flash",
+        summarization_model: str | None = None,
     ):
         self.keep_recent_turns = keep_recent_turns
         self.trigger_tokens = trigger_tokens
@@ -319,7 +327,10 @@ class StructuredSummaryReducer(BaseMemoryReducer):
         to_summarize = working_msgs[:split_idx]
         to_keep = working_msgs[split_idx:]
 
-        prompt_text = "你是一个专门用于长上下文状态压缩的引擎。请阅读以下先前的总结和旧对话，提取核心状态信息，并合并它们。\n\n"
+        prompt_text = (
+            "你是一个专门用于长上下文状态压缩的引擎。请阅读以下先前的总结和"
+            "旧对话，提取核心状态信息，并合并它们。\n\n"
+        )
         if prev_summary:
             prompt_text += f"<之前的状态摘要>\n{prev_summary}\n</之前的状态摘要>\n\n"
         prompt_text += "<需要合并的旧对话记录>\n"
@@ -347,10 +358,11 @@ class StructuredSummaryReducer(BaseMemoryReducer):
                     description="当前状态，如重要变量、玩家血量、关键物品坐标等。"
                 )
 
+            model_to_use = self.summarization_model or get_default_model("chat")
             summary_obj = await generate_structured(
                 prompt_text,
                 response_model=StateSummary,
-                model=self.summarization_model,
+                model=model_to_use,
                 instruction="请提取并合并先前的状态和最新的对话内容，保持精简，不要编造事实。",
             )
 
@@ -421,8 +433,11 @@ class MemoryPolicy:
         trigger_tokens: int = 4000,
         max_turns: int | None = None,
         keep_recent_turns: int = 0,
-        summarization_model: str = "Gemini/gemini-2.5-flash",
-        summarization_prompt: str = "请概括以下对话内容，保留关键的约束条件、用户偏好、已完成的任务状态和未解决的问题。",
+        summarization_model: str | None = None,
+        summarization_prompt: str = (
+            "请概括以下对话内容，保留关键的约束条件、用户偏好、"
+            "已完成的任务状态和未解决的问题。"
+        ),
     ) -> list[BaseMemoryReducer]:
         """LLM 总结压缩模式。Token 达标后，自动将历史对话合并为一段 Summary。"""
         return [
@@ -442,7 +457,7 @@ class MemoryPolicy:
         trigger_tokens: int = 4000,
         max_turns: int | None = None,
         keep_recent_turns: int = 0,
-        summarization_model: str = "Gemini/gemini-2.5-flash",
+        summarization_model: str | None = None,
     ) -> list[BaseMemoryReducer]:
         """结构化总结压缩模式。使用 JSON Schema 强制大模型提取核心状态。"""
         return [

@@ -25,20 +25,7 @@ class NullConsolidator(Consolidator):
 class LLMConsolidator(Consolidator):
     """基于大模型的智能数据融合器"""
 
-    def __init__(self, model_name: str | None = None):
-        self.model_name = model_name
-
-    async def consolidate(
-        self, new_content: str, existing_records: list[BaseRecord]
-    ) -> ConsolidationPlan:
-        if not existing_records:
-            return ConsolidationPlan(actions=[], insert_new=True)
-
-        records_str = ""
-        for r in existing_records:
-            records_str += f"- [ID: {r.id}] 内容: {r.content}\n"
-
-        prompt = f"""你是一个高级知识库的记忆整合引擎。
+    default_prompt_template = """你是一个高级知识库的记忆整合引擎。
 最新输入的内容是：
 <new_memory>
 {new_content}
@@ -59,12 +46,38 @@ class LLMConsolidator(Consolidator):
    - 如果你已经将新信息合并到了某个旧记录的 update 动作中，或者旧记录已经包含了新信息，请务必设置 insert_new=False。
    - 如果这是一条完全独立的新信息，请设置 insert_new=True。"""  # noqa: E501
 
+    def __init__(
+        self,
+        model_name: str | None = None,
+        prompt_template: str | None = None,
+    ):
+        self.model_name = model_name
+        self.prompt_template = prompt_template or self.default_prompt_template
+
+    async def consolidate(
+        self, new_content: str, existing_records: list[BaseRecord]
+    ) -> ConsolidationPlan:
+        if not existing_records:
+            return ConsolidationPlan(actions=[], insert_new=True)
+
+        records_str = ""
+        for r in existing_records:
+            records_str += f"- [ID: {r.id}] 内容: {r.content}\n"
+
+        prompt = self.prompt_template.format(
+            new_content=new_content,
+            records_str=records_str,
+        )
+
+        from zhenxun.services.ai.llm.manager import get_default_model
+        model_to_use = self.model_name or get_default_model("chat")
+
         try:
             logger.debug("🧠 正在启动 RAG 数据融合分析 (Consolidation)...")
             plan = await generate_structured(
                 message=prompt,
                 response_model=ConsolidationPlan,
-                model=self.model_name,
+                model=model_to_use,
                 instruction="严格按照逻辑判断，不要遗失关键细节。",
             )
             return plan

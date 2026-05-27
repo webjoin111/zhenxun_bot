@@ -131,11 +131,12 @@ class GlobalMemoryManager:
                 threshold=scoring_cfg.consolidation_threshold,
             )
 
-        builder.enable_time_decay(
+        builder.enable_lifecycle_scoring(
             half_life_days=scoring_cfg.recency_half_life_days,
             decay_weight=scoring_cfg.recency_weight,
             semantic_weight=scoring_cfg.semantic_weight,
             importance_weight=scoring_cfg.importance_weight,
+            reinforcement_weight=scoring_cfg.reinforcement_weight,
         )
 
         client = builder.build()
@@ -143,6 +144,8 @@ class GlobalMemoryManager:
         return MemoryScope(
             rag_client=client,
             async_write=config.long_term.async_write,
+            capacity_limit=scoring_cfg.capacity_limit,
+            evict_ratio=scoring_cfg.evict_ratio,
         )
 
 
