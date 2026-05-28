@@ -1,3 +1,4 @@
+from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from io import BytesIO
 import mimetypes
@@ -31,6 +32,7 @@ from zhenxun.services.ai.core.messages import (
 )
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_dump
+from zhenxun.utils.utils import infer_plugin_namespace
 
 S = TypeVar("S", bound=Segment)
 
@@ -42,36 +44,43 @@ class MessageBuilder:
     """
 
     _MESSAGE_CONVERTERS: ClassVar[
-        dict[type, Callable[[Any], Awaitable[list[LLMMessage]]]]
-    ] = {}
+        dict[type, dict[str, Callable[[Any], Awaitable[list[LLMMessage]]]]]
+    ] = defaultdict(dict)
 
     _SEGMENT_HANDLERS: ClassVar[
         dict[
             type[Segment],
-            Callable[[Any], Awaitable[LLMContentPart | list[LLMContentPart] | None]],
+            dict[
+                str,
+                Callable[
+                    [Any], Awaitable[LLMContentPart | list[LLMContentPart] | None]
+                ],
+            ],
         ]
-    ] = {}
+    ] = defaultdict(dict)
 
     @classmethod
-    def register_segment_handler(cls, seg_type: type[S]):
+    def register_segment_handler(cls, seg_type: type[S], scope: str | None = None):
         """装饰器：注册 Uniseg 消息段的处理器"""
+        ns = scope if scope is not None else infer_plugin_namespace()
 
         def decorator(
             func: Callable[
                 [S], Awaitable[LLMContentPart | list[LLMContentPart] | None]
             ],
         ):
-            cls._SEGMENT_HANDLERS[seg_type] = func
+            cls._SEGMENT_HANDLERS[seg_type][ns] = func
             return func
 
         return decorator
 
     @classmethod
-    def register_message_converter(cls, msg_type: type):
+    def register_message_converter(cls, msg_type: type, scope: str | None = None):
         """装饰器：注册全局消息体类型的转换器"""
+        ns = scope if scope is not None else infer_plugin_namespace()
 
         def decorator(func: Callable[[Any], Awaitable[list[LLMMessage]]]):
-            cls._MESSAGE_CONVERTERS[msg_type] = func
+            cls._MESSAGE_CONVERTERS[msg_type][ns] = func
             return func
 
         return decorator
@@ -163,10 +172,13 @@ class MessageBuilder:
         raise TypeError(f"不支持的输入类型用于构建 ContentPart: {type(item)}")
 
     @classmethod
-    async def unimsg_to_llm_parts(cls, message: UniMessage) -> list[UserContentUnion]:
+    async def unimsg_to_llm_parts(
+        cls, message: UniMessage, namespace: str = "global"
+    ) -> list[UserContentUnion]:
         parts: list[UserContentUnion] = []
         for seg in message:
-            handler = cls._SEGMENT_HANDLERS.get(type(seg))
+            handler_dict = cls._SEGMENT_HANDLERS.get(type(seg), {})
+            handler = handler_dict.get(namespace) or handler_dict.get("global")
             if handler:
                 try:
                     part = await handler(seg)
@@ -192,7 +204,7 @@ class MessageBuilder:
 
     @classmethod
     async def _fetch_reply_as_parts(
-        cls, bot: Any, event: Any
+        cls, bot: Any, event: Any, namespace: str = "global"
     ) -> list[LLMContentPart] | None:
         """提取公共引用抓取与解析逻辑"""
         try:
@@ -213,7 +225,7 @@ class MessageBuilder:
 
             uni_msg = uni_msg.exclude(Reply)
 
-            parts = await cls.unimsg_to_llm_parts(uni_msg)
+            parts = await cls.unimsg_to_llm_parts(uni_msg, namespace=namespace)
             if not parts:
                 return None
 
@@ -233,6 +245,7 @@ class MessageBuilder:
         instruction: str | None = None,
         bot: Any = None,
         event: Any = None,
+        namespace: str = "global",
     ) -> list[LLMMessage]:
         messages = []
         if instruction:
@@ -263,7 +276,9 @@ class MessageBuilder:
                 should_fetch_reply = False
 
             if bot_inst and event_inst and should_fetch_reply:
-                parts = await cls._fetch_reply_as_parts(bot_inst, event_inst)
+                parts = await cls._fetch_reply_as_parts(
+                    bot_inst, event_inst, namespace=namespace
+                )
                 if parts:
                     reply_parts = parts
         except Exception as e:
@@ -271,8 +286,13 @@ class MessageBuilder:
 
         converted_msgs: list[LLMMessage] = []
         converted = False
-        for msg_type, converter in cls._MESSAGE_CONVERTERS.items():
+        for msg_type, converter_dict in cls._MESSAGE_CONVERTERS.items():
             if isinstance(message, msg_type):
+                converter = converter_dict.get(namespace) or converter_dict.get(
+                    "global"
+                )
+                if not converter:
+                    continue
                 converted_msgs = await converter(message)
                 converted = True
                 break
@@ -316,13 +336,13 @@ class MessageBuilder:
         return UniMessage.of(message)
 
 
-@MessageBuilder.register_message_converter(UniMessage)
+@MessageBuilder.register_message_converter(UniMessage, scope="global")
 async def _convert_unimessage(msg: UniMessage) -> list[LLMMessage]:
     content_parts = await MessageBuilder.unimsg_to_llm_parts(msg)
     return [LLMMessage.user(content_parts)]
 
 
-@MessageBuilder.register_segment_handler(Text)
+@MessageBuilder.register_segment_handler(Text, scope="global")
 async def _handle_text(seg: Text) -> TextPart | None:
     return TextPart(text=seg.text) if seg.text.strip() else None
 
@@ -349,7 +369,7 @@ def _extract_media_kwargs(seg: Segment, default_mime: str) -> dict | None:
     return None
 
 
-@MessageBuilder.register_segment_handler(Image)
+@MessageBuilder.register_segment_handler(Image, scope="global")
 async def _handle_image(seg: Image) -> ImagePart | None:
     if not seg.raw and not getattr(seg, "path", None):
         try:
@@ -399,17 +419,17 @@ async def _process_audio_seg(seg: Audio | Voice) -> AudioPart | None:
     return AudioPart(**kwargs) if kwargs else None
 
 
-@MessageBuilder.register_segment_handler(Audio)
+@MessageBuilder.register_segment_handler(Audio, scope="global")
 async def _handle_audio(seg: Audio) -> AudioPart | None:
     return await _process_audio_seg(seg)
 
 
-@MessageBuilder.register_segment_handler(Voice)
+@MessageBuilder.register_segment_handler(Voice, scope="global")
 async def _handle_voice(seg: Voice) -> AudioPart | None:
     return await _process_audio_seg(seg)
 
 
-@MessageBuilder.register_segment_handler(Video)
+@MessageBuilder.register_segment_handler(Video, scope="global")
 async def _handle_video(seg: Video) -> VideoPart | None:
     if not seg.raw and not getattr(seg, "path", None) and seg.url:
         from zhenxun.utils.http_utils import AsyncHttpx
@@ -428,7 +448,7 @@ async def _handle_video(seg: Video) -> VideoPart | None:
 from nonebot_plugin_alconna.uniseg import At, AtAll, Reply
 
 
-@MessageBuilder.register_segment_handler(Reply)
+@MessageBuilder.register_segment_handler(Reply, scope="global")
 async def _handle_reply(seg: Reply) -> list[LLMContentPart] | LLMContentPart | None:
     try:
         from nonebot.matcher import current_bot, current_event
@@ -438,18 +458,23 @@ async def _handle_reply(seg: Reply) -> list[LLMContentPart] | LLMContentPart | N
         if not bot or not event:
             return None
 
-        return await MessageBuilder._fetch_reply_as_parts(bot, event)
+        from zhenxun.services.ai.run import get_current_run_context
+
+        ctx = get_current_run_context()
+        ns = getattr(ctx.session, "namespace", "global") if ctx else "global"
+
+        return await MessageBuilder._fetch_reply_as_parts(bot, event, namespace=ns)
     except Exception as e:
         logger.warning(f"拉取引用消息代理失败: {e}")
         return None
 
 
-@MessageBuilder.register_segment_handler(AtAll)
+@MessageBuilder.register_segment_handler(AtAll, scope="global")
 async def _handle_at_all(seg: AtAll) -> TextPart:
     return TextPart(text="[@全体成员] ")
 
 
-@MessageBuilder.register_segment_handler(At)
+@MessageBuilder.register_segment_handler(At, scope="global")
 async def _handle_at(seg: At) -> TextPart:
     if seg.display:
         return TextPart(text=f"[@{seg.display}] ")

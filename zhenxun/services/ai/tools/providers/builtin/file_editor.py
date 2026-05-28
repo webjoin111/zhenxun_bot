@@ -1,130 +1,192 @@
-import json
 from typing import Any, Literal, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from zhenxun.services.ai.llm.api import generate_structured
-from zhenxun.services.ai.run import Inject, RunContext
+from zhenxun.services.ai.core.exceptions import ToolRetryError
+from zhenxun.services.ai.run import RunContext
 from zhenxun.services.ai.sandbox.models import SandboxSecurityProfile
 from zhenxun.services.ai.tools.core.decorators import tool
 from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
-from zhenxun.services.ai.tools.models import ToolErrorResult, ToolErrorType, ToolResult
+from zhenxun.services.ai.tools.models import ToolResult
 from zhenxun.services.log import logger
-from zhenxun.utils.pydantic_compat import model_dump
 
 
-class FileEditorEngine:
-    """
-    纯逻辑 Diff 文件编辑引擎。
-    完全无状态，操作字符串，负责提供安全的视图、替换和插入逻辑。
-    """
-
-    @staticmethod
-    def view(content: str, start_line: int = 1, end_line: int = -1) -> str:
-        """
-        获取带有行号的文件视图。
-        格式如:
-          12 | def foo():
-          13 |     pass
-        """
-        if not content:
-            return "[文件为空]"
-
-        lines = content.replace("\r\n", "\n").split("\n")
-        total_lines = len(lines)
-
-        start_line = max(1, start_line)
-        end_line = total_lines if end_line == -1 else min(total_lines, end_line)
-
-        if start_line > total_lines:
-            return f"[起始行号 {start_line} 超出文件总行数 {total_lines}]"
-
-        output = []
-        for i in range(start_line - 1, end_line):
-            output.append(f"{i + 1: >4} | {lines[i]}")
-
-        return "\n".join(output)
-
-    @staticmethod
-    def replace(content: str, old_str: str, new_str: str) -> str:
-        """
-        安全替换文件内容。
-        严格要求 old_str 必须在文本中 [唯一匹配]。
-        """
-        if not old_str:
-            raise ValueError("替换失败：old_str 不能为空。")
-
-        content = content.replace("\r\n", "\n")
-        old_str = old_str.replace("\r\n", "\n")
-        new_str = new_str.replace("\r\n", "\n")
-
-        occurrences = content.count(old_str)
-
-        if occurrences == 0:
-            raise ValueError(
-                "替换失败：在文件中未找到指定的 old_str。\n"
-                "提示：请确保你提供的 old_str 的缩进、空格和换行与源文件 [完全一致]。"
-            )
-        elif occurrences > 1:
-            raise ValueError(
-                f"替换失败：在文件中找到了 {occurrences} 处匹配的 old_str。\n"
-                "提示：请提供更多的上下文（包括前后的完整代码行），以确保只匹配到你要修改的那一处。"
-            )
-
-        return content.replace(old_str, new_str)
-
-    @staticmethod
-    def insert(content: str, line_number: int, new_str: str) -> str:
-        """
-        在指定的行号之后插入新内容。
-        line_number = 0 表示插入在文件最开头。
-        line_number = 1 表示插入在第1行之后。
-        """
-        content = content.replace("\r\n", "\n")
-        lines = content.split("\n") if content else []
-        total_lines = len(lines) if content else 0
-
-        if line_number < 0 or line_number > total_lines:
-            raise ValueError(
-                f"插入失败：行号 {line_number} 超出文件范围 (0-{total_lines})。"
-            )
-
-        new_str_lines = new_str.replace("\r\n", "\n").split("\n")
-
-        lines[line_number:line_number] = new_str_lines
-
-        return "\n".join(lines)
+class PatchError(Exception):
+    pass
 
 
-class EditReflexion(BaseModel):
-    command: Literal["view", "create", "replace", "insert", "undo"]
+class PatchOperation(BaseModel):
+    op_type: Literal["update", "add"]
     path: str
-    old_str: str = ""
-    new_str: str = ""
-    insert_line: int = -1
-    start_line: int = 1
-    end_line: int = -1
+    hunks: list[dict[str, list[str]]] = Field(default_factory=list)
+    new_content: list[str] = Field(default_factory=list)
+
+
+class PatchParser:
+    """
+    纯文本的 Patch 解析器，不依赖第三方库。
+    支持解析类似 OpenAI Sandbox 的高宽容度 Diff 语法。
+    """
+
+    @classmethod
+    def parse(cls, text: str) -> list[PatchOperation]:
+        lines = text.splitlines()
+        operations: list[PatchOperation] = []
+        current_op: PatchOperation | None = None
+        current_hunk: dict[str, list[str]] | None = None
+        in_patch = False
+
+        for line in lines:
+            stripped = line.strip()
+            if stripped == "*** Begin Patch":
+                in_patch = True
+                continue
+            if stripped == "*** End Patch":
+                in_patch = False
+                if current_op:
+                    if current_hunk and (
+                        current_hunk["search"] or current_hunk["replace"]
+                    ):
+                        current_op.hunks.append(current_hunk)
+                    operations.append(current_op)
+                    current_op = None
+                continue
+
+            if not in_patch:
+                continue
+
+            if line.startswith("*** Update File: "):
+                if current_op:
+                    if current_hunk and (
+                        current_hunk["search"] or current_hunk["replace"]
+                    ):
+                        current_op.hunks.append(current_hunk)
+                    operations.append(current_op)
+                current_op = PatchOperation(op_type="update", path=line[17:].strip())
+                current_hunk = None
+                continue
+
+            if line.startswith("*** Add File: "):
+                if current_op:
+                    if current_hunk and (
+                        current_hunk["search"] or current_hunk["replace"]
+                    ):
+                        current_op.hunks.append(current_hunk)
+                    operations.append(current_op)
+                current_op = PatchOperation(op_type="add", path=line[14:].strip())
+                current_hunk = None
+                continue
+
+            if not current_op:
+                continue
+
+            if current_op.op_type == "add":
+                if line.startswith("+"):
+                    current_op.new_content.append(line[1:])
+                continue
+
+            if current_op.op_type == "update":
+                if line.startswith("@@"):
+                    if current_hunk and (
+                        current_hunk["search"] or current_hunk["replace"]
+                    ):
+                        current_op.hunks.append(current_hunk)
+                    current_hunk = {"search": [], "replace": []}
+                    continue
+
+                if current_hunk is not None:
+                    if line.startswith("-"):
+                        current_hunk["search"].append(line[1:])
+                    elif line.startswith("+"):
+                        current_hunk["replace"].append(line[1:])
+                    elif line.startswith(" ") or line == "":
+                        content = line[1:] if line.startswith(" ") else line
+                        current_hunk["search"].append(content)
+                        current_hunk["replace"].append(content)
+                    else:
+                        current_hunk["search"].append(line)
+                        current_hunk["replace"].append(line)
+
+        if current_op and current_op not in operations:
+            if current_hunk and (current_hunk["search"] or current_hunk["replace"]):
+                current_op.hunks.append(current_hunk)
+            operations.append(current_op)
+
+        return operations
+
+
+class PatchApplier:
+    """执行具体的补丁合并操作，带容错搜索"""
+
+    @classmethod
+    def apply_diff(
+        cls, original: str, search_lines: list[str], replace_lines: list[str]
+    ) -> str:
+        orig_lines = original.splitlines()
+        search_len = len(search_lines)
+
+        if search_len == 0:
+            raise PatchError("无效的 Hunk：没有提供需要匹配的上下文或删除行。")
+
+        matches = []
+        for i in range(len(orig_lines) - search_len + 1):
+            if orig_lines[i : i + search_len] == search_lines:
+                matches.append(i)
+
+        if not matches:
+            stripped_search = [s.rstrip() for s in search_lines]
+            for i in range(len(orig_lines) - search_len + 1):
+                if [
+                    s.rstrip() for s in orig_lines[i : i + search_len]
+                ] == stripped_search:
+                    matches.append(i)
+
+        if len(matches) == 0:
+            err_context = "\n".join(search_lines)
+            raise PatchError(
+                f"匹配失败：无法在源文件中找到以下代码块。请确保你提供了充分的上下文行，且缩进一致：\n{err_context}"
+            )
+        if len(matches) > 1:
+            raise PatchError(
+                f"匹配歧义：找到了 {len(matches)} 处相同的代码块。请在 @@ Hunk 中提供更多的上下文行以便唯一定位。"
+            )
+
+        idx = matches[0]
+        new_lines = orig_lines[:idx] + replace_lines + orig_lines[idx + search_len :]
+        return "\n".join(new_lines) + ("\n" if original.endswith("\n") else "")
 
 
 class FileEditorToolkit(BaseToolkit):
     """
-    基于 Diff 的智能文件编辑器工具箱。
-    赋予大模型局部修改大文件的能力，避免全量覆写导致的 Token 爆炸和幻觉错位。
+    智能文件编辑器工具箱。
+    支持高级的、专为大模型设计的 Diff 语法，彻底消除全量覆写导致的代码幻觉。
     """
 
     default_instructions = (
-        "## 智能文件编辑器\n"
-        "你拥有高级的文件编辑权限。要求在修改文件时，**严禁**全量覆写。请遵循以下工作流：\n"
-        "1. **预览**：使用 `view` 指令确认文件内容和准确行号。\n"
-        "2. **精准替换**：使用 `replace` 命令。`old_str` 必须与原始内容完全一致（包括缩进和空格）。\n"  # noqa: E501
-        "3. **行后插入**：使用 `insert` 命令在指定行号后新增内容。\n"
-        "4. **自愈与撤销**：新文件使用 `create`，若修改引发语法错误，系统会自动回滚，请根据报错修正。"  # noqa: E501
+        "## 智能文件编辑器 (apply_patch)\n"
+        "你拥有修改沙箱文件的权限。当需要修改或创建文件时，你**必须**使用 `apply_patch` 工具。\n"
+        "该工具使用一种简化、高宽容度的 Diff 语法。由于它是 FREEFORM 的字符串工具，"
+        "请直接将补丁作为长字符串参数传入，不要额外包装在 JSON 键里。\n\n"
+        "【语法规范】：\n"
+        "*** Begin Patch\n"
+        "*** Update File: src/main.py\n"
+        "@@\n"
+        " 保持不变的上下文行\n"
+        "-需要删除的旧代码\n"
+        "+需要插入的新代码\n"
+        " 保持不变的上下文行\n"
+        "*** End Patch\n\n"
+        "【要求】：\n"
+        "1. 支持的操作有 `*** Update File: <path>` 和 `*** Add File: <path>`。\n"
+        "2. 对于 Update，必须提供至少 1-2 行的上下文（以空格开头），以便系统精确定位你要修改的位置。\n"
+        "3. 新增行必须以 `+` 开头，删除行以 `-` 开头。\n"
+        "4. 如果要创建新文件，使用 `*** Add File: <path>`，后面的每一行都以 `+` 开头。\n"
+        "5. 一次调用可以包含多个 `*** Update File:` 或 `@@` 块。"
     )
 
     def __init__(self, profile: SandboxSecurityProfile | None = None, **kwargs: Any):
         super().__init__(**kwargs)
         self.profile = profile or SandboxSecurityProfile()
-        self._history: dict[str, dict[str, str]] = {}
 
     async def _get_executor(self, context: RunContext):
         from zhenxun.services.ai.sandbox.manager import sandbox_manager
@@ -132,217 +194,63 @@ class FileEditorToolkit(BaseToolkit):
         session_id = context.session_id or "default_editor_session"
         return await sandbox_manager.get_or_create_session(session_id, self.profile)
 
-    def _save_history(self, session_id: str, path: str, content: str):
-        if session_id not in self._history:
-            self._history[session_id] = {}
-        self._history[session_id][path] = content
-
-    async def _lint_and_rollback_if_failed(
-        self, executor, path: str, old_content: str, command: str
-    ) -> None:
-        """对修改后的文件进行语法检查，如果失败则回滚并抛出异常供影子闭环反思"""
-        if not path.endswith(".py"):
-            return
-
-        from zhenxun.services.ai.sandbox.extension import (
-            SupportsCommandExecution,
-            SupportsFileSystem,
-        )
-
-        cmd_exec = cast(SupportsCommandExecution, executor)
-        fs_exec = cast(SupportsFileSystem, executor)
-
-        try:
-            check_res = await cmd_exec.execute_raw_command(
-                f"python3 -m py_compile {path}"
-            )
-        except NotImplementedError:
-            return
-
-        if check_res.exit_code != 0:
-            if command == "create":
-                await fs_exec.delete_raw_file(path)
-            else:
-                await fs_exec.write_raw_file(path, old_content)
-            error_msg = check_res.stderr or check_res.stdout
-            raise ValueError(
-                f"你提交的修改引入了致命的 Python 语法错误，系统已自动回滚了你的修改！\n请仔细阅读以下 Linter 错误信息，并在下一次工具调用中修正你的代码：\n{error_msg}"  # noqa: E501
-            )
-
     @tool(
-        name="edit_file",
-        description="高级文件编辑工具。支持 view(查看), create(创建), replace(精准替换), insert(按行号插入), undo(撤销)。",  # noqa: E501
+        name="apply_patch",
+        description="基于简化 Diff 语法的多文件精确编辑器。传入复合语法的纯文本补丁包即可执行创建、修改等操作。",
     )
-    async def edit_file(
+    async def apply_patch(
         self,
-        command: Literal["view", "create", "replace", "insert", "undo"],
-        path: str,
+        patch_content: str,
         context: RunContext,
-        ui: Inject.UI,
-        old_str: str = "",
-        new_str: str = "",
-        insert_line: int = -1,
-        start_line: int = 1,
-        end_line: int = -1,
-    ) -> ToolResult:
-        current_args = {
-            "command": command,
-            "path": path,
-            "old_str": old_str,
-            "new_str": new_str,
-            "insert_line": insert_line,
-            "start_line": start_line,
-            "end_line": end_line,
-        }
-
-        await ui.send_text(f"📝 正在通过沙箱执行文件操作: {command} {path}...")
-        max_retries = 2
-        for attempt in range(max_retries + 1):
-            try:
-                return await self._edit_file_impl(context=context, **current_args)
-            except ValueError as ve:
-                if attempt == max_retries:
-                    err_result = ToolErrorResult(
-                        error_type=ToolErrorType.INVALID_ARGUMENTS,
-                        message=str(ve),
-                        is_retryable=True,
-                    )
-                    return (
-                        ToolResult(
-                            output=json.dumps(
-                                model_dump(err_result), ensure_ascii=False
-                            )
-                        )
-                        .show_to_user(f"❌ 编辑失败: {ve}")
-                        .as_error()
-                    )
-
-                logger.info(f"📝 触发影子反思闭环 (第 {attempt + 1} 次重试): {ve}")
-
-                prompt = (
-                    f"你在尝试使用 `edit_file` 工具修改文件时发生了错误。\n"
-                    f"【你传入的参数】\n"
-                    f"{json.dumps(current_args, ensure_ascii=False, indent=2)}\n\n"
-                    f"【系统抛出的错误】\n"
-                    f"{ve}\n\n"
-                    f"请深度反思这个错误。如果是 Linter 语法错误，请检查你的缩进、变量名和标点符号。\n"  # noqa: E501
-                    f"如果是 replace 匹配失败，请注意 `old_str` 必须与源文件一字不差。\n"  # noqa: E501
-                    f"⚠️ 警告：你必须且只能修正 `new_str` 等内容参数，你的 `command` 参数必须严格保持为 `{command}`，绝对不允许擅自改为 view 等其他指令！\n"  # noqa: E501
-                    f"请重新输出修正后的完整参数。"
-                )
-
-                try:
-                    fixed_args = await generate_structured(
-                        prompt, response_model=EditReflexion
-                    )
-                    current_args = model_dump(fixed_args)
-                except Exception as llm_e:
-                    logger.error(f"影子反思 LLM 请求失败: {llm_e}")
-                    return ToolResult(output=str(ve)).as_error()
-
-        return ToolResult(output="未知错误").as_error()
-
-    async def _edit_file_impl(
-        self,
-        command: str,
-        path: str,
-        context: RunContext,
-        old_str: str = "",
-        new_str: str = "",
-        insert_line: int = -1,
-        start_line: int = 1,
-        end_line: int = -1,
     ) -> ToolResult:
         executor = await self._get_executor(context)
-        session_id = context.session_id or "default_editor_session"
-
         from zhenxun.services.ai.sandbox.extension import SupportsFileSystem
 
         fs_executor = cast(SupportsFileSystem, executor)
 
-        content = ""
-        if command != "create":
-            read_res = await fs_executor.read_raw_file(path)
-            if read_res.startswith("Error: File") or read_res.startswith("Failed to"):
-                if command == "view":
-                    raise ValueError(f"文件不存在: {path}")
-                elif command == "undo":
-                    pass
-                else:
-                    raise ValueError(
-                        f"操作失败：文件 {path} 不存在。请先使用 create 命令创建它。"
-                    )
-            else:
-                content = read_res
-
-        if command == "view":
-            view_res = FileEditorEngine.view(content, start_line, end_line)
-            return ToolResult(output=f"文件 {path} 的视图如下:\n{view_res}").with_log(
-                f"👀 查看文件 {path}"
-            )
-
-        elif command == "create":
-            check_res = await fs_executor.read_raw_file(path)
-            if not (
-                check_res.startswith("Error: File") or check_res.startswith("Failed to")
-            ):
-                raise ValueError(
-                    f"创建失败：文件 {path} 已存在。如果你想修改它，请使用 replace 或 insert。"  # noqa: E501
+        try:
+            ops = PatchParser.parse(patch_content)
+            if not ops:
+                raise ToolRetryError(
+                    "解析补丁失败：未找到合法的 *** Begin Patch 和操作。请严格检查语法。"
                 )
 
-            if not new_str:
-                raise ValueError("创建失败：new_str 不能为空。")
+            reports = []
+            for op in ops:
+                if op.op_type == "add":
+                    new_content = "\n".join(op.new_content)
+                    await fs_executor.write_raw_file(op.path, new_content)
+                    reports.append(f"成功创建文件: {op.path}")
 
-            await fs_executor.write_raw_file(path, new_str)
-            self._save_history(session_id, path, "")
+                elif op.op_type == "update":
+                    old_content = await fs_executor.read_raw_file(op.path)
+                    if old_content.startswith("Error: File") or old_content.startswith(
+                        "Failed to"
+                    ):
+                        raise ToolRetryError(
+                            f"文件不存在，无法 Update：{op.path}。请先使用 *** Add File 创建。"
+                        )
 
-            await self._lint_and_rollback_if_failed(executor, path, "", "create")
+                    current_text = old_content
+                    for hunk in op.hunks:
+                        try:
+                            current_text = PatchApplier.apply_diff(
+                                current_text, hunk["search"], hunk["replace"]
+                            )
+                        except PatchError as e:
+                            raise ToolRetryError(
+                                f"在文件 {op.path} 中应用补丁失败：{e}"
+                            )
 
-            return ToolResult(output=f"✅ 文件 {path} 创建成功！").with_log(
-                f"📝 创建文件 {path}"
+                    await fs_executor.write_raw_file(op.path, current_text)
+                    reports.append(f"成功更新文件: {op.path}")
+
+            return ToolResult(output="\n".join(reports)).show_to_user(
+                "📝 成功通过 apply_patch 修改了文件"
             )
 
-        elif command == "replace":
-            if not old_str:
-                raise ValueError("替换失败：old_str 不能为空。")
-
-            new_content = FileEditorEngine.replace(content, old_str, new_str)
-
-            self._save_history(session_id, path, content)
-            await fs_executor.write_raw_file(path, new_content)
-
-            await self._lint_and_rollback_if_failed(executor, path, content, "replace")
-
-            return ToolResult(
-                output=f"✅ 文件 {path} 局部替换成功！你可以使用 view 命令检查修改后的结果。"
-            ).with_log(f"🔄 替换文件 {path} 内容")
-
-        elif command == "insert":
-            if insert_line < 0:
-                raise ValueError("插入失败：请提供有效的 insert_line 行号。")
-            if not new_str:
-                raise ValueError("插入失败：new_str 不能为空。")
-
-            new_content = FileEditorEngine.insert(content, insert_line, new_str)
-
-            self._save_history(session_id, path, content)
-            await fs_executor.write_raw_file(path, new_content)
-
-            await self._lint_and_rollback_if_failed(executor, path, content, "insert")
-
-            return ToolResult(
-                output=f"✅ 成功在 {path} 的第 {insert_line} 行之后插入了代码！"
-            ).with_log(f"➕ 在 {path} 插入内容")
-
-        elif command == "undo":
-            old_content = self._history.get(session_id, {}).get(path)
-            if old_content is None:
-                raise ValueError(f"撤销失败：找不到 {path} 的历史修改记录。")
-
-            await fs_executor.write_raw_file(path, old_content)
-            return ToolResult(
-                output=f"✅ 文件 {path} 已成功回滚到上一次的状态！"
-            ).with_log(f"⏪ 撤销文件 {path} 的修改")
-
-        else:
-            raise ValueError(f"未知指令: {command}")
+        except ToolRetryError as e:
+            raise e
+        except Exception as e:
+            logger.error(f"apply_patch 发生内部异常: {e}")
+            raise ToolRetryError(f"应用补丁时发生致命异常: {e}")

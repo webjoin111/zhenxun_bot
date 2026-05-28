@@ -57,6 +57,7 @@ from zhenxun.services.ai.tools.models import (
 )
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_construct, model_copy
+from zhenxun.utils.utils import infer_plugin_namespace
 
 if TYPE_CHECKING:
     from zhenxun.services.ai.run.models import StreamedRunResult
@@ -129,8 +130,6 @@ class Agent(
             if not isinstance(knowledge, list):
                 knowledge = [knowledge]
             self.tool_definitions.extend(knowledge)
-
-        from zhenxun.utils.utils import infer_plugin_namespace
 
         self.namespace = infer_plugin_namespace() or "unknown"
 
@@ -580,8 +579,12 @@ class Agent(
 
             dynamic_caps.append(TaskTrackingCapability(task_obj, self.name))
 
+        base_caps = GLOBAL_CAPABILITIES.get("global", []).copy()
+        if self.namespace != "global" and self.namespace in GLOBAL_CAPABILITIES:
+            base_caps.extend(GLOBAL_CAPABILITIES[self.namespace])
+
         combined_cap = CombinedCapability(
-            GLOBAL_CAPABILITIES
+            base_caps
             + getattr(context, "capabilities", [])
             + self.capabilities
             + dynamic_caps

@@ -1,3 +1,4 @@
+from collections import defaultdict
 import inspect
 from typing import Annotated, Any, ClassVar
 
@@ -5,6 +6,8 @@ from nonebot.adapters import Bot, Event
 from nonebot.matcher import Matcher
 from nonebot.utils import is_coroutine_callable
 from nonebot_plugin_session import EventSession, extract_session
+
+from zhenxun.utils.utils import infer_plugin_namespace
 
 from .context import ProviderFunc, RunContext, _is_run_context_type
 from .hitl import HITLController
@@ -59,28 +62,22 @@ class Inject:
     用于在工具参数中快捷获取群聊/用户的上下文，或注册自定义的依赖提供者。
     """
 
-    _providers: ClassVar[dict[str, ProviderFunc]] = {}
+    _providers: ClassVar[dict[str, dict[str, ProviderFunc]]] = defaultdict(dict)
 
     @classmethod
-    def register_provider(cls, key: str, provider: ProviderFunc) -> None:
+    def register_provider(
+        cls, key: str, provider: ProviderFunc, scope: str | None = None
+    ) -> None:
         """
         (底层) 注册一个自定义的依赖提供者。
-        provider 函数接收 RunContext 作为唯一参数，支持同步或异步。
-        推荐使用 @Inject.provider(key) 装饰器。
         """
-        cls._providers[key] = provider
+        ns = scope if scope is not None else infer_plugin_namespace()
+        cls._providers[key][ns] = provider
 
     @classmethod
-    def provider(cls, key: str):
-        """
-        注册依赖提供者的装饰器。
-        示例:
-            @Inject.provider("my_db")
-            async def get_db(ctx: RunContext) -> AsyncSession: ...
-        """
-
+    def provider(cls, key: str, scope: str | None = None):
         def decorator(func: ProviderFunc) -> ProviderFunc:
-            cls._providers[key] = func
+            cls.register_provider(key, func, scope)
             return func
 
         return decorator
@@ -221,7 +218,10 @@ class TypeSugarResolver(BaseParamResolver):
         if marker_key in context.di_cache:
             return context.di_cache[marker_key]
 
-        provider = Inject._providers.get(marker_key)
+        provider_dict = Inject._providers.get(marker_key, {})
+        ns = getattr(context.session, "namespace", "global")
+        provider = provider_dict.get(ns) or provider_dict.get("global")
+
         if not provider:
             raise ValueError(f"未知的类型糖标记或未注册的 Provider: {marker_key}")
 
@@ -281,7 +281,8 @@ class DependencyInjector:
                     continue
 
                 raise ValueError(
-                    f"参数 '{name}' 未被大模型提供且缺少显式的依赖注入标记(如 Inject.* 或 RunContext)。"
+                    f"参数 '{name}' 未被大模型提供且缺少显式的依赖注入标记"
+                    "(如 Inject.* 或 RunContext)。"
                 )
 
         return resolved_kwargs
@@ -290,32 +291,45 @@ class DependencyInjector:
 DependencyInjector.register(RunContextResolver())
 DependencyInjector.register(TypeSugarResolver())
 
-Inject.register_provider("user_id", lambda ctx: ctx.get_user_id())
-Inject.register_provider("group_id", lambda ctx: ctx.get_group_id())
-Inject.register_provider("platform", lambda ctx: ctx.get_platform())
-Inject.register_provider("bot", lambda ctx: ctx.get_bot())
-Inject.register_provider("event", lambda ctx: ctx.get_event())
-Inject.register_provider("matcher", lambda ctx: ctx.get_matcher())
+Inject.register_provider("user_id", lambda ctx: ctx.get_user_id(), scope="global")
+Inject.register_provider("group_id", lambda ctx: ctx.get_group_id(), scope="global")
+Inject.register_provider("platform", lambda ctx: ctx.get_platform(), scope="global")
+Inject.register_provider("bot", lambda ctx: ctx.get_bot(), scope="global")
+Inject.register_provider("event", lambda ctx: ctx.get_event(), scope="global")
+Inject.register_provider("matcher", lambda ctx: ctx.get_matcher(), scope="global")
 
-Inject.register_provider("hitl", lambda ctx: HITLController(ctx))
-Inject.register_provider("model_name", lambda ctx: ctx.run.current_model)
+Inject.register_provider("hitl", lambda ctx: HITLController(ctx), scope="global")
+Inject.register_provider(
+    "model_name", lambda ctx: ctx.run.current_model, scope="global"
+)
 
-Inject.register_provider("tool_retries", lambda ctx: ctx.call.retry_count)
+Inject.register_provider(
+    "tool_retries", lambda ctx: ctx.call.retry_count, scope="global"
+)
 
-Inject.register_provider("original_input", lambda ctx: ctx.run.user_input)
-Inject.register_provider("state", lambda ctx: ctx.state)
-Inject.register_provider("upstream_results", lambda ctx: ctx.upstream_results)
-Inject.register_provider("shared_state", lambda ctx: ctx.session.shared_state)
+Inject.register_provider(
+    "original_input", lambda ctx: ctx.run.user_input, scope="global"
+)
+Inject.register_provider("state", lambda ctx: ctx.state, scope="global")
+Inject.register_provider(
+    "upstream_results", lambda ctx: ctx.upstream_results, scope="global"
+)
+Inject.register_provider(
+    "shared_state", lambda ctx: ctx.session.shared_state, scope="global"
+)
 
 
 def _resolve_blackboard(ctx: RunContext):
     bb = ctx.session.blackboard
     if bb is None:
-        raise ValueError("Inject.Blackboard 注入失败：当前会话上下文中未挂载 BlackboardManager 实例。")
+        raise ValueError(
+            "Inject.Blackboard 注入失败："
+            "当前会话上下文中未挂载 BlackboardManager 实例。"
+        )
     return bb
 
 
-Inject.register_provider("blackboard", _resolve_blackboard)
+Inject.register_provider("blackboard", _resolve_blackboard, scope="global")
 
 
 def _resolve_session(ctx):
@@ -324,8 +338,8 @@ def _resolve_session(ctx):
     return extract_session(bot, event) if bot and event else None
 
 
-Inject.register_provider("session", _resolve_session)
-Inject.register_provider("ui", lambda ctx: UIController(ctx))
+Inject.register_provider("session", _resolve_session, scope="global")
+Inject.register_provider("ui", lambda ctx: UIController(ctx), scope="global")
 
 
 def _resolve_toolkit_state(ctx: RunContext):
@@ -336,17 +350,19 @@ def _resolve_toolkit_state(ctx: RunContext):
     tk = getattr(tool, "parent_toolkit", None)
     if not tk or not hasattr(tk, "get_active_state"):
         raise RuntimeError(
-            f"工具 '{getattr(tool, 'name', 'unknown')}' 所属的 Toolkit 不支持状态管理 (非 GroupSharedToolkit/UserPersonalToolkit)"
+            f"工具 '{getattr(tool, 'name', 'unknown')}' 所属的 Toolkit "
+            "不支持状态管理 (非 GroupSharedToolkit/UserPersonalToolkit)"
         )
     state = tk.get_active_state(ctx.session_id)
     if state is None:
         raise RuntimeError(
-            f"状态工具箱 {tk.__class__.__name__} 的状态未初始化，请确保已正确执行 enter_session。"
+            f"状态工具箱 {tk.__class__.__name__} 的状态未初始化，"
+            "请确保已正确执行 enter_session。"
         )
     return state
 
 
-Inject.register_provider("toolkit_state", _resolve_toolkit_state)
+Inject.register_provider("toolkit_state", _resolve_toolkit_state, scope="global")
 
 
 __all__ = [

@@ -73,7 +73,8 @@ class UnifiedManifestProvisioner(BaseProvisioner):
         hash_check = await cmd_driver.execute_raw_command("cat /workspace/.zx_env_hash")
         if hash_check.exit_code == 0 and hash_check.stdout.strip() == target_hash:
             logger.info(
-                f"[Sandbox] ⚡ 环境指纹 ({target_hash[:8]}) 匹配成功，跳过所有依赖安装环节！"
+                f"[Sandbox] ⚡ 环境指纹 ({target_hash[:8]}) "
+                "匹配成功，跳过所有依赖安装环节！"
             )
             return True
 
@@ -83,7 +84,9 @@ class UnifiedManifestProvisioner(BaseProvisioner):
                 f"[Sandbox] 正在为 '{driver.session_id}' 安装系统级依赖: {pkg_str}"
             )
             await cmd_driver.execute_raw_command(
-                f"sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq {pkg_str}",
+                "sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && "
+                "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
+                f"{pkg_str}",
                 timeout=300,
             )
 
@@ -100,7 +103,8 @@ class UnifiedManifestProvisioner(BaseProvisioner):
                 )
 
             logger.info(
-                f"[Sandbox] 正在为 '{driver.session_id}' 极速安装 Python 依赖: {pkg_str}"
+                f"[Sandbox] 正在为 '{driver.session_id}' 极速安装 "
+                f"Python 依赖: {pkg_str}"
             )
             res = await cmd_driver.execute_raw_command(
                 f"uv pip install --system {pkg_str}", timeout=120
@@ -108,7 +112,8 @@ class UnifiedManifestProvisioner(BaseProvisioner):
 
             if res.exit_code != 0:
                 logger.warning(
-                    f"[Sandbox] uv 安装报错，可能遇到不兼容的原生包，尝试降级使用 pip: {res.stderr}"
+                    "[Sandbox] uv 安装报错，可能遇到不兼容的原生包，"
+                    f"尝试降级使用 pip: {res.stderr}"
                 )
                 await cmd_driver.execute_raw_command(
                     f"pip install {pkg_str} -q", timeout=180
@@ -119,7 +124,8 @@ class UnifiedManifestProvisioner(BaseProvisioner):
                 res = await cmd_driver.execute_raw_command(f"command -v {binary}")
                 if res.exit_code != 0:
                     logger.warning(
-                        f"⚠️ [Sandbox] 警告：沙箱 '{driver.session_id}' 缺失声明的前置命令: {binary}"
+                        f"⚠️ [Sandbox] 警告：沙箱 '{driver.session_id}' "
+                        f"缺失声明的前置命令: {binary}"
                     )
 
         if env_setup.install_scripts:
@@ -154,14 +160,18 @@ class UnifiedManifestProvisioner(BaseProvisioner):
                 )
             else:
                 await cmd_driver.execute_raw_command(
-                    "pip install -q -r requirements.txt", cwd=workspace_dir, timeout=300
+                    "pip install -q -r requirements.txt",
+                    cwd=workspace_dir,
+                    timeout=300,
                 )
 
         check_npm = await cmd_driver.execute_raw_command(
             f"test -f {workspace_dir}/package.json"
         )
         if check_npm.exit_code == 0:
-            logger.info("[UnifiedProvisioner] 发现 package.json，正在安装 npm 依赖...")
+            logger.info(
+                "[UnifiedProvisioner] 发现 package.json，正在安装 npm 依赖..."
+            )
             await cmd_driver.execute_raw_command(
                 "npm install --no-fund --no-audit --loglevel=error",
                 cwd=workspace_dir,

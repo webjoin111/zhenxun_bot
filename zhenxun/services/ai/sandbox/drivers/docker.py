@@ -1,15 +1,11 @@
 import asyncio
-import base64
 import io
 from pathlib import Path
 import re
 import socket
 import tarfile
-from typing import TYPE_CHECKING, Any
-import uuid
 
-import aiohttp
-import httpx
+import aiodocker
 
 from zhenxun.configs.config import Config
 from zhenxun.services.ai.sandbox.extension import (
@@ -20,41 +16,13 @@ from zhenxun.services.ai.sandbox.extension import (
     SupportsPortMapping,
 )
 from zhenxun.services.ai.sandbox.models import (
+    SandboxCapabilities,
     SandboxExecutionResult,
     SandboxSecurityProfile,
 )
 from zhenxun.services.log import logger
-from zhenxun.utils.pydantic_compat import model_dump, model_validate
 
 from .base import BaseSandboxDriver
-from .ipc_models import (
-    IpcCmdRunRequest,
-    IpcCmdRunResponse,
-    IpcFsDeleteRequest,
-    IpcFsReadRequest,
-    IpcFsReadResponse,
-    IpcFsWriteRequest,
-    IpcMcpStartRequest,
-    IpcPtyCloseRequest,
-    IpcPtyInputRequest,
-    IpcPtyInterruptRequest,
-    IpcPtyScreenRequest,
-    IpcPtyScreenResponse,
-    IpcPtyStartRequest,
-    IpcPtyStartResponse,
-)
-
-try:
-    import aiodocker as _aiodocker
-
-    aiodocker: Any = _aiodocker
-    DOCKER_AVAILABLE = True
-except ImportError:
-    aiodocker = None
-    DOCKER_AVAILABLE = False
-
-if TYPE_CHECKING:
-    pass
 
 
 def _find_free_port() -> int:
@@ -64,65 +32,79 @@ def _find_free_port() -> int:
 
 
 class DockerInteractiveTerminalSession(InteractiveTerminalSession):
-    """直连 OS Server 的 PTY 会话 (Track B)"""
+    """原生 PTY 交互式会话：接管 Docker API Stream 流并清洗 ANSI 逃逸码"""
 
     def __init__(self, driver: "DockerDriver"):
         self.driver = driver
         self._lock = asyncio.Lock()
-        self.pty_id = None
-        self.ws_headers = {}
+        self.stream = None
+        self._read_task = None
+        self.buffer = ""
+        self.ansi_escape = re.compile(r"(?:\x1B[@-_]|[\x80-\x9F])[0-?]*[ -/]*[@-~]")
 
     async def start(self, cmd: str, env: dict[str, str] | None = None) -> None:
         async with self._lock:
-            req = IpcPtyStartRequest(command=cmd, env=env)
-            resp = await self.driver._ipc_request(
-                "POST", "/pty/start", json=model_dump(req), timeout=10
+            if not self.driver.container:
+                raise RuntimeError("沙箱容器未启动")
+
+            cmd_list = ["/bin/sh", "-c", cmd] if isinstance(cmd, str) else cmd
+            env_list = [f"{k}={v}" for k, v in env.items()] if env else None
+
+            exec_inst = await self.driver.container.exec(
+                cmd=cmd_list,
+                tty=True,
+                stdin=True,
+                stdout=True,
+                stderr=True,
+                workdir="/workspace",
+                environment=env_list,
             )
-            if resp.status_code == 200:
-                parsed = model_validate(IpcPtyStartResponse, resp.json())
-                self.pty_id = parsed.pty_id
-            else:
-                raise RuntimeError(f"Failed to start PTY: {resp.text}")
+
+            self.stream = exec_inst.start(detach=False)
+            await self.stream.__aenter__()
+
+            self._read_task = asyncio.create_task(self._read_loop())
+
+    async def _read_loop(self):
+        try:
+            while True:
+                if not self.stream:
+                    break
+                msg = await self.stream.read_out()
+                if msg is None:
+                    break
+
+                text = msg.data.decode("utf-8", errors="replace")
+                clean_text = self.ansi_escape.sub("", text)
+                self.buffer += clean_text
+
+                if len(self.buffer) > 10000:
+                    self.buffer = self.buffer[-10000:]
+        except Exception as e:
+            logger.debug(f"[PTY] 流读取正常结束或中断: {e}")
 
     async def send_input(self, text: str) -> None:
         async with self._lock:
-            if not self.pty_id:
-                return
-            req = IpcPtyInputRequest(pty_id=self.pty_id, data=text)
-            await self.driver._ipc_request(
-                "POST", "/pty/input", json=model_dump(req), timeout=5
-            )
+            if self.stream:
+                await self.stream.write_in(text.encode("utf-8"))
 
     async def read_output(self, timeout: int = 5) -> str:
         async with self._lock:
-            if not self.pty_id:
-                return ""
-            req = IpcPtyScreenRequest(pty_id=self.pty_id)
-            resp = await self.driver._ipc_request(
-                "POST", "/pty/screen", json=model_dump(req), timeout=timeout
-            )
-            if resp.status_code == 200:
-                parsed = model_validate(IpcPtyScreenResponse, resp.json())
-                return parsed.screen
-            return ""
+            lines = self.buffer.split("\n")
+            return "\n".join(lines[-50:]).strip()
 
     async def interrupt(self) -> None:
         async with self._lock:
-            if not self.pty_id:
-                return
-            req = IpcPtyInterruptRequest(pty_id=self.pty_id)
-            await self.driver._ipc_request(
-                "POST", "/pty/interrupt", json=model_dump(req), timeout=5
-            )
+            if self.stream:
+                await self.stream.write_in(b"\x03")
 
     async def close(self) -> None:
         async with self._lock:
-            if self.pty_id:
-                req = IpcPtyCloseRequest(pty_id=self.pty_id)
-                await self.driver._ipc_request(
-                    "POST", "/pty/close", json=model_dump(req), timeout=5
-                )
-                self.pty_id = None
+            if self._read_task:
+                self._read_task.cancel()
+            if self.stream:
+                await self.stream.close()
+                self.stream = None
 
 
 class DockerDriver(
@@ -133,56 +115,33 @@ class DockerDriver(
     SupportsPortMapping,
 ):
     """
-    Docker 驱动 (Jupyter 升维版)：启动带 Jupyter 的长连接有状态容器.
-    - 通过 WebSocket 原生捕获图片 (matplotlib) 和执行流。
-    - 变量状态可在多轮对话中持久保存。
+    Docker 驱动 (原生协议版)：
+    完全抛弃寄生服务器，拥抱 aiodocker 原生 API 进行执行和文件读写。
+    零依赖，支持任何第三方纯净镜像。
     """
 
     _global_docker_client = None
-    _global_http_session = None
     _init_lock = asyncio.Lock()
+    _engine_available: bool = False
 
-    async def _ipc_request(self, method: str, path: str, **kwargs):
-        """自带容器死亡自愈机制的安全 IPC 通道"""
+    @classmethod
+    def set_engine_status(cls, status: bool) -> None:
+        """由框架启动钩子注入引擎存活状态"""
+        cls._engine_available = status
 
-        if path == "/mcp/start" and "json" in kwargs:
-            kwargs["json"] = model_dump(IpcMcpStartRequest(**kwargs["json"]))
-
-        if (
-            not hasattr(self, "_ipc_client")
-            or self._ipc_client is None
-            or self._ipc_client.is_closed
-        ):
-            self._ipc_client = httpx.AsyncClient(timeout=60)
-
-        headers = kwargs.pop("headers", {})
-        headers["Authorization"] = f"Bearer {self._os_server_token}"
-
-        url = f"http://127.0.0.1:{self._os_server_port}{path}"
-        try:
-            resp = await self._ipc_client.request(
-                method, url, headers=headers, **kwargs
-            )
-            if resp.status_code in (502, 503, 504):
-                raise ConnectionError(
-                    f"HTTP {resp.status_code} - Sandbox OS Server not ready"
-                )
-            return resp
-        except Exception as e:
-            logger.warning(f"[DockerDriver] 内部服务请求失败，等待1秒后重试: {e}")
-            import asyncio
-
-            await asyncio.sleep(1)
-            if (
-                not hasattr(self, "_ipc_client")
-                or self._ipc_client is None
-                or self._ipc_client.is_closed
-            ):
-                self._ipc_client = httpx.AsyncClient(timeout=60)
-            new_url = f"http://127.0.0.1:{self._os_server_port}{path}"
-            return await self._ipc_client.request(
-                method, new_url, headers=headers, **kwargs
-            )
+    @classmethod
+    def get_capabilities(cls) -> SandboxCapabilities:
+        return SandboxCapabilities(
+            supports_state=True,
+            supported_capabilities=[
+                "PythonExecutionCapability",
+                "FileSystemCapability",
+                "TerminalCapability",
+                "SkillEnvironmentCapability",
+            ],
+            isolation_level=8,
+            startup_latency=500,
+        )
 
     async def execute_raw_command(
         self,
@@ -192,63 +151,128 @@ class DockerDriver(
         env: dict[str, str] | None = None,
     ) -> SandboxExecutionResult:
         self.touch()
-        cmd_str = command if isinstance(command, str) else " ".join(command)
-        req = IpcCmdRunRequest(command=cmd_str, cwd=cwd, env=env, timeout=timeout)
+        if not self.container:
+            return SandboxExecutionResult(exit_code=-1, error="容器未启动")
+
+        if isinstance(command, str):
+            cmd_list = ["/bin/sh", "-c", command]
+        else:
+            cmd_list = command
+
+        env_list = [f"{k}={v}" for k, v in env.items()] if env else None
+
         try:
-            resp = await self._ipc_request(
-                "POST", "/cmd/run", json=model_dump(req), timeout=timeout + 5
+            exec_inst = await self.container.exec(
+                cmd=cmd_list,
+                stdout=True,
+                stderr=True,
+                workdir=cwd or "/workspace",
+                environment=env_list,
             )
-            parsed = model_validate(IpcCmdRunResponse, resp.json())
+
+            stdout_buf = bytearray()
+            stderr_buf = bytearray()
+            is_timeout = False
+
+            async def _read_stream():
+                async with exec_inst.start(detach=False) as stream:
+                    while True:
+                        msg = await stream.read_out()
+                        if msg is None:
+                            break
+                        if msg.stream == 1:
+                            stdout_buf.extend(msg.data)
+                        elif msg.stream == 2:
+                            stderr_buf.extend(msg.data)
+
+            try:
+                await asyncio.wait_for(_read_stream(), timeout=timeout)
+            except asyncio.TimeoutError:
+                is_timeout = True
+
+            info = await exec_inst.inspect()
+            exit_code = info.get("ExitCode")
+            if exit_code is None:
+                exit_code = -1
+
             return SandboxExecutionResult(
-                stdout=parsed.stdout,
-                stderr=parsed.stderr,
-                exit_code=parsed.exit_code,
-                is_timeout=parsed.is_timeout,
+                stdout=stdout_buf.decode("utf-8", errors="replace").strip(),
+                stderr=stderr_buf.decode("utf-8", errors="replace").strip(),
+                exit_code=exit_code,
+                is_timeout=is_timeout,
             )
         except Exception as e:
-            return SandboxExecutionResult(
-                exit_code=-1, error=f"Run Command IPC Failed: {e}"
-            )
+            logger.error(f"[DockerDriver] 原生执行命令失败: {e}", e=e)
+            return SandboxExecutionResult(exit_code=-1, error=str(e))
 
     async def create_pty_session(self) -> InteractiveTerminalSession:
         session = DockerInteractiveTerminalSession(self)
-        session.ws_headers = {"Authorization": f"Bearer {self._os_server_token}"}
         return session
 
     async def write_raw_file(self, path: str, content: str) -> bool:
         self.touch()
+        if not self.container:
+            return False
+
         try:
-            req = IpcFsWriteRequest(path=path, content=content)
-            resp = await self._ipc_request(
-                "POST", "/fs/write", json=model_dump(req), timeout=10
-            )
-            return resp.status_code == 200
+            p = Path(path)
+            dir_path = p.parent.as_posix()
+            file_name = p.name
+
+            await self.execute_raw_command(f"mkdir -p {dir_path}")
+
+            import time
+
+            tar_stream = io.BytesIO()
+            with tarfile.open(fileobj=tar_stream, mode="w") as tar:
+                tarinfo = tarfile.TarInfo(name=file_name)
+                encoded = content.encode("utf-8")
+                tarinfo.size = len(encoded)
+                tarinfo.mtime = int(time.time())
+                tar.addfile(tarinfo, io.BytesIO(encoded))
+
+            tar_stream.seek(0)
+            await self.container.put_archive(dir_path, tar_stream.read())
+            return True
         except Exception as e:
             logger.debug(f"[DockerDriver] write_raw_file connection failed: {e}")
             return False
 
     async def read_raw_file(self, path: str) -> str:
         self.touch()
+        if not self.container:
+            return "Error: Container not running."
+
         try:
-            req = IpcFsReadRequest(path=path)
-            resp = await self._ipc_request(
-                "POST", "/fs/read", json=model_dump(req), timeout=10
-            )
-            if resp.status_code == 404:
-                return f"Error: File {path} not found."
-            parsed = model_validate(IpcFsReadResponse, resp.json())
-            return parsed.content
+            tar_obj = await self.container.get_archive(path)
+
+            import os
+
+            filename = os.path.basename(path)
+            member = None
+            for m in tar_obj.getmembers():
+                if m.name.endswith(filename):
+                    member = m
+                    break
+
+            if not member:
+                return f"Error: File {path} not found in archive."
+
+            f = tar_obj.extractfile(member)
+            if not f:
+                return f"Error: Failed to extract {path}."
+
+            return f.read().decode("utf-8", errors="replace")
         except Exception as e:
             return f"Failed to read file connection error: {e}"
 
     async def delete_raw_file(self, path: str) -> bool:
         self.touch()
+        if not self.container:
+            return False
         try:
-            req = IpcFsDeleteRequest(path=path)
-            resp = await self._ipc_request(
-                "POST", "/fs/delete", json=model_dump(req), timeout=5
-            )
-            return resp.status_code == 200
+            res = await self.execute_raw_command(f"rm -rf {path}")
+            return res.exit_code == 0
         except Exception:
             return False
 
@@ -256,23 +280,29 @@ class DockerDriver(
         self, local_dir_path: str, sandbox_target_path: str
     ) -> bool:
         self.touch()
-        local_path = Path(local_dir_path)
-        if not local_path.is_dir():
+        if not self.container:
             return False
-        tar_stream = io.BytesIO()
-        with tarfile.open(fileobj=tar_stream, mode="w") as tar:
-            tar.add(local_path, arcname=Path(sandbox_target_path).name)
-        headers = {"X-Target-Path": sandbox_target_path}
+        local_path = Path(local_dir_path)
+        if not await asyncio.to_thread(local_path.is_dir):
+            return False
+
         try:
-            resp = await self._ipc_request(
-                "POST",
-                "/fs/upload_dir",
-                content=tar_stream.getvalue(),
-                headers=headers,
-                timeout=60,
-            )
-            return resp.status_code == 200
-        except Exception:
+
+            def _create_tar():
+                tar_stream = io.BytesIO()
+                with tarfile.open(fileobj=tar_stream, mode="w") as tar:
+                    tar.add(local_path, arcname=Path(sandbox_target_path).name)
+                tar_stream.seek(0)
+                return tar_stream.read()
+
+            tar_bytes = await asyncio.to_thread(_create_tar)
+            target_parent = Path(sandbox_target_path).parent.as_posix()
+
+            await self.execute_raw_command(f"mkdir -p {target_parent}")
+            await self.container.put_archive(target_parent, tar_bytes)
+            return True
+        except Exception as e:
+            logger.error(f"[DockerDriver] upload_raw_dir failed: {e}")
             return False
 
     @property
@@ -291,44 +321,29 @@ class DockerDriver(
         super().__init__()
         self.container = None
         self.kernel_id: str | None = None
-        self.ws_url = ""
-        self._os_server_port = -1
-        self._browser_port = -1
-        self._mcp_ports: list[int] = []
-        self._ipc_client = None
-        self._os_server_token: str = ""
+        self._jupyter_port = -1
 
     async def is_alive(self) -> bool:
-        """主动探活：检查容器内的 Agent OS Server 是否存活"""
+        """探活：直接通过 aiodocker 查验容器状态"""
         if not self.container:
             return False
         try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
-                headers = {"Authorization": f"Bearer {self._os_server_token}"}
-                resp = await client.get(
-                    f"http://127.0.0.1:{self._os_server_port}/alive", headers=headers
-                )
-                return resp.status_code == 200
+            await self.container.show()
+            return self.container._container.get("State", {}).get("Running", False)
         except Exception:
             return False
 
     @classmethod
     async def close_env(cls):
         """供全局进程关闭时调用，清理单例"""
-        if cls._global_http_session and not cls._global_http_session.closed:
-            await cls._global_http_session.close()
         if cls._global_docker_client:
             await cls._global_docker_client.close()
 
     @classmethod
     async def check_engine_alive(cls) -> bool:
         """测试 Docker 引擎是否正在运行"""
-        if not DOCKER_AVAILABLE:
-            return False
         client = None
         try:
-            if aiodocker is None:
-                return False
             client = aiodocker.Docker()
             await client.system.info()
             return True
@@ -341,14 +356,9 @@ class DockerDriver(
     @classmethod
     async def prune_orphan_containers(cls):
         """清理遗留的沙箱容器 (Watchdog)"""
-        if not DOCKER_AVAILABLE:
-            return
-
         need_close = False
         client = cls._global_docker_client
         if client is None:
-            if aiodocker is None:
-                return
             client = aiodocker.Docker()
             need_close = True
 
@@ -376,72 +386,38 @@ class DockerDriver(
         self.session_id = session_id
         self.profile = profile
         self.touch()
-        if not DOCKER_AVAILABLE:
-            raise RuntimeError("aiodocker is not installed.")
 
-        if self._global_docker_client is None or self._global_http_session is None:
+        if self._global_docker_client is None:
             async with self._init_lock:
                 if self._global_docker_client is None:
                     self._global_docker_client = aiodocker.Docker()
-                if self._global_http_session is None:
-                    self._global_http_session = aiohttp.ClientSession()
 
-        port = _find_free_port()
-        self._os_server_port = _find_free_port()
-        self._browser_port = _find_free_port()
-        self._mcp_ports = [_find_free_port() for _ in range(3)]
-        self.base_url = f"http://127.0.0.1:{port}"
-        self.ws_url = f"ws://127.0.0.1:{port}"
-
-        self._meta["os_server_port"] = self._os_server_port
-        self._meta["browser_port"] = self._browser_port
-        self._meta["base_url"] = self.base_url
-        self._meta["ws_url"] = self.ws_url
-        self._os_server_token = uuid.uuid4().hex
+        self._jupyter_port = _find_free_port()
+        self._meta["jupyter_port"] = self._jupyter_port
 
         image = Config.get_config("sandbox", "DOCKER_IMAGE", "zhenxun-sandbox:latest")
-
         enable_network = profile.enable_network if profile else False
 
         logger.info(
-            f"[DockerDriver] 正在启动 Jupyter 容器"
-            f" (OS_Port: {self._os_server_port}, Session: {session_id})..."
+            f"[DockerDriver] 正在启动纯净 Docker 沙箱"
+            f" (Session: {session_id}, Image: {image}, "
+            f"JupyterPort: {self._jupyter_port})..."
         )
-
-        os_server_path = Path(__file__).parent / "agent_os.py"
-        ipc_models_path = Path(__file__).parent / "ipc_models.py"
-
-        base_os_code = os_server_path.read_text(encoding="utf-8")
-        ipc_models_code = ipc_models_path.read_text(encoding="utf-8")
-
-        os_server_code = f"{ipc_models_code}\n\n{base_os_code}"
-        os_server_b64 = base64.b64encode(os_server_code.encode("utf-8")).decode("utf-8")
 
         container_config = {
             "Image": image,
             "Entrypoint": [],
             "Cmd": [
-                "/bin/bash",
+                "/bin/sh",
                 "-c",
-                f"echo {os_server_b64} | base64 -d > /opt/agent_os.py && python3 /opt/agent_os.py & "
-                f"if command -v jupyter-server &> /dev/null; then "
-                f"exec jupyter-server --ServerApp.ip=0.0.0.0 --ServerApp.port=8888 --ServerApp.token= --ServerApp.password= --ServerApp.disable_check_xsrf=True --ServerApp.allow_origin=* --ServerApp.allow_root=True --ServerApp.terminals_enabled=True; "
-                f"else echo '[Init] Jupyter not found, running in lightweight mode.'; tail -f /dev/null; fi",
+                "mkdir -p /workspace && tail -f /dev/null",
             ],
             "ExposedPorts": {
                 "8888/tcp": {},
-                f"{self._os_server_port}/tcp": {},
-                f"{self._browser_port}/tcp": {},
             },
             "HostConfig": {
                 "PortBindings": {
-                    "8888/tcp": [{"HostPort": str(port)}],
-                    f"{self._os_server_port}/tcp": [
-                        {"HostPort": str(self._os_server_port)}
-                    ],
-                    f"{self._browser_port}/tcp": [
-                        {"HostPort": str(self._browser_port)}
-                    ],
+                    "8888/tcp": [{"HostPort": str(self._jupyter_port)}],
                 },
                 "Memory": 512 * 1024 * 1024,
                 "MemorySwap": 512 * 1024 * 1024,
@@ -450,21 +426,18 @@ class DockerDriver(
                 "zhenxun_component": "sandbox",
                 "managed_by": "docker_driver",
             },
-            "Env": [
-                f"OS_SERVER_PORT={self._os_server_port}",
-                f"MCP_PORTS={','.join(map(str, self._mcp_ports))}",
-                f"OS_SERVER_TOKEN={self._os_server_token}",
-            ],
         }
 
-        for p in self._mcp_ports:
-            container_config["ExposedPorts"][f"{p}/tcp"] = {}
-            container_config["HostConfig"]["PortBindings"][f"{p}/tcp"] = [
-                {"HostPort": str(p)}
-            ]
+        if "ExtraHosts" not in container_config["HostConfig"]:
+            container_config["HostConfig"]["ExtraHosts"] = []
+        container_config["HostConfig"]["ExtraHosts"].append(
+            "host.docker.internal:host-gateway"
+        )
 
         if not enable_network:
             container_config["HostConfig"]["Dns"] = ["0.0.0.0"]
+
+        import uuid
 
         safe_session_id = re.sub(r"[^a-zA-Z0-9_.-]", "_", session_id)
         name = f"zx_sandbox_{safe_session_id}_{uuid.uuid4().hex[:8]}"
@@ -472,50 +445,17 @@ class DockerDriver(
             config=container_config, name=name
         )
 
-        logger.info("[DockerDriver] 容器已创建，正在等待内部 OS Server 就绪...")
-        is_ready = False
-        for _ in range(30):
-            try:
-                async with httpx.AsyncClient(timeout=1.0) as client:
-                    headers = {"Authorization": f"Bearer {self._os_server_token}"}
-                    resp = await client.get(
-                        f"http://127.0.0.1:{self._os_server_port}/alive",
-                        headers=headers,
-                    )
-                    if resp.status_code == 200:
-                        is_ready = True
-                        break
-            except Exception:
-                pass
-            await asyncio.sleep(0.5)
-
-        if not is_ready:
-            raise RuntimeError("沙箱内部 Agent OS Server 启动超时或崩溃！")
-        logger.info("[DockerDriver] Agent OS Server 探针检测已就绪！")
-
-        probe_res = await self.execute_raw_command("command -v jupyter-server")
-        is_heavy_image = probe_res.exit_code == 0
-
-        if profile and getattr(profile, "require_pty", False):
-            logger.info(
-                "[DockerDriver] 开发者意图声明强制 PTY 交互，主动降级并禁用 Jupyter..."
-            )
-            is_heavy_image = False
+        logger.info("[DockerDriver] 容器已秒级创建并就绪！")
 
     async def close(self) -> None:
-        if (
-            hasattr(self, "_ipc_client")
-            and self._ipc_client
-            and not self._ipc_client.is_closed
-        ):
-            await self._ipc_client.aclose()
-            self._ipc_client = None
-
         if self.container:
-            logger.info(
-                f"[DockerDriver] 正在销毁 Jupyter 容器 (Session: {self.session_id})"
-            )
+            logger.info(f"[DockerDriver] 正在销毁沙箱容器 (Session: {self.session_id})")
             try:
                 await self.container.delete(force=True)
             except Exception as e:
                 logger.error(f"[DockerDriver] 销毁容器失败: {e}")
+
+
+from zhenxun.services.ai.sandbox.extension import SandboxRegistry
+
+SandboxRegistry.register("docker", DockerDriver)

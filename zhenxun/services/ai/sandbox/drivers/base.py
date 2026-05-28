@@ -7,6 +7,8 @@ from zhenxun.services.ai.sandbox.extension import (
     SandboxChannel,
 )
 from zhenxun.services.ai.sandbox.models import (
+    Manifest,
+    SandboxCapabilities,
     SandboxRequirements,
     SandboxSecurityProfile,
 )
@@ -29,8 +31,14 @@ class BaseSandboxDriver(SandboxChannel):
         """当前驱动是否支持跨调用的持久化状态保留"""
         pass
 
+    @classmethod
+    @abstractmethod
+    def get_capabilities(cls) -> SandboxCapabilities:
+        """声明该驱动的沙箱能力边界"""
+        pass
+
     def get_meta(self, key: str, default: Any = None) -> Any:
-        """【Channel 协议】获取底层驱动的元数据（如映射端口、Base_URL等）"""
+        """获取底层驱动的元数据（如映射端口、Base_URL等）"""
         return self._meta.get(key, default)
 
     async def mount_extension(self, extension_name: str) -> None:
@@ -41,7 +49,9 @@ class BaseSandboxDriver(SandboxChannel):
             return
         extension_cls = SandboxRegistry.get_extension_cls(extension_name)
         if not extension_cls:
-            raise ValueError(f"Extension '{extension_name}' 未在 SandboxRegistry 注册。")
+            raise ValueError(
+                f"Extension '{extension_name}' 未在 SandboxRegistry 注册。"
+            )
         extension_instance = extension_cls(self)
         await extension_instance.on_mount()
         self._extensions[extension_name] = extension_instance
@@ -79,6 +89,83 @@ class BaseSandboxDriver(SandboxChannel):
                 success = False
 
         return success
+
+    async def apply_manifest(
+        self, manifest: Manifest, base_path: str = "/workspace"
+    ) -> None:
+        """声明式应用初始化清单"""
+        import asyncio
+        from typing import cast
+
+        from zhenxun.services.ai.sandbox.extension import (
+            SupportsCommandExecution,
+            SupportsFileSystem,
+        )
+        from zhenxun.services.ai.sandbox.models import (
+            DirEntry,
+            FileEntry,
+            GitRepoEntry,
+            LocalFileEntry,
+        )
+        from zhenxun.services.log import logger
+
+        if manifest.environment:
+            current_env = self.get_meta("env", {})
+            current_env.update(manifest.environment)
+            self._meta["env"] = current_env
+
+        if not manifest.entries:
+            return
+
+        if not isinstance(self, SupportsFileSystem):
+            logger.warning(
+                f"沙箱 {self.session_id} 不支持文件系统，无法应用 Manifest。"
+            )
+            return
+
+        fs = cast(SupportsFileSystem, self)
+        cmd = (
+            cast(SupportsCommandExecution, self)
+            if isinstance(self, SupportsCommandExecution)
+            else None
+        )
+
+        async def _process_entries(entries: dict[str, Any], current_path: str):
+            for name, entry in entries.items():
+                target_path = f"{current_path}/{name}".replace("//", "/")
+                if isinstance(entry, FileEntry):
+                    content = (
+                        entry.content.decode("utf-8")
+                        if isinstance(entry.content, bytes)
+                        else entry.content
+                    )
+                    await fs.write_raw_file(target_path, content)
+                elif isinstance(entry, LocalFileEntry):
+                    from pathlib import Path
+
+                    local_path = Path(entry.src_path)
+                    if await asyncio.to_thread(
+                        local_path.exists
+                    ) and await asyncio.to_thread(local_path.is_file):
+                        content = await asyncio.to_thread(
+                            local_path.read_text, encoding="utf-8", errors="ignore"
+                        )
+                        await fs.write_raw_file(target_path, content)
+                elif isinstance(entry, DirEntry):
+                    if cmd:
+                        await cmd.execute_raw_command(f"mkdir -p {target_path}")
+                    if entry.children:
+                        await _process_entries(entry.children, target_path)
+                elif isinstance(entry, GitRepoEntry):
+                    if cmd:
+                        command = f"git clone {entry.url} {target_path}"
+                        if entry.ref:
+                            command += (
+                                f" && cd {target_path} && git checkout {entry.ref}"
+                            )
+                        await cmd.execute_raw_command(command)
+
+        await _process_entries(manifest.entries, base_path)
 
     @abstractmethod
     async def start(

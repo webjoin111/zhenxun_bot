@@ -5,6 +5,7 @@ import traceback
 from typing import Any, TypeVar
 
 from zhenxun.services.log import logger
+from zhenxun.utils.utils import infer_plugin_namespace
 
 from .base import AIEvent
 
@@ -18,26 +19,28 @@ class _EventCenter:
     """
 
     def __init__(self):
-        self._subscribers: dict[type[AIEvent], list[tuple[int, Any]]] = defaultdict(
-            list
+        self._subscribers: dict[type[AIEvent], dict[str, list[tuple[int, Any]]]] = (
+            defaultdict(lambda: defaultdict(list))
         )
 
     def subscribe(
-        self, event_type: type[E], priority: int = 10
+        self, event_type: type[E], priority: int = 10, scope: str | None = None
     ) -> Callable[[Callable[[E], Awaitable[None]]], Callable[[E], Awaitable[None]]]:
         """
         订阅装饰器。
         priority 越小越先执行。遇到异常会中断后续执行。
+        scope: 指定监听的命名空间，默认隐式推断当前插件。传入 "*" 表示监听所有插件的事件。
         用法:
             @EventCenter.subscribe(ToolCallEvent, priority=1)
             async def my_handler(event: ToolCallEvent): ...
         """
+        ns = scope if scope is not None else infer_plugin_namespace()
 
         def decorator(
             func: Callable[[E], Awaitable[None]],
         ) -> Callable[[E], Awaitable[None]]:
-            self._subscribers[event_type].append((priority, func))
-            self._subscribers[event_type].sort(key=lambda x: x[0])
+            self._subscribers[event_type][ns].append((priority, func))
+            self._subscribers[event_type][ns].sort(key=lambda x: x[0])
             return func
 
         return decorator
@@ -50,9 +53,13 @@ class _EventCenter:
         event_type = type(event)
         all_handlers = []
 
-        for registered_type, registered_handlers in self._subscribers.items():
+        for registered_type, registered_handlers_dict in self._subscribers.items():
             if issubclass(event_type, registered_type):
-                all_handlers.extend(registered_handlers)
+                all_handlers.extend(registered_handlers_dict.get("*", []))
+                if event.namespace != "*":
+                    all_handlers.extend(
+                        registered_handlers_dict.get(event.namespace, [])
+                    )
 
         if not all_handlers:
             return

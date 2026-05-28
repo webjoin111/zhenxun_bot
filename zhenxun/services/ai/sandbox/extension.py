@@ -1,14 +1,13 @@
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
 from zhenxun.services.ai.sandbox.models import SandboxExecutionResult
 from zhenxun.services.log import logger
 
 if TYPE_CHECKING:
     from zhenxun.services.ai.sandbox.drivers.base import BaseSandboxDriver
-    from zhenxun.services.ai.sandbox.providers.base import BaseSandboxProvider
 
 
 class InteractiveTerminalSession(Protocol):
@@ -95,9 +94,8 @@ class BaseMcpProxyExtension(BaseSandboxExtension):
 
 
 class SandboxRegistry:
-    _drivers: dict[str, type["BaseSandboxDriver"]] = {}
-    _providers: dict[str, "BaseSandboxProvider"] = {}
-    _extensions: dict[str, type[BaseSandboxExtension]] = {}
+    _drivers: ClassVar[dict[str, type["BaseSandboxDriver"]]] = {}
+    _extensions: ClassVar[dict[str, type[BaseSandboxExtension]]] = {}
 
     @classmethod
     def register(cls, name: str, driver_cls: type["BaseSandboxDriver"]) -> None:
@@ -117,20 +115,11 @@ class SandboxRegistry:
         return cls._drivers.copy()
 
     @classmethod
-    def register_provider(cls, provider: "BaseSandboxProvider") -> None:
-        name = provider.get_name()
-        if name in cls._providers:
-            logger.warning(f"[SandboxRegistry] 覆盖已存在的沙箱提供者: {name}")
-        cls._providers[name] = provider
-        logger.info(f"[SandboxRegistry] 成功注册沙箱提供者: {name}")
-
-    @classmethod
-    def get_all_providers(cls) -> dict[str, "BaseSandboxProvider"]:
-        return cls._providers.copy()
-
-    @classmethod
     def register_extension(cls, extension_cls: type[BaseSandboxExtension]) -> None:
-        if isinstance(extension_cls.extension_name, property) and extension_cls.extension_name.fget:
+        if (
+            isinstance(extension_cls.extension_name, property)
+            and extension_cls.extension_name.fget
+        ):
             name = extension_cls.extension_name.fget(None)
         else:
             name = getattr(extension_cls, "extension_name", str(extension_cls))

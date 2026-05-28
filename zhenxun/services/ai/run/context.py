@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from zhenxun.services.ai.core.templates import PromptTemplate
 from zhenxun.services.ai.utils.runtime_utils import ContextUtils
 from zhenxun.utils.pydantic_compat import model_dump
+from zhenxun.utils.utils import infer_plugin_namespace
 
 AgentDepsT = TypeVar("AgentDepsT", default=Any)
 ProviderFunc = Callable[["RunContext"], Any | Awaitable[Any]]
@@ -66,6 +67,8 @@ class SessionContext(Generic[AgentDepsT]):
     """授权凭证字典：保存用户针对各 Provider 的 OAuth 或 API Token。"""
     blackboard: Any | None = None
     """结构化黑板管理器，作为共享状态的高级替代方案，提供并发锁和强类型校验。"""
+    namespace: str = "global"
+    """触发事件的插件命名空间"""
 
 
 @dataclasses.dataclass
@@ -234,10 +237,19 @@ class RunContext(Generic[AgentDepsT]):
                     self.session_id = f"auto_private_{uid}"
                     self._is_auto_session_id = True
 
+        ns = "global"
+        if self.deps:
+            ns = getattr(self.deps, "namespace", None) or (
+                self.deps.get("namespace") if isinstance(self.deps, dict) else None
+            )
+        if not ns:
+            ns = infer_plugin_namespace(default="global")
+
         self.session = SessionContext(
             session_id=self.session_id or "default_session",
             deps=self.deps,
             shared_state=self.shared_state,
+            namespace=ns,
         )
         self.run = AgentRunContext(session=self.session, state=self.state)
         self.call = ToolCallContext(run=self.run)

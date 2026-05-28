@@ -1,8 +1,8 @@
+from collections import defaultdict
 import json
 import time
 from typing import Any, ClassVar
 
-from nonebot.adapters import Bot, Event
 from nonebot.permission import SUPERUSER
 
 from zhenxun.models.user_console import UserConsole
@@ -35,6 +35,7 @@ from zhenxun.services.cache.runtime_cache import LevelUserMemoryCache
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import GoldHandle
 from zhenxun.utils.exception import InsufficientGold
+from zhenxun.utils.utils import infer_plugin_namespace
 
 
 class DummyCredentialManager:
@@ -185,6 +186,7 @@ class RequireAuthCapability(AbstractCapability):
 
                 try:
                     from zhenxun.services.ai.run.hitl import HITLController
+
                     hitl = HITLController(context)
                     user_input = await hitl.ask_text(prompt_msg, timeout=60.0)
                 except (AbortException, ToolFatalError):
@@ -300,10 +302,14 @@ class EventDispatcherCapability(AbstractCapability):
     ) -> "AgentRunResult[Any]":
         agent_name = context.run.agent_name or "unknown"
         prompt = context.run.user_input or ""
+        ns = getattr(context.session, "namespace", "global")
 
         await EventCenter.publish(
             AgentStartEvent(
-                session_id=context.session_id, agent_name=agent_name, prompt=prompt
+                session_id=context.session_id,
+                agent_name=agent_name,
+                prompt=prompt,
+                namespace=ns,
             )
         )
         start_t = time.monotonic()
@@ -316,6 +322,7 @@ class EventDispatcherCapability(AbstractCapability):
                     agent_name=agent_name,
                     result=res,
                     duration_ms=dur,
+                    namespace=ns,
                 )
             )
             return res
@@ -328,11 +335,13 @@ class EventDispatcherCapability(AbstractCapability):
         llm_context: LLMContext,
         handler: WrapModelRequestHandler,
     ) -> LLMResponse:
+        ns = getattr(context.session, "namespace", "global")
         await EventCenter.publish(
             ModelStartEvent(
                 session_id=context.session_id,
                 model_name=context.run.current_model or "model_instance",
                 messages=list(llm_context.messages),
+                namespace=ns,
             )
         )
         start_t = time.monotonic()
@@ -341,7 +350,10 @@ class EventDispatcherCapability(AbstractCapability):
             dur = (time.monotonic() - start_t) * 1000
             await EventCenter.publish(
                 ModelEndEvent(
-                    session_id=context.session_id, response=response, duration_ms=dur
+                    session_id=context.session_id,
+                    response=response,
+                    duration_ms=dur,
+                    namespace=ns,
                 )
             )
             return response
@@ -355,12 +367,14 @@ class EventDispatcherCapability(AbstractCapability):
         arguments: dict[str, Any],
         handler: WrapToolExecuteHandler,
     ) -> Any:
+        ns = getattr(context.session, "namespace", "global")
         await EventCenter.publish(
             ToolCallEvent(
                 session_id=context.session_id,
                 tool_call_id="dynamic",
                 tool_name=tool_name,
                 arguments=arguments.copy(),
+                namespace=ns,
             )
         )
         start_t = time.monotonic()
@@ -375,11 +389,13 @@ class EventDispatcherCapability(AbstractCapability):
                     result=result,
                     error=None,
                     duration_ms=dur,
+                    namespace=ns,
                 )
             )
             return result
         except Exception as e:
             from zhenxun.services.ai.core.exceptions import ControlFlowException
+
             if isinstance(e, ControlFlowException):
                 raise e
 
@@ -390,6 +406,7 @@ class EventDispatcherCapability(AbstractCapability):
                     tool_call_id="dynamic",
                     tool_name=tool_name,
                     error=e,
+                    namespace=ns,
                 )
             )
             await EventCenter.publish(
@@ -400,6 +417,7 @@ class EventDispatcherCapability(AbstractCapability):
                     result=None,
                     error=e,
                     duration_ms=dur,
+                    namespace=ns,
                 )
             )
             raise e
@@ -424,6 +442,7 @@ class ToolSideEffectCapability(AbstractCapability):
         if isinstance(result, ToolResult):
             if result.ui_display is not None:
                 from zhenxun.services.ai.run.ui_controller import UIController
+
                 ui = UIController(context)
                 await ui.send_display(result.ui_display)
 
@@ -488,7 +507,9 @@ class ToolRetryAndReflectionCapability(AbstractCapability):
             return ToolResult(output=f"执行发生异常: {e}").as_error()
 
 
-GLOBAL_CAPABILITIES: list[AbstractCapability] = [
+GLOBAL_CAPABILITIES: dict[str, list[AbstractCapability]] = defaultdict(list)
+
+for _cap in [
     StuckDetectionCapability(),
     PermissionCapability(),
     BillingCapability(),
@@ -496,9 +517,15 @@ GLOBAL_CAPABILITIES: list[AbstractCapability] = [
     EventDispatcherCapability(),
     ToolSideEffectCapability(),
     ToolRetryAndReflectionCapability(),
-]
+]:
+    GLOBAL_CAPABILITIES["global"].append(_cap)
 
 
-def register_global_capability(capability: AbstractCapability) -> None:
-    GLOBAL_CAPABILITIES.append(capability)
-    logger.debug(f"已注册全局 Capability: {capability.__class__.__name__}")
+def register_global_capability(
+    capability: AbstractCapability, scope: str | None = None
+) -> None:
+    ns = scope if scope is not None else infer_plugin_namespace()
+    GLOBAL_CAPABILITIES[ns].append(capability)
+    logger.debug(
+        f"已注册全局 Capability: {capability.__class__.__name__} -> Namespace: {ns}"
+    )

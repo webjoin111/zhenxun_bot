@@ -218,7 +218,7 @@ class OpenAIMessageConverter(MessageConverter):
 
                 if thought_text:
                     openai_msg["reasoning_content"] = thought_text
-                elif self.api_type in ("deepseek"):
+                else:
                     openai_msg["reasoning_content"] = ""
 
                 if not openai_msg.get("content"):

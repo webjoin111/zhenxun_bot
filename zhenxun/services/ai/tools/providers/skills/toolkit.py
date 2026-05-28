@@ -53,7 +53,7 @@ class SkillSandboxExecutionMixin:
         )
         profile = SandboxSecurityProfile(
             enable_network=skill.frontmatter.enable_network,
-            required_extensions=["universal_python"],
+            required_extensions=[],
         )
 
         from zhenxun.services.ai.sandbox.models import SandboxRequirements
@@ -105,7 +105,7 @@ class SkillSandboxExecutionMixin:
             env_vars[k] = str(v)
         if context:
             for k, v in context.state.items():
-                if isinstance(v, (str, int, float, bool)):
+                if isinstance(v, str | int | float | bool):
                     env_vars[k] = str(v)
 
         import shlex
@@ -188,7 +188,7 @@ class SkillSandboxExecutionMixin:
         )
         profile = SandboxSecurityProfile(
             enable_network=skill.frontmatter.enable_network,
-            required_extensions=["universal_python"],
+            required_extensions=[],
         )
 
         from zhenxun.services.ai.sandbox.models import SandboxRequirements
@@ -240,7 +240,7 @@ class SkillSandboxExecutionMixin:
             env_vars[k] = str(v)
         if context:
             for k, v in context.state.items():
-                if isinstance(v, (str, int, float, bool)):
+                if isinstance(v, str | int | float | bool):
                     env_vars[k] = str(v)
 
         result = await cmd_executor.execute_raw_command(
@@ -529,10 +529,10 @@ class SkillMetaToolkit(BaseToolkit, SkillSandboxExecutionMixin):
             return ToolResult(
                 output=content,
             ).with_log(
-                (
+
                     f"已从本地读取文件 {file_path} (共 {len(content)} 字符)。"
                     f"内容摘要: {content[:100]}..."
-                )
+
             )
 
         session_id = (
@@ -542,7 +542,7 @@ class SkillMetaToolkit(BaseToolkit, SkillSandboxExecutionMixin):
         )
         profile = SandboxSecurityProfile(
             enable_network=skill.frontmatter.enable_network,
-            required_extensions=["universal_python"],
+            required_extensions=[],
         )
         try:
             executor = await sandbox_manager.get_or_create_session(
@@ -566,10 +566,10 @@ class SkillMetaToolkit(BaseToolkit, SkillSandboxExecutionMixin):
             return ToolResult(
                 output=content,
             ).with_log(
-                (
+
                     "已从沙箱读取动态生成的文件 "
                     f"{sandbox_target_path} (共 {len(content)} 字符)。"
-                )
+
             )
         except Exception as e:
             return ToolResult(output=f"❌ 尝试读取沙箱文件时发生异常: {e}").as_error()

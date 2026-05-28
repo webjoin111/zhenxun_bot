@@ -364,11 +364,8 @@ class TortoiseChatContext(BaseChatContext):
                 content_payload = [{"type": "text", "text": content_payload}]
             elif isinstance(content_payload, list):
                 processed_content = []
-                from zhenxun.services.ai.core.messages import ThoughtPart
 
                 for p in content_payload:
-                    if isinstance(p, ThoughtPart):
-                        continue
                     p_dump = (
                         model_dump(p, exclude_none=True)
                         if hasattr(p, "model_dump")

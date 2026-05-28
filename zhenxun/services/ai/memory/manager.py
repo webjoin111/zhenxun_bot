@@ -14,7 +14,7 @@ from zhenxun.services.ai.memory.storage import (
 from zhenxun.services.ai.rag import Embedder, StorageBackend
 from zhenxun.services.ai.rag.consolidation import Consolidator as MemoryConsolidator
 from zhenxun.services.ai.rag.consolidation import NullConsolidator
-from zhenxun.services.log import logger
+from zhenxun.utils.utils import infer_plugin_namespace
 
 
 class GlobalMemoryManager:
@@ -24,39 +24,49 @@ class GlobalMemoryManager:
     """
 
     def __init__(self):
-        self.default_chat_backend: BaseChatContext = InMemoryChatContext()
-        self.default_slot_backend: BaseSlotContext = InMemorySlotContext()
+        self._chat_backends: dict[str, BaseChatContext] = {
+            "global": InMemoryChatContext()
+        }
+        self._slot_backends: dict[str, BaseSlotContext] = {
+            "global": InMemorySlotContext()
+        }
 
         from zhenxun.services.ai.rag.backends import DictStorageBackend
 
-        self.default_storage_factory: Callable[[], StorageBackend] = lambda: (
-            DictStorageBackend()
-        )
-        self.default_consolidator_factory: Callable[[], MemoryConsolidator] = lambda: (
-            NullConsolidator()
-        )
+        self._storage_factories: dict[str, Callable[[], StorageBackend]] = {
+            "global": lambda: DictStorageBackend()
+        }
+        self._consolidator_factories: dict[str, Callable[[], MemoryConsolidator]] = {
+            "global": lambda: NullConsolidator()
+        }
 
-    def set_default_chat_backend(self, backend: BaseChatContext) -> None:
-        """设置全局默认的短期记忆引擎实例"""
-        self.default_chat_backend = backend
-        logger.debug(f"已设置全局默认短期记忆存储后端: {backend.__class__.__name__}")
-
-    def set_default_slot_backend(self, backend: BaseSlotContext) -> None:
-        """设置全局默认的中期记忆槽存储后端实例"""
-        self.default_slot_backend = backend
-        logger.debug(f"已设置全局默认记忆槽存储后端: {backend.__class__.__name__}")
-
-    def set_default_storage_factory(
-        self, factory: Callable[[], StorageBackend]
+    def register_chat_backend(
+        self, backend: BaseChatContext, scope: str | None = None
     ) -> None:
-        """设置全局默认的长期向量存储引擎工厂"""
-        self.default_storage_factory = factory
+        """注册特定命名空间的短期记忆存储后端。"""
+        ns = scope if scope is not None else infer_plugin_namespace()
+        self._chat_backends[ns] = backend
 
-    def set_default_consolidator_factory(
-        self, factory: Callable[[], MemoryConsolidator]
+    def register_slot_backend(
+        self, backend: BaseSlotContext, scope: str | None = None
     ) -> None:
-        """设置全局默认的记忆融合引擎工厂"""
-        self.default_consolidator_factory = factory
+        """注册特定命名空间的中期记忆槽存储后端。"""
+        ns = scope if scope is not None else infer_plugin_namespace()
+        self._slot_backends[ns] = backend
+
+    def register_storage_factory(
+        self, factory: Callable[[], StorageBackend], scope: str | None = None
+    ) -> None:
+        """注册特定命名空间的长期记忆向量存储工厂。"""
+        ns = scope if scope is not None else infer_plugin_namespace()
+        self._storage_factories[ns] = factory
+
+    def register_consolidator_factory(
+        self, factory: Callable[[], MemoryConsolidator], scope: str | None = None
+    ) -> None:
+        """注册特定命名空间的长期记忆融合引擎工厂。"""
+        ns = scope if scope is not None else infer_plugin_namespace()
+        self._consolidator_factories[ns] = factory
 
     def get_embedder(self, embedder_val: Any | None) -> Embedder | None:
         """获取向量化引擎实例。如果传入的是字符串，则视为 API 模型名称。"""
@@ -70,7 +80,9 @@ class GlobalMemoryManager:
 
         return embedder_val
 
-    def get_chat_context(self, config: MemoryConfig | None) -> BaseChatContext | None:
+    def get_chat_context(
+        self, config: MemoryConfig | None, namespace: str = "global"
+    ) -> BaseChatContext | None:
         """根据配置分配对应的短期对话历史实例"""
         if not config or not config.short_term.enable:
             return None
@@ -79,9 +91,11 @@ class GlobalMemoryManager:
         if backend_cfg is not None:
             return cast(BaseChatContext, backend_cfg)
 
-        return self.default_chat_backend
+        return self._chat_backends.get(namespace) or self._chat_backends["global"]
 
-    def get_slot_context(self, config: MemoryConfig | None) -> BaseSlotContext | None:
+    def get_slot_context(
+        self, config: MemoryConfig | None, namespace: str = "global"
+    ) -> BaseSlotContext | None:
         """根据配置分配对应的槽位记忆实例"""
         if not config or not config.slots.enable:
             return None
@@ -90,9 +104,11 @@ class GlobalMemoryManager:
         if backend_cfg is not None:
             return cast(BaseSlotContext, backend_cfg)
 
-        return self.default_slot_backend
+        return self._slot_backends.get(namespace) or self._slot_backends["global"]
 
-    def get_long_term_memory(self, config: MemoryConfig | None) -> MemoryScope | None:
+    def get_long_term_memory(
+        self, config: MemoryConfig | None, namespace: str = "global"
+    ) -> MemoryScope | None:
         """根据声明式配置动态组装长期向量记忆实例"""
         if not config or not config.long_term.enable:
             return None
@@ -102,7 +118,11 @@ class GlobalMemoryManager:
         if backend_cfg is not None:
             storage_instance = cast(StorageBackend, backend_cfg)
         else:
-            storage_instance = self.default_storage_factory()
+            factory = (
+                self._storage_factories.get(namespace)
+                or self._storage_factories["global"]
+            )
+            storage_instance = factory()
 
         consolidator_instance = None
 
@@ -111,7 +131,11 @@ class GlobalMemoryManager:
             if consolidator_cfg is not None:
                 consolidator_instance = cast(MemoryConsolidator, consolidator_cfg)
             else:
-                consolidator_instance = self.default_consolidator_factory()
+                factory = (
+                    self._consolidator_factories.get(namespace)
+                    or self._consolidator_factories["global"]
+                )
+                consolidator_instance = factory()
 
         embedder = self.get_embedder(config.long_term.embedder)
 

@@ -5,6 +5,7 @@
 from enum import Enum
 import hashlib
 import json
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
@@ -19,6 +20,7 @@ class SandboxTier(str, Enum):
 
 class EnvSetupConfig(BaseModel):
     """统一环境装配声明模型"""
+
     python_packages: list[str] = Field(default_factory=list)
     """Python 依赖包列表 (将通过 uv 安装)"""
     system_packages: list[str] = Field(default_factory=list)
@@ -34,10 +36,10 @@ class EnvSetupConfig(BaseModel):
             "py": sorted(self.python_packages),
             "sys": sorted(self.system_packages),
             "bin": sorted(self.bins),
-            "scripts": self.install_scripts
+            "scripts": self.install_scripts,
         }
-        json_str = json.dumps(data_to_hash, separators=(',', ':'))
-        return hashlib.md5(json_str.encode('utf-8')).hexdigest()
+        json_str = json.dumps(data_to_hash, separators=(",", ":"))
+        return hashlib.md5(json_str.encode("utf-8")).hexdigest()
 
 
 class SandboxRequirements(BaseModel):
@@ -55,12 +57,24 @@ class SandboxRequirements(BaseModel):
         if not other:
             return self
 
-        self.env_setup.python_packages = list(dict.fromkeys(self.env_setup.python_packages + other.env_setup.python_packages))
-        self.env_setup.system_packages = list(dict.fromkeys(self.env_setup.system_packages + other.env_setup.system_packages))
-        self.env_setup.bins = list(dict.fromkeys(self.env_setup.bins + other.env_setup.bins))
+        self.env_setup.python_packages = list(
+            dict.fromkeys(
+                self.env_setup.python_packages + other.env_setup.python_packages
+            )
+        )
+        self.env_setup.system_packages = list(
+            dict.fromkeys(
+                self.env_setup.system_packages + other.env_setup.system_packages
+            )
+        )
+        self.env_setup.bins = list(
+            dict.fromkeys(self.env_setup.bins + other.env_setup.bins)
+        )
         self.env_setup.install_scripts.extend(other.env_setup.install_scripts)
 
-        self.required_extensions = list(set(self.required_extensions + other.required_extensions))
+        self.required_extensions = list(
+            set(self.required_extensions + other.required_extensions)
+        )
 
         tier_order = {
             SandboxTier.LIGHTWEIGHT: 1,
@@ -107,13 +121,54 @@ class SandboxSecurityProfile(BaseModel):
     """沙箱安全策略配置"""
 
     enable_network: bool = Field(default=False, description="是否允许访问外网")
-    sandbox_type: str = Field(default="auto", description="强制驱动类型")
+    sandbox_type: str = Field(default="docker", description="强制驱动类型")
     needs_state: bool = Field(default=True, description="是否需要持久化状态")
     require_gpu: bool = Field(default=False, description="是否需要 GPU")
-    require_pty: bool = Field(
-        default=False,
-        description="是否强制需要全功能 PTY 交互终端 (将禁用高级 Jupyter 绘图特性)",
-    )
     required_extensions: list[str] = Field(
         default_factory=list, description="强制挂载的扩展列表"
     )
+
+
+class CodeBlock(BaseModel):
+    """大模型生成的、将被沙箱执行的代码块抽象结构"""
+
+    code: str = Field(description="具体的代码片段内容")
+    language: str = Field(description="代码的编程语言，如 python, sh, bash 等")
+
+
+class BaseEntry(BaseModel):
+    pass
+
+
+class FileEntry(BaseEntry):
+    type: Literal["file"] = "file"
+    content: str | bytes
+
+
+class LocalFileEntry(BaseEntry):
+    type: Literal["local_file"] = "local_file"
+    src_path: str
+
+
+class DirEntry(BaseEntry):
+    type: Literal["dir"] = "dir"
+    children: dict[str, "EntryUnion"] = Field(default_factory=dict)
+
+
+class GitRepoEntry(BaseEntry):
+    type: Literal["git_repo"] = "git_repo"
+    url: str
+    ref: str | None = None
+
+
+EntryUnion = Annotated[
+    FileEntry | LocalFileEntry | DirEntry | GitRepoEntry, Field(discriminator="type")
+]
+DirEntry.model_rebuild()
+
+
+class Manifest(BaseModel):
+    """声明式沙箱工作区初始化清单"""
+
+    entries: dict[str, EntryUnion] = Field(default_factory=dict)
+    environment: dict[str, str] = Field(default_factory=dict)

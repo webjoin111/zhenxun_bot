@@ -1,11 +1,15 @@
 import asyncio
 from pathlib import Path
 import sys
+from typing import TYPE_CHECKING
 import uuid
 
 import aiohttp
 
 from zhenxun.services.log import logger
+
+if TYPE_CHECKING:
+    from zhenxun.services.ai.sandbox.models import CodeBlock
 
 STDLIB_MODULES = getattr(
     sys,
@@ -121,11 +125,13 @@ class JupyterKernelClient:
         self.kernel_id = kernel_id
         self.ws: aiohttp.ClientWebSocketResponse | None = None
 
-    async def _connect_ws(self):
+    async def _connect_ws(self) -> aiohttp.ClientWebSocketResponse:
         if self.ws is None or self.ws.closed:
             self.ws = await self.http_session.ws_connect(
                 f"{self.ws_url}/api/kernels/{self.kernel_id}/channels"
             )
+        assert self.ws is not None
+        return self.ws
 
     async def interrupt(self):
         try:
@@ -140,14 +146,15 @@ class JupyterKernelClient:
     async def execute(self, code: str, timeout: int = 30):
         from zhenxun.services.ai.sandbox.models import SandboxExecutionResult
 
+        background_tasks: set[asyncio.Task[None]] = set()
+
         try:
-            await self._connect_ws()
+            ws = await self._connect_ws()
         except Exception as e:
             return SandboxExecutionResult(
                 exit_code=-1, error=f"连接 Jupyter Kernel 失败: {e}"
             )
 
-        assert self.ws is not None
         msg_id = uuid.uuid4().hex
         req = {
             "header": {
@@ -162,14 +169,14 @@ class JupyterKernelClient:
         }
 
         try:
-            if self.ws.closed:
-                await self._connect_ws()
-            await self.ws.send_json(req)
+            if ws.closed:
+                ws = await self._connect_ws()
+            await ws.send_json(req)
         except Exception as e:
             logger.warning(f"[JupyterClient] WebSocket 发送失败，尝试重连: {e}")
             self.ws = None
-            await self._connect_ws()
-            await self.ws.send_json(req)
+            ws = await self._connect_ws()
+            await ws.send_json(req)
 
         stdout_parts = []
         stderr_parts = []
@@ -181,7 +188,7 @@ class JupyterKernelClient:
         async def _receive_loop():
             nonlocal exit_code, current_out_len
             while True:
-                msg = await self.ws.receive_json()
+                msg = await ws.receive_json()
                 if msg.get("parent_header", {}).get("msg_id") != msg_id:
                     continue
 
@@ -207,7 +214,9 @@ class JupyterKernelClient:
                     if not _append_text(
                         content["text"], is_stdout=(content["name"] == "stdout")
                     ):
-                        asyncio.create_task(self.interrupt())
+                        task = asyncio.create_task(self.interrupt())
+                        background_tasks.add(task)
+                        task.add_done_callback(background_tasks.discard)
                         exit_code = -1
                         break
                 elif msg_type == "error":
@@ -257,3 +266,29 @@ class JupyterKernelClient:
         if self.ws and not self.ws.closed:
             await self.ws.close()
             self.ws = None
+
+
+def extract_markdown_code_blocks(
+    markdown_text: str, supported_languages: list[str] | None = None
+) -> list["CodeBlock"]:
+    """
+    从 Markdown 文本中提取指定语言的代码块。
+    支持如 ```python ... ``` 格式。
+    """
+    import re
+
+    from zhenxun.services.ai.sandbox.models import CodeBlock
+
+    pattern = re.compile(
+        r"```[ \t]*(\w+)?[ \t]*\r?\n(.*?)\r?\n[ \t]*```", re.IGNORECASE | re.DOTALL
+    )
+    matches = pattern.findall(markdown_text)
+    code_blocks: list[CodeBlock] = []
+    for match in matches:
+        language = match[0].strip() if match[0] else ""
+        if supported_languages and language.lower() not in [
+            l.lower() for l in supported_languages
+        ]:
+            continue
+        code_blocks.append(CodeBlock(code=match[1], language=language))
+    return code_blocks

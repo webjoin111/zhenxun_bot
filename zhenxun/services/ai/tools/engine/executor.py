@@ -233,10 +233,15 @@ class ToolExecutor:
             GLOBAL_CAPABILITIES,
         )
 
+        ns = getattr(safe_context.session, "namespace", "global")
+        base_caps = GLOBAL_CAPABILITIES.get("global", []).copy()
+        if ns != "global" and ns in GLOBAL_CAPABILITIES:
+            base_caps.extend(GLOBAL_CAPABILITIES[ns])
+
         tool_caps = getattr(getattr(executable, "settings", None), "capabilities", [])
         agent_caps = getattr(safe_context, "capabilities", [])
         all_caps = (
-            [c for c in GLOBAL_CAPABILITIES if c not in agent_caps]
+            [c for c in base_caps if c not in agent_caps]
             + agent_caps
             + tool_caps
         )

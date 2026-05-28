@@ -17,6 +17,7 @@ class AIEvent(BaseModel):
         default=None, description="触发此事件的对象来源(如 Agent, AgentExecutor)"
     )
     session_id: str | None = Field(default=None, description="用于追踪链路的会话 ID")
+    namespace: str = Field(default="global", description="触发事件的插件命名空间")
 
     class Config:
         arbitrary_types_allowed = True
