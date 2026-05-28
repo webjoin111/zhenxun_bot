@@ -18,6 +18,7 @@ from .auth.config import LOGGER_COMMAND
 from .auth.context import (
     get_event_context,
     get_or_create_event_context,
+    get_permission_side_effect_cache,
     resolve_actor_user_id,
     resolve_event_channel_id,
     resolve_event_group_id,
@@ -25,12 +26,13 @@ from .auth.context import (
 )
 from .auth_checker import (
     LimitManager,
+    _get_auth_route_precheck_deps,
     _get_route_context,
     auth,
-    route_precheck,
     start_auth_runtime_tasks,
     stop_auth_runtime_tasks,
 )
+from .auth_route import route_precheck
 
 _SKIP_AUTH_PLUGINS = {"chat_history", "chat_message"}
 _BOT_CONNECT_TS: float | None = None
@@ -111,7 +113,7 @@ async def _auth_preprocessor(
         )
         set_route_modules(state, event_context, route_modules)
 
-    if await route_precheck(matcher, event_context):
+    if await route_precheck(matcher, event_context, **_get_auth_route_precheck_deps()):
         return
 
     try:
@@ -146,6 +148,7 @@ async def _unblock_after_matcher(
     session: Uninfo,
     event: Event,
     state: T_State,
+    exception: Exception | None = None,
 ):
     context = get_event_context(state)
     if context is not None:
@@ -164,4 +167,37 @@ async def _unblock_after_matcher(
                 group_id = session.group.id
     if user_id and matcher.plugin:
         module = matcher.plugin.name
-        LimitManager.unblock(module, user_id, group_id, channel_id)
+        side_effects = get_permission_side_effect_cache(
+            state=state,
+            event_cache=context.event_cache if context is not None else None,
+        )
+        commit = side_effects.commits.get(module)
+        if (
+            commit is not None
+            and not commit.committed
+            and commit.owner_matcher_id == id(matcher)
+        ):
+            side_effects.commits.pop(module, None)
+            if exception is None:
+                try:
+                    await commit.commit_all()
+                    side_effects.auth_results[module] = (True, None)
+                except Exception as exc:
+                    await commit.rollback_all("commit_failed")
+                    logger.error(
+                        "auth side effect commit failed",
+                        LOGGER_COMMAND,
+                        e=exc,
+                    )
+            else:
+                await commit.rollback_all("matcher_exception")
+            if commit.limit_should_auto_unblock:
+                limit_entity = commit.limit_entity
+                LimitManager.unblock(
+                    module,
+                    limit_entity.user_id if limit_entity else user_id,
+                    limit_entity.group_id if limit_entity else group_id,
+                    limit_entity.channel_id if limit_entity else channel_id,
+                )
+        else:
+            LimitManager.unblock(module, user_id, group_id, channel_id)
