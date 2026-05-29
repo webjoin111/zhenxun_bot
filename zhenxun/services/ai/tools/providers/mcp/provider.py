@@ -12,7 +12,7 @@ from zhenxun.services.ai.protocols.tool import (
     ToolProvider,
     ToolResolvable,
 )
-from zhenxun.services.ai.sandbox.models import EnvSetupConfig
+from zhenxun.services.ai.sandbox.models import SandboxBlueprint
 from zhenxun.services.ai.tools.models import ResolvedToolPayload
 from zhenxun.services.ai.tools.providers.mcp.toolkit import MCPToolkit
 from zhenxun.services.log import logger
@@ -52,7 +52,7 @@ class MCPServerConfig(BaseModel):
     """特定工具的细粒度权限与经济配置"""
     forward_bot_context: bool = Field(default=False)
     """是否将 Bot 会话的 User/Group/Platform 映射为 Header 穿透至服务端"""
-    sandbox_env_setup: EnvSetupConfig | None = Field(default=None)
+    sandbox_blueprint: SandboxBlueprint | None = Field(default=None)
     """沙箱环境装配配置（用于 sandbox_proxy 自动处理依赖）"""
 
 
@@ -212,7 +212,7 @@ class GlobalMCPProvider(ToolProvider):
             header_provider=self.header_provider,
             env_provider=self.env_provider,
             forward_bot_context=conf.forward_bot_context,
-            sandbox_env_setup=conf.sandbox_env_setup,
+            sandbox_blueprint=conf.sandbox_blueprint,
         )
 
     async def shutdown(self):
@@ -333,7 +333,7 @@ class MCPSource(BaseModel):
                 timeout=self.config.timeout,
                 tool_metadata=self.config.tools_meta,
                 forward_bot_context=self.config.forward_bot_context,
-                sandbox_env_setup=self.config.sandbox_env_setup,
+                sandbox_blueprint=self.config.sandbox_blueprint,
             )
             payload = await inline_toolkit.resolve(context)
             payload.toolkits.insert(0, inline_toolkit)

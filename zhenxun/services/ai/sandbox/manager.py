@@ -2,16 +2,13 @@ import nonebot
 
 from zhenxun.configs.config import Config
 from zhenxun.services.ai.sandbox.models import (
-    SandboxRequirements,
-    SandboxSecurityProfile,
-    SandboxTier,
-    Manifest,
+    SandboxBlueprint,
 )
 from zhenxun.services.ai.utils.lifespan import ResourceLifespanMixin
 from zhenxun.services.log import logger
 
-from .drivers.base import BaseSandboxDriver
-from .extension import SandboxRegistry
+from .drivers.base import BaseSandboxClient, BaseSandboxSession
+from .registry import SandboxRegistry
 
 _startup_tasks = set()
 
@@ -43,144 +40,119 @@ class _SandboxManager(ResourceLifespanMixin):
 
     def __init__(self):
         self.init_lifespan(ttl=1800)
-        self._active_sandboxes: dict[str, BaseSandboxDriver] = {}
+        self._active_sessions: dict[str, BaseSandboxSession] = {}
 
-    def _create_driver(
+    def _get_client(
         self,
-        session_id: str,
-        profile: SandboxSecurityProfile,
-        requirements: SandboxRequirements | None,
-    ) -> BaseSandboxDriver:
+        blueprint: SandboxBlueprint,
+    ) -> BaseSandboxClient:
         global_type = Config.get_config("sandbox", "SANDBOX_TYPE", "docker")
 
         effective_type = (
-            profile.sandbox_type if profile.sandbox_type and profile.sandbox_type != "auto" else global_type
+            blueprint.sandbox_type
+            if blueprint.sandbox_type and blueprint.sandbox_type != "auto"
+            else global_type
         )
 
-        drivers = SandboxRegistry.get_all_drivers()
+        clients = SandboxRegistry.get_all_clients()
 
-        if effective_type not in drivers:
-            raise RuntimeError(f"未找到指定的沙箱驱动: {effective_type}")
-        driver_cls = drivers[effective_type]
-        logger.info(f"[SandboxManager] 选择了 {effective_type} 驱动")
-        return driver_cls()
+        if effective_type not in clients:
+            raise RuntimeError(f"未找到指定的沙箱客户端: {effective_type}")
+
+        return clients[effective_type]()
 
     async def get_or_create_session(
         self,
         session_id: str,
-        profile: SandboxSecurityProfile | None = None,
-        requirements: SandboxRequirements | None = None,
-        manifest: Manifest | None = None,
-    ) -> BaseSandboxDriver:
+        blueprint: SandboxBlueprint | None = None,
+    ) -> BaseSandboxSession:
         """根据 Session ID 获取或创建持久化沙箱环境"""
 
-        if not profile:
-            profile = SandboxSecurityProfile()
+        if not blueprint:
+            blueprint = SandboxBlueprint()
 
-        implied_tier = requirements.tier if requirements else SandboxTier.LIGHTWEIGHT
-        profile.needs_state = (
-            profile.needs_state
-            or getattr(profile, "keep_state", False)
-            or implied_tier != SandboxTier.LIGHTWEIGHT
-        )
-
-        if requirements and (
-            requirements.env_setup.python_packages
-            or requirements.env_setup.system_packages
-            or requirements.env_setup.install_scripts
+        if (
+            blueprint.python_packages
+            or blueprint.system_packages
+            or blueprint.node_packages
+            or blueprint.install_scripts
         ):
-            profile.enable_network = True
-
-        extensions_to_mount = set()
-        if profile and profile.required_extensions:
-            extensions_to_mount.update(profile.required_extensions)
-        if requirements and requirements.required_extensions:
-            extensions_to_mount.update(requirements.required_extensions)
+            blueprint.enable_network = True
 
         self.touch(session_id)
         self._ensure_watchdog()
 
-        if session_id in self._active_sandboxes:
-            driver = self._active_sandboxes[session_id]
-
-            is_alive = await driver.is_alive()
+        if session_id in self._active_sessions:
+            session = self._active_sessions[session_id]
+            is_alive = await session.is_alive()
             if not is_alive:
                 logger.warning(
-                    "⚠️ [SandboxManager] 检测到 Session "
-                    f"'{session_id}' 的底层沙箱已失去响应，正在清理遗留资源并重建。"
-                )
-                await self.close_session(session_id)
-            elif not driver.supports_state and profile.needs_state:
-                logger.info(
-                    "🚀 [SandboxManager] 智能路由触发沙箱升维: "
-                    f"Session '{session_id}' 需要持久化支持，丢弃旧无状态沙箱。"
+                    f"⚠️ [SandboxManager] Session '{session_id}' 已失去响应，重建中。"
                 )
                 await self.close_session(session_id)
             else:
-                driver.touch()
-                if requirements and (
-                    requirements.env_setup.python_packages
-                    or requirements.env_setup.system_packages
-                    or requirements.env_setup.install_scripts
+                session.touch()
+                if (
+                    blueprint.python_packages
+                    or blueprint.system_packages
+                    or blueprint.node_packages
+                    or blueprint.install_scripts
                 ):
-                    await driver.install_dependencies(requirements)
-                if manifest:
-                    await driver.apply_manifest(manifest)
-                for p in extensions_to_mount:
-                    await driver.mount_extension(p)
-                return driver
+                    await session.install_dependencies(blueprint)
+                await session.apply_blueprint(blueprint)
+                for p in blueprint.required_extensions:
+                    await session.mount_extension(p)
+                return session
 
-        logger.info(
-            f"[SandboxManager] 为 Session '{session_id}' 创建沙箱环境"
-            f" (意图 needs_state={profile.needs_state})..."
-        )
-        driver = self._create_driver(session_id, profile, requirements)
+        logger.info(f"[SandboxManager] 为 Session '{session_id}' 创建沙箱环境...")
+        client = self._get_client(blueprint)
         try:
-            await driver.start(session_id, profile)
-            if manifest:
-                await driver.apply_manifest(manifest)
+            session = await client.create(session_id, blueprint)
+
+            await session.apply_blueprint(blueprint)
+
+            if (
+                blueprint.python_packages
+                or blueprint.system_packages
+                or blueprint.node_packages
+                or blueprint.install_scripts
+            ):
+                await session.install_dependencies(blueprint)
+
+            for p in blueprint.required_extensions:
+                await session.mount_extension(p)
+
+            self._active_sessions[session_id] = session
+            return session
         except Exception as e:
-            await driver.close()
+            logger.error(f"[SandboxManager] 创建 Session 失败: {e}")
             raise e
-
-        if requirements and (
-            requirements.env_setup.python_packages
-            or requirements.env_setup.system_packages
-            or requirements.env_setup.install_scripts
-        ):
-            await driver.install_dependencies(requirements)
-
-        for p in extensions_to_mount:
-            await driver.mount_extension(p)
-
-        self._active_sandboxes[session_id] = driver
-
-        return driver
 
     async def setup_workspace_environment(
         self, session_id: str, workspace_dir: str
     ) -> bool:
         """统一扫描指定工作区，通过 Provisioner 体系完成环境装配"""
-        if session_id not in self._active_sandboxes:
+        if session_id not in self._active_sessions:
             logger.warning(
-                f"[SandboxManager] 找不到活跃的 Session '{session_id}'，"
-                "无法配置环境。"
+                f"[SandboxManager] 找不到活跃的 Session '{session_id}'，无法配置环境。"
             )
             return False
 
-        driver = self._active_sandboxes[session_id]
+        session = self._active_sessions[session_id]
 
-        from zhenxun.services.ai.sandbox.provisioner import ProvisionerRegistry
+        from zhenxun.services.ai.sandbox.environments import ProvisionerRegistry
 
         for prov in ProvisionerRegistry.get_all().values():
-            await prov.scan_and_setup_workspace(driver, workspace_dir)
+            await prov.scan_and_setup_workspace(session, workspace_dir)
         return True
 
     async def release_resource(self, resource_id: str):
-        if resource_id in self._active_sandboxes:
-            driver = self._active_sandboxes.pop(resource_id)
+        if resource_id in self._active_sessions:
+            session = self._active_sessions.pop(resource_id)
             try:
-                await driver.close()
+                client_cls = SandboxRegistry.get_client_cls(session.state.sandbox_type)
+                client = client_cls()
+                await client.delete(session)
             except Exception as e:
                 logger.error(
                     f"[SandboxManager] 销毁沙箱环境失败 (Session: {resource_id}): {e}"
@@ -192,7 +164,7 @@ class _SandboxManager(ResourceLifespanMixin):
             self._last_active_times.pop(session_id, None)
 
     async def shutdown_all(self) -> None:
-        keys = list(self._active_sandboxes.keys())
+        keys = list(self._active_sessions.keys())
         for sid in keys:
             await self.close_session(sid)
         if self._watchdog_task and not self._watchdog_task.done():
@@ -207,19 +179,20 @@ driver = nonebot.get_driver()
 
 @driver.on_startup
 async def _startup_sandboxes():
-    from zhenxun.services.ai.sandbox.rpc import sandbox_rpc_server
+    from zhenxun.services.ai.sandbox.host_bridge import sandbox_rpc_server
+
     await sandbox_rpc_server.start()
 
-    drivers = SandboxRegistry.get_all_drivers()
-    if "docker" in drivers:
+    clients = SandboxRegistry.get_all_clients()
+    if "docker" in clients:
         import asyncio
 
-        from .drivers.docker import DockerDriver
+        from .drivers.docker import DockerSandboxClient
 
         async def _async_init_docker_sandbox():
             try:
                 is_alive = await asyncio.wait_for(
-                    DockerDriver.check_engine_alive(), timeout=5.0
+                    DockerSandboxClient.check_engine_alive(), timeout=5.0
                 )
             except asyncio.TimeoutError:
                 is_alive = False
@@ -230,10 +203,10 @@ async def _startup_sandboxes():
             except Exception:
                 is_alive = False
 
-            DockerDriver.set_engine_status(is_alive)
+            DockerSandboxClient.set_engine_status(is_alive)
 
             if is_alive:
-                await DockerDriver.prune_orphan_containers()
+                await DockerSandboxClient.prune_orphan_containers()
             else:
                 logger.debug(
                     "[SandboxManager] 未检测到可用本地 Docker 引擎，"
@@ -247,12 +220,13 @@ async def _startup_sandboxes():
 
 @driver.on_shutdown
 async def _shutdown_sandboxes():
-    from zhenxun.services.ai.sandbox.rpc import sandbox_rpc_server
+    from zhenxun.services.ai.sandbox.host_bridge import sandbox_rpc_server
+
     await sandbox_rpc_server.stop()
 
     await sandbox_manager.shutdown_all()
-    drivers = SandboxRegistry.get_all_drivers()
-    if "docker" in drivers and getattr(drivers["docker"], "_engine_available", False):
-        from .drivers.docker import DockerDriver
+    clients = SandboxRegistry.get_all_clients()
+    if "docker" in clients and getattr(clients["docker"], "_engine_available", False):
+        from .drivers.docker import DockerSandboxClient
 
-        await DockerDriver.close_env()
+        await DockerSandboxClient.close_env()

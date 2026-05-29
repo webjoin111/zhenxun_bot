@@ -7,10 +7,10 @@ from anyio import create_memory_object_stream, create_task_group
 from mcp.shared.message import SessionMessage
 from mcp.types import JSONRPCMessage
 
-from zhenxun.services.ai.sandbox.extension import (
-    BaseMcpProxyExtension,
-    SupportsCommandExecution,
-)
+
+from zhenxun.services.ai.sandbox.addons.base import BaseMcpProxyExtension
+from zhenxun.services.ai.sandbox.registry import SandboxRegistry
+
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_dump_json, model_validate
 
@@ -24,11 +24,11 @@ class UniversalMcpExtension(BaseMcpProxyExtension):
     async def connect_mcp(
         self, command: str, args: list[str], env: dict[str, str] | None = None
     ) -> AsyncGenerator[tuple[Any, Any], None]:
-        if isinstance(self.channel, SupportsCommandExecution):
-            async with self._connect_docker(command, args, env) as streams:
-                yield streams
-        else:
-            raise RuntimeError("当前沙箱底座不具备运行 MCP Proxy 的能力")
+        # 验证底层是否是 Docker 实例
+        if not getattr(self.session, "container", None):
+             raise RuntimeError("目前 MCP 代理仅支持基于 Docker 的沙箱底座。")
+        async with self._connect_docker(command, args, env) as streams:
+            yield streams
 
     @asynccontextmanager
     async def _connect_docker(
@@ -42,8 +42,8 @@ class UniversalMcpExtension(BaseMcpProxyExtension):
         cmd_list = [command, *args]
         env_list = [f"{k}={v}" for k, v in env.items()] if env else None
 
-        driver = self.channel
-        exec_inst = await driver.container.exec(  # type: ignore
+        session = self.session
+        exec_inst = await session.container.exec(
             cmd=cmd_list,
             stdin=True,
             stdout=True,
@@ -99,3 +99,10 @@ class UniversalMcpExtension(BaseMcpProxyExtension):
                 tg.start_soon(stream_writer)
                 yield read_cons, write_prod
                 tg.cancel_scope.cancel()
+
+
+SandboxRegistry.register_extension(UniversalMcpExtension)
+
+__all__ = [
+    "UniversalMcpExtension",
+]

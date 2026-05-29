@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 from zhenxun.services.ai.core.exceptions import ToolRetryError
 from zhenxun.services.ai.run import RunContext
-from zhenxun.services.ai.sandbox.models import SandboxSecurityProfile
+from zhenxun.services.ai.sandbox.models import SandboxBlueprint
 from zhenxun.services.ai.tools.core.decorators import tool
 from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
 from zhenxun.services.ai.tools.models import ToolResult
@@ -184,15 +184,15 @@ class FileEditorToolkit(BaseToolkit):
         "5. 一次调用可以包含多个 `*** Update File:` 或 `@@` 块。"
     )
 
-    def __init__(self, profile: SandboxSecurityProfile | None = None, **kwargs: Any):
+    def __init__(self, blueprint: SandboxBlueprint | None = None, **kwargs: Any):
         super().__init__(**kwargs)
-        self.profile = profile or SandboxSecurityProfile()
+        self.blueprint = blueprint or SandboxBlueprint()
 
     async def _get_executor(self, context: RunContext):
         from zhenxun.services.ai.sandbox.manager import sandbox_manager
 
         session_id = context.session_id or "default_editor_session"
-        return await sandbox_manager.get_or_create_session(session_id, self.profile)
+        return await sandbox_manager.get_or_create_session(session_id, self.blueprint)
 
     @tool(
         name="apply_patch",
@@ -204,7 +204,7 @@ class FileEditorToolkit(BaseToolkit):
         context: RunContext,
     ) -> ToolResult:
         executor = await self._get_executor(context)
-        from zhenxun.services.ai.sandbox.extension import SupportsFileSystem
+        from zhenxun.services.ai.sandbox.protocols import SupportsFileSystem
 
         fs_executor = cast(SupportsFileSystem, executor)
 

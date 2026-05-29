@@ -5,13 +5,13 @@ from typing import Any, cast
 from pydantic import BaseModel, Field
 
 from zhenxun.services.ai.run import RunContext
-from zhenxun.services.ai.sandbox.extension import (
+from zhenxun.services.ai.sandbox.manager import sandbox_manager
+from zhenxun.services.ai.sandbox.models import SandboxBlueprint
+from zhenxun.services.ai.sandbox.protocols import (
     SupportsCommandExecution,
     SupportsFileSystem,
 )
-from zhenxun.services.ai.sandbox.manager import sandbox_manager
-from zhenxun.services.ai.sandbox.models import SandboxSecurityProfile
-from zhenxun.services.ai.sandbox.utils import get_execution_command
+from zhenxun.services.ai.sandbox.runtimes import get_execution_command
 from zhenxun.services.ai.tools.core.decorators import silent, tool
 from zhenxun.services.ai.tools.core.tool import FunctionTool
 from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
@@ -22,6 +22,7 @@ from zhenxun.services.ai.tools.providers.skills.manager import (
 )
 from zhenxun.services.ai.tools.providers.skills.models import Skill
 from zhenxun.services.log import logger
+from zhenxun.utils.pydantic_compat import model_copy
 
 
 class ScriptArgs(BaseModel):
@@ -51,19 +52,10 @@ class SkillSandboxExecutionMixin:
             if context and context.session_id
             else f"skill_{skill.id}_session"
         )
-        profile = SandboxSecurityProfile(
-            enable_network=skill.frontmatter.enable_network,
-            required_extensions=[],
-        )
+        bp = model_copy(skill.frontmatter.blueprint, deep=True)
+        bp.enable_network = skill.frontmatter.enable_network
 
-        from zhenxun.services.ai.sandbox.models import SandboxRequirements
-
-        reqs = SandboxRequirements()
-        reqs.env_setup = skill.frontmatter.env_setup
-
-        executor = await sandbox_manager.get_or_create_session(
-            session_id, profile=profile, requirements=reqs
-        )
+        executor = await sandbox_manager.get_or_create_session(session_id, blueprint=bp)
         fs_executor = cast(SupportsFileSystem, executor)
         cmd_executor = cast(SupportsCommandExecution, executor)
 
@@ -84,16 +76,18 @@ class SkillSandboxExecutionMixin:
             k for k in skill.frontmatter.required_envs if not configured_envs.get(k)
         ]
         if missing_keys:
-            return ToolResult(
-                output=(
-                    f"❌ 技能执行被系统拦截：缺少必需的全局环境变量 {missing_keys}。\n"
-                    "💡 [智能体自愈引导]：当前技能的底层配置缺失，无法正常运行。"
-                    "请你立即停止尝试，并向用户抱歉，提示用户（或 Bot 管理员）"
-                    "在机器人后端的 `data/ai/skill_envs.json` 文件中为该技能配置"
-                    "相应的环境变量（API Key 等），配置完成后方可使用。"
-                ),
-            ).as_error().with_log(
-                f"技能 {skill.id} 因缺少环境变量 {missing_keys} 被拦截。"
+            return (
+                ToolResult(
+                    output=(
+                        f"❌ 技能执行被系统拦截：缺少必需的全局环境变量 {missing_keys}。\n"
+                        "💡 [智能体自愈引导]：当前技能的底层配置缺失，无法正常运行。"
+                        "请你立即停止尝试，并向用户抱歉，提示用户（或 Bot 管理员）"
+                        "在机器人后端的 `data/ai/skill_envs.json` 文件中为该技能配置"
+                        "相应的环境变量（API Key 等），配置完成后方可使用。"
+                    ),
+                )
+                .as_error()
+                .with_log(f"技能 {skill.id} 因缺少环境变量 {missing_keys} 被拦截。")
             )
 
         env_vars = {}
@@ -143,10 +137,12 @@ class SkillSandboxExecutionMixin:
 这通常是因为技能作者未能正确在 SKILL.md 中声明该依赖。
 **解决方案**：请你立即调用 `execute_skill_command` 工具执行 `{install_cmd}`，
 等待安装成功后，再重新调用 `run_skill_script` 执行当前脚本！"""
-                return ToolResult(
-                    output=final_output,
-                ).as_error().with_log(
-                    f"脚本因缺失依赖 {pkg} 失败，已引导 Agent 自愈。"
+                return (
+                    ToolResult(
+                        output=final_output,
+                    )
+                    .as_error()
+                    .with_log(f"脚本因缺失依赖 {pkg} 失败，已引导 Agent 自愈。")
                 )
 
         output = (
@@ -186,19 +182,10 @@ class SkillSandboxExecutionMixin:
             if context and context.session_id
             else f"skill_{skill.id}_session"
         )
-        profile = SandboxSecurityProfile(
-            enable_network=skill.frontmatter.enable_network,
-            required_extensions=[],
-        )
+        bp = model_copy(skill.frontmatter.blueprint, deep=True)
+        bp.enable_network = skill.frontmatter.enable_network
 
-        from zhenxun.services.ai.sandbox.models import SandboxRequirements
-
-        reqs = SandboxRequirements()
-        reqs.env_setup = skill.frontmatter.env_setup
-
-        executor = await sandbox_manager.get_or_create_session(
-            session_id, profile=profile, requirements=reqs
-        )
+        executor = await sandbox_manager.get_or_create_session(session_id, blueprint=bp)
         fs_executor = cast(SupportsFileSystem, executor)
         cmd_executor = cast(SupportsCommandExecution, executor)
 
@@ -219,16 +206,18 @@ class SkillSandboxExecutionMixin:
             k for k in skill.frontmatter.required_envs if not configured_envs.get(k)
         ]
         if missing_keys:
-            return ToolResult(
-                output=(
-                    f"❌ 技能执行被系统拦截：缺少必需的全局环境变量 {missing_keys}。\n"
-                    "💡 [智能体自愈引导]：当前技能的底层配置缺失，无法正常运行。"
-                    "请你立即停止尝试，并向用户抱歉，提示用户（或 Bot 管理员）"
-                    "在机器人后端的 `data/ai/skill_envs.json` 文件中为该技能配置"
-                    "相应的环境变量（API Key 等），配置完成后方可使用。"
-                ),
-            ).as_error().with_log(
-                f"技能 {skill.id} 因缺少环境变量 {missing_keys} 被拦截。"
+            return (
+                ToolResult(
+                    output=(
+                        f"❌ 技能执行被系统拦截：缺少必需的全局环境变量 {missing_keys}。\n"
+                        "💡 [智能体自愈引导]：当前技能的底层配置缺失，无法正常运行。"
+                        "请你立即停止尝试，并向用户抱歉，提示用户（或 Bot 管理员）"
+                        "在机器人后端的 `data/ai/skill_envs.json` 文件中为该技能配置"
+                        "相应的环境变量（API Key 等），配置完成后方可使用。"
+                    ),
+                )
+                .as_error()
+                .with_log(f"技能 {skill.id} 因缺少环境变量 {missing_keys} 被拦截。")
             )
 
         env_vars = {}
@@ -529,10 +518,8 @@ class SkillMetaToolkit(BaseToolkit, SkillSandboxExecutionMixin):
             return ToolResult(
                 output=content,
             ).with_log(
-
-                    f"已从本地读取文件 {file_path} (共 {len(content)} 字符)。"
-                    f"内容摘要: {content[:100]}..."
-
+                f"已从本地读取文件 {file_path} (共 {len(content)} 字符)。"
+                f"内容摘要: {content[:100]}..."
             )
 
         session_id = (
@@ -540,13 +527,10 @@ class SkillMetaToolkit(BaseToolkit, SkillSandboxExecutionMixin):
             if context and context.session_id
             else f"skill_{skill.id}_session"
         )
-        profile = SandboxSecurityProfile(
-            enable_network=skill.frontmatter.enable_network,
-            required_extensions=[],
-        )
+        bp = SandboxBlueprint(enable_network=skill.frontmatter.enable_network)
         try:
             executor = await sandbox_manager.get_or_create_session(
-                session_id, profile=profile
+                session_id, blueprint=bp
             )
             fs_executor = cast(SupportsFileSystem, executor)
 
@@ -566,10 +550,8 @@ class SkillMetaToolkit(BaseToolkit, SkillSandboxExecutionMixin):
             return ToolResult(
                 output=content,
             ).with_log(
-
-                    "已从沙箱读取动态生成的文件 "
-                    f"{sandbox_target_path} (共 {len(content)} 字符)。"
-
+                "已从沙箱读取动态生成的文件 "
+                f"{sandbox_target_path} (共 {len(content)} 字符)。"
             )
         except Exception as e:
             return ToolResult(output=f"❌ 尝试读取沙箱文件时发生异常: {e}").as_error()

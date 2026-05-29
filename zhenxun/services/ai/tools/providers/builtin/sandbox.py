@@ -1,27 +1,23 @@
 import asyncio
 from collections.abc import Callable
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 
 from zhenxun.services.ai.run import Inject, RunContext
-from zhenxun.services.ai.sandbox import (
+from zhenxun.services.ai.sandbox.host_bridge import (
     build_python_functions_file,
-    extract_markdown_code_blocks,
     to_stub,
-)
-from zhenxun.services.ai.sandbox.extension import (
-    SupportsCommandExecution,
-    SupportsFileSystem,
-    SupportsInteractivePTY,
 )
 from zhenxun.services.ai.sandbox.models import (
     CodeBlock,
+    SandboxBlueprint,
     SandboxExecutionResult,
-    SandboxSecurityProfile,
 )
+from zhenxun.services.ai.sandbox.runtimes import extract_markdown_code_blocks
 from zhenxun.services.ai.tools.core.decorators import silent, tool
 from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
 from zhenxun.services.ai.tools.models import ToolResult
 from zhenxun.services.log import logger
+from zhenxun.utils.pydantic_compat import model_copy
 
 
 class PythonPluginProtocol(Protocol):
@@ -65,14 +61,14 @@ class SandboxToolkit(BaseToolkit):
 
     def __init__(
         self,
-        profile: SandboxSecurityProfile | None = None,
+        blueprint: SandboxBlueprint | None = None,
         injected_functions: list[Callable] | None = None,
         sandbox_session_id: str | None = None,
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
         self.injected_functions = injected_functions
-        self.profile = profile or SandboxSecurityProfile()
+        self.blueprint = blueprint or SandboxBlueprint()
 
         self._injected_code: str | None = None
         self.sandbox_session_id = sandbox_session_id
@@ -110,7 +106,7 @@ class SandboxToolkit(BaseToolkit):
 
         logger.info(f"[SandboxToolkit] 预热沙箱环境 (Session: {target_session})")
 
-        from zhenxun.services.ai.sandbox.rpc import sandbox_rpc_server
+        from zhenxun.services.ai.sandbox.host_bridge import sandbox_rpc_server
 
         injected_funcs = getattr(self, "injected_functions", None)
         if injected_funcs:
@@ -120,14 +116,42 @@ class SandboxToolkit(BaseToolkit):
                         target_session, func.__name__, func
                     )
 
+        async def _on_sandbox_event(event_name: str, data: Any):
+            if context.run.streamer:
+                from zhenxun.services.ai.core.stream_events import ToolStreamChunk
+
+                if event_name == "image":
+                    import base64
+
+                    from nonebot_plugin_alconna import Image as AlcImage
+                    from nonebot_plugin_alconna import UniMessage
+
+                    img_msg = UniMessage() + AlcImage(raw=base64.b64decode(data))
+                    await context.run.streamer.send(
+                        ToolStreamChunk(
+                            tool_name="Sandbox-IPC",
+                            content="[🖼️ 收到代码抛出的实时图片]",
+                            metadata={"display": img_msg},
+                        )
+                    )
+                else:
+                    await context.run.streamer.send(
+                        ToolStreamChunk(
+                            tool_name="Sandbox-IPC",
+                            content=f"📦 [IPC推流] {event_name}: {data}",
+                        )
+                    )
+
+        sandbox_rpc_server.register_event_handler(target_session, _on_sandbox_event)
+
         self._executors[target_session] = await sandbox_manager.get_or_create_session(
-            target_session, self.profile
+            target_session, self.blueprint
         )
 
     async def exit_session(self, session_id: str) -> None:
         target_session = self.sandbox_session_id or session_id
 
-        from zhenxun.services.ai.sandbox.rpc import sandbox_rpc_server
+        from zhenxun.services.ai.sandbox.host_bridge import sandbox_rpc_server
 
         sandbox_rpc_server.unregister_session(target_session)
 
@@ -165,40 +189,31 @@ class SandboxToolkit(BaseToolkit):
         )
 
         from zhenxun.services.ai.sandbox.manager import sandbox_manager
-        from zhenxun.services.ai.sandbox.models import SandboxRequirements
+        from zhenxun.services.ai.sandbox.runtimes import CodeExecutorRegistry
 
-        reqs = SandboxRequirements()
-        deps = reqs.env_setup.python_packages
+        ns = getattr(context.session, "namespace", "global") if context else "global"
+        supported = CodeExecutorRegistry.get_supported_languages(ns)
+        if CodeExecutorRegistry._normalize_lang(language) not in supported:
+            from zhenxun.services.ai.core.exceptions import ToolRetryError
 
-        if self._injected_packages:
-            reqs.env_setup.python_packages.extend(self._injected_packages)
-            reqs.env_setup.python_packages = list(
-                dict.fromkeys(reqs.env_setup.python_packages)
+            raise ToolRetryError(
+                f"当前沙箱不支持该语言 '{language}'。支持的语言有: {supported}。请换用支持的语言重新编写代码！"
             )
 
-        logger.info(f"沙箱路由感知: 判定为 {reqs.tier.value} 级别任务。")
-        if deps:
-            logger.info(f"沙箱热注入: 自动提取到待安装依赖 -> {deps}")
+        bp = model_copy(self.blueprint, deep=True)
+        if self._injected_packages:
+            bp.python_packages.extend(self._injected_packages)
+            bp.python_packages = list(dict.fromkeys(bp.python_packages))
 
         await ui.send_text("正在分析代码依赖并分配沙箱环境...")
-        executor = await sandbox_manager.get_or_create_session(
-            session_id, self.profile, reqs
-        )
+        executor = await sandbox_manager.get_or_create_session(session_id, bp)
         self._executors[session_id] = executor
 
         code_executor = self._code_executors.get(session_id)
         if not code_executor:
-            from zhenxun.services.ai.sandbox.executors.registry import (
-                CodeExecutorRegistry,
+            code_executor = CodeExecutorRegistry.create_executor(
+                language, bp.needs_state, executor, namespace=ns
             )
-
-            ns = (
-                getattr(context.session, "namespace", "global") if context else "global"
-            )
-            executor_cls = CodeExecutorRegistry.get_executor_cls(
-                language, self.profile.needs_state, namespace=ns
-            )
-            code_executor = executor_cls(executor)
 
             self._code_executors[session_id] = code_executor
 
@@ -218,9 +233,32 @@ class SandboxToolkit(BaseToolkit):
         if not blocks:
             blocks = [CodeBlock(code=code, language=language)]
 
+        line_buffer = ""
+
+        async def _stream_output(stream_type: str, data: bytes):
+            nonlocal line_buffer
+            line_buffer += data.decode("utf-8", errors="replace")
+            if "\n" in line_buffer and ui._streamer:
+                lines = line_buffer.split("\n")
+                line_buffer = lines[-1]
+                for line in lines[:-1]:
+                    if line.strip():
+                        from zhenxun.services.ai.core.stream_events import (
+                            ToolStreamChunk,
+                        )
+
+                        await ui._streamer.send(
+                            ToolStreamChunk(
+                                tool_name="Console", content=f"💻 {line.strip()}"
+                            )
+                        )
+
         try:
             result = await code_executor.execute_code_blocks(
-                code_blocks=blocks, timeout=45, injected_code=self._injected_code
+                code_blocks=blocks,
+                timeout=45,
+                injected_code=self._injected_code,
+                on_output=_stream_output,
             )
         except Exception as e:
             logger.error(f"沙箱执行框架异常: {e}")
@@ -353,13 +391,12 @@ class SandboxToolkit(BaseToolkit):
         from zhenxun.services.ai.sandbox.manager import sandbox_manager
 
         await ui.send_text(f"正在虚拟终端执行命令: {command} ...")
-        executor = await sandbox_manager.get_or_create_session(session_id, self.profile)
+        executor = await sandbox_manager.get_or_create_session(
+            session_id, self.blueprint
+        )
 
         if not is_interactive:
-            if not isinstance(executor, SupportsCommandExecution):
-                return ToolResult(output="当前沙箱环境不支持终端执行能力。").as_error()
-            cmd_executor = cast(SupportsCommandExecution, executor)
-            res = await cmd_executor.execute_raw_command(command)
+            res = await executor.exec(command)
 
             if getattr(res, "is_timeout", False):
                 return ToolResult(
@@ -384,10 +421,7 @@ class SandboxToolkit(BaseToolkit):
         if session:
             await session.close()
 
-        if not isinstance(executor, SupportsInteractivePTY):
-            return ToolResult(output="当前沙箱环境不支持交互式 PTY 终端。").as_error()
-        pty_executor = cast(SupportsInteractivePTY, executor)
-        interactive_session = await pty_executor.create_pty_session()
+        interactive_session = await executor.create_pty_session()
 
         self._interactive_sessions[session_id] = interactive_session
 
@@ -490,18 +524,10 @@ class SandboxToolkit(BaseToolkit):
             from zhenxun.services.ai.sandbox.manager import sandbox_manager
 
             executor = await sandbox_manager.get_or_create_session(
-                session_id, self.profile
+                session_id, self.blueprint
             )
 
-        if not isinstance(executor, SupportsFileSystem):
-            from zhenxun.services.ai.core.exceptions import AbortException
-
-            raise AbortException(
-                reason="写入文件失败 (当前沙箱环境不支持持久化IO)",
-                display="❌ 写入文件失败：沙箱环境不支持文件系统操作",
-            )
-        fs_executor = cast(SupportsFileSystem, executor)
-        success = await fs_executor.write_raw_file(path, content)
+        success = await executor.write(path, content.encode("utf-8"))
         if success:
             return ToolResult(output=f"成功将内容写入文件: {path}").with_log(
                 f"📝 已向沙箱写入文件: {path}"
@@ -528,17 +554,12 @@ class SandboxToolkit(BaseToolkit):
             from zhenxun.services.ai.sandbox.manager import sandbox_manager
 
             executor = await sandbox_manager.get_or_create_session(
-                session_id, self.profile
+                session_id, self.blueprint
             )
 
-        if not isinstance(executor, SupportsFileSystem):
-            from zhenxun.services.ai.core.exceptions import AbortException
-
-            raise AbortException(reason="当前沙箱环境不支持文件系统操作。")
-        fs_executor = cast(SupportsFileSystem, executor)
-
         try:
-            content = await fs_executor.read_raw_file(path)
+            content_bytes = await executor.read(path)
+            content = content_bytes.decode("utf-8", errors="replace")
             if content.startswith("Error:") or content.startswith("Failed to"):
                 return ToolResult(output=content).as_error()
             return ToolResult(output=content).with_log(

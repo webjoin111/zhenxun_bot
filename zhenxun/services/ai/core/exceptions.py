@@ -187,6 +187,30 @@ class NeedsAuthException(Exception):
         super().__init__(f"Needs auth for: {provider} - {message}")
 
 
+class SandboxPathEscapeError(Exception):
+    """当沙箱内的路径解析结果试图逃逸出允许的工作区根目录时抛出"""
+
+    def __init__(self, path: str, resolved_path: str | None = None, reason: str = ""):
+        self.path = path
+        self.resolved_path = resolved_path
+        self.reason = reason
+        msg = f"沙箱路径逃逸拦截: {path}"
+        if resolved_path:
+            msg += f" (解析至 {resolved_path})"
+        if reason:
+            msg += f" - {reason}"
+        super().__init__(msg)
+
+
+class WorkspaceIOError(Exception):
+    """沙箱文件系统读写操作失败"""
+
+    def __init__(self, path: str, message: str, cause: Exception | None = None):
+        self.path = path
+        self.cause = cause
+        super().__init__(f"沙箱 IO 异常 [{path}]: {message}")
+
+
 class LLMException(Exception):
     """LLM 服务相关的基础异常类"""
 

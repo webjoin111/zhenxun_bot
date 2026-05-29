@@ -1,11 +1,11 @@
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from zhenxun.services.ai.sandbox.extension import SupportsCommandExecution
 from zhenxun.services.log import logger
 
 if TYPE_CHECKING:
-    from zhenxun.services.ai.sandbox.drivers.base import BaseSandboxDriver
+    from zhenxun.services.ai.sandbox.drivers.base import BaseSandboxSession
+    from zhenxun.services.ai.sandbox.models import SandboxBlueprint
 
 
 class BaseProvisioner(ABC):
@@ -18,13 +18,13 @@ class BaseProvisioner(ABC):
         pass
 
     @abstractmethod
-    async def install(self, driver: "BaseSandboxDriver", payload: Any) -> bool:
+    async def install(self, session: "BaseSandboxSession", blueprint: Any) -> bool:
         """执行安装逻辑，成功返回 True"""
         pass
 
     @abstractmethod
     async def scan_and_setup_workspace(
-        self, driver: "BaseSandboxDriver", workspace_dir: str
+        self, session: "BaseSandboxSession", workspace_dir: str
     ) -> bool:
         """扫描指定工作区（检测文件如 requirements.txt）并自动配置环境"""
         pass
@@ -63,14 +63,10 @@ class UnifiedManifestProvisioner(BaseProvisioner):
     def name(self) -> str:
         return "unified_manifest"
 
-    async def install(self, driver: "BaseSandboxDriver", payload: Any) -> bool:
-        from zhenxun.services.ai.sandbox.models import EnvSetupConfig
-
-        env_setup = cast(EnvSetupConfig, payload)
-        cmd_driver = cast(SupportsCommandExecution, driver)
-
-        target_hash = env_setup.calculate_hash()
-        hash_check = await cmd_driver.execute_raw_command("cat /workspace/.zx_env_hash")
+    async def install(self, session: "BaseSandboxSession", blueprint: "SandboxBlueprint") -> bool:
+        
+        target_hash = blueprint.calculate_hash()
+        hash_check = await session.exec("cat /workspace/.zx_env_hash")
         if hash_check.exit_code == 0 and hash_check.stdout.strip() == target_hash:
             logger.info(
                 f"[Sandbox] ⚡ 环境指纹 ({target_hash[:8]}) "
@@ -78,35 +74,35 @@ class UnifiedManifestProvisioner(BaseProvisioner):
             )
             return True
 
-        if env_setup.system_packages:
-            pkg_str = " ".join(env_setup.system_packages)
+        if blueprint.system_packages:
+            pkg_str = " ".join(blueprint.system_packages)
             logger.info(
-                f"[Sandbox] 正在为 '{driver.session_id}' 安装系统级依赖: {pkg_str}"
+                f"[Sandbox] 正在为 '{session.session_id}' 安装系统级依赖: {pkg_str}"
             )
-            await cmd_driver.execute_raw_command(
+            await session.exec(
                 "sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && "
                 "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
                 f"{pkg_str}",
                 timeout=300,
             )
 
-        if env_setup.python_packages:
-            pkg_str = " ".join(env_setup.python_packages)
+        if blueprint.python_packages:
+            pkg_str = " ".join(blueprint.python_packages)
 
-            check_uv = await cmd_driver.execute_raw_command("command -v uv")
+            check_uv = await session.exec("command -v uv")
             if check_uv.exit_code != 0:
                 logger.info(
-                    f"[Sandbox] '{driver.session_id}' 未检测到 uv，正在极速下载 uv..."
+                    f"[Sandbox] '{session.session_id}' 未检测到 uv，正在极速下载 uv..."
                 )
-                await cmd_driver.execute_raw_command(
+                await session.exec(
                     "pip install uv --disable-pip-version-check -q", timeout=60
                 )
 
             logger.info(
-                f"[Sandbox] 正在为 '{driver.session_id}' 极速安装 "
+                f"[Sandbox] 正在为 '{session.session_id}' 极速安装 "
                 f"Python 依赖: {pkg_str}"
             )
-            res = await cmd_driver.execute_raw_command(
+            res = await session.exec(
                 f"uv pip install --system {pkg_str}", timeout=120
             )
 
@@ -115,25 +111,21 @@ class UnifiedManifestProvisioner(BaseProvisioner):
                     "[Sandbox] uv 安装报错，可能遇到不兼容的原生包，"
                     f"尝试降级使用 pip: {res.stderr}"
                 )
-                await cmd_driver.execute_raw_command(
+                await session.exec(
                     f"pip install {pkg_str} -q", timeout=180
                 )
 
-        if env_setup.bins:
-            for binary in env_setup.bins:
-                res = await cmd_driver.execute_raw_command(f"command -v {binary}")
-                if res.exit_code != 0:
-                    logger.warning(
-                        f"⚠️ [Sandbox] 警告：沙箱 '{driver.session_id}' "
-                        f"缺失声明的前置命令: {binary}"
-                    )
+        if blueprint.node_packages:
+            pkg_str = " ".join(blueprint.node_packages)
+            logger.info(f"[Sandbox] 正在为 '{session.session_id}' 安装 Node 依赖: {pkg_str}")
+            await session.exec(f"npm install -g {pkg_str}", timeout=180)
 
-        if env_setup.install_scripts:
-            for script in env_setup.install_scripts:
+        if blueprint.install_scripts:
+            for script in blueprint.install_scripts:
                 logger.info(f"[Sandbox] 正在执行自定义装配脚本: {script}")
-                await cmd_driver.execute_raw_command(script, timeout=300)
+                await session.exec(script, timeout=300)
 
-        await cmd_driver.execute_raw_command(
+        await session.exec(
             f"echo '{target_hash}' > /workspace/.zx_env_hash"
         )
         logger.debug(f"[Sandbox] 环境装配完毕，已写入指纹快照: {target_hash[:8]}")
@@ -141,38 +133,35 @@ class UnifiedManifestProvisioner(BaseProvisioner):
         return True
 
     async def scan_and_setup_workspace(
-        self, driver: "BaseSandboxDriver", workspace_dir: str
+        self, session: "BaseSandboxSession", workspace_dir: str
     ) -> bool:
-        if not isinstance(driver, SupportsCommandExecution):
-            return False
-        cmd_driver = cast(SupportsCommandExecution, driver)
 
-        check = await cmd_driver.execute_raw_command(
+        check = await session.exec(
             f"test -f {workspace_dir}/requirements.txt"
         )
         if check.exit_code == 0:
-            check_uv = await cmd_driver.execute_raw_command("command -v uv")
+            check_uv = await session.exec("command -v uv")
             if check_uv.exit_code == 0:
-                await cmd_driver.execute_raw_command(
+                await session.exec(
                     "uv pip install --system -r requirements.txt",
                     cwd=workspace_dir,
                     timeout=300,
                 )
             else:
-                await cmd_driver.execute_raw_command(
+                await session.exec(
                     "pip install -q -r requirements.txt",
                     cwd=workspace_dir,
                     timeout=300,
                 )
 
-        check_npm = await cmd_driver.execute_raw_command(
+        check_npm = await session.exec(
             f"test -f {workspace_dir}/package.json"
         )
         if check_npm.exit_code == 0:
             logger.info(
                 "[UnifiedProvisioner] 发现 package.json，正在安装 npm 依赖..."
             )
-            await cmd_driver.execute_raw_command(
+            await session.exec(
                 "npm install --no-fund --no-audit --loglevel=error",
                 cwd=workspace_dir,
                 timeout=300,

@@ -3,7 +3,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from zhenxun.services.ai.sandbox.models import EnvSetupConfig
+from zhenxun.services.ai.sandbox.models import SandboxBlueprint
 
 DisclosureLevel = Annotated[
     Literal[1, 2, 3], "Progressive disclosure levels for skill loading."
@@ -34,16 +34,17 @@ class SkillFrontmatter(BaseModel):
     """允许的工具"""
     permissions: dict[str, Any] | None = Field(default=None)
     """沙箱权限声明 (如 network: true/false)"""
-    env_setup: EnvSetupConfig = Field(default_factory=EnvSetupConfig)
-    """统一环境装配声明 (根据 metadata 等自动推导)"""
+    blueprint: SandboxBlueprint = Field(default_factory=SandboxBlueprint)
+    """统一环境装配蓝图声明 (根据 metadata 等自动推导)"""
     required_envs: list[str] = Field(default_factory=list)
     """声明该技能必需的全局环境变量 Key"""
 
     @model_validator(mode="before")
     @classmethod
-    def parse_env_setup(cls, values: dict[str, Any]) -> dict[str, Any]:
-        env_setup_data = values.get("env_setup", {})
-        if hasattr(env_setup_data, "python_packages"):
+    def parse_blueprint(cls, values: dict[str, Any]) -> dict[str, Any]:
+        env_setup_data = values.get("env_setup", {}) # keep compatibility with older yaml files that use env_setup
+        blueprint = values.get("blueprint")
+        if isinstance(blueprint, SandboxBlueprint):
             return values
 
         python_packages = env_setup_data.get("python_packages", [])
@@ -112,10 +113,9 @@ class SkillFrontmatter(BaseModel):
                     if cmd not in bins:
                         bins.append(cmd)
 
-        values["env_setup"] = {
+        values["blueprint"] = {
             "python_packages": list(dict.fromkeys(python_packages)),
             "system_packages": list(dict.fromkeys(system_packages)),
-            "bins": list(dict.fromkeys(bins)),
             "install_scripts": install_scripts,
         }
         values["required_envs"] = list(dict.fromkeys(required_envs))

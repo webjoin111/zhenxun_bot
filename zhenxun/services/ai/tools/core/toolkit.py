@@ -84,7 +84,7 @@ class BaseToolkit:
             }
             self.config = ToolkitConfig(**merged_dict)
         else:
-            self.config = self._default_config.model_copy(deep=True)
+            self.config = model_copy(self._default_config, deep=True)
 
         if self.config.prefix is None:
             if self._inferred_namespace != "unknown":
@@ -245,7 +245,7 @@ class BaseToolkit:
         import copy
 
         new_tk = copy.copy(self)
-        new_tk.config = self.config.model_copy(deep=True)
+        new_tk.config = model_copy(self.config, deep=True)
         current_prefix = new_tk.config.prefix or ""
         new_tk.config.prefix = f"{current_prefix}{prefix}"
         new_tk._cached_tools = None
@@ -255,7 +255,7 @@ class BaseToolkit:
         import copy
 
         new_tk = copy.copy(self)
-        new_tk.config = self.config.model_copy(deep=True)
+        new_tk.config = model_copy(self.config, deep=True)
         old_filter = self._instance_filter
         if old_filter:
             new_tk._instance_filter = lambda t: old_filter(t) and filter_func(t)

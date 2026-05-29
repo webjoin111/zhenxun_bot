@@ -16,8 +16,8 @@ from mcp.shared.message import SessionMessage
 from pydantic import ValidationError
 
 from zhenxun.services.ai.run import RunContext
-from zhenxun.services.ai.sandbox.extension import BaseMcpProxyExtension
-from zhenxun.services.ai.sandbox.models import SandboxSecurityProfile
+from zhenxun.services.ai.sandbox.addons.base import BaseMcpProxyExtension
+from zhenxun.services.ai.sandbox.models import SandboxBlueprint
 from zhenxun.services.ai.tools.core.tool import BaseTool
 from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
 from zhenxun.services.ai.tools.models import ToolDefinition, ToolkitConfig, ToolResult
@@ -252,9 +252,8 @@ class MCPToolkit(BaseToolkit, ResourceLifespanMixin):
         env_provider: Callable[[RunContext], dict[str, str]] | None = None,
         ttl: int = 600,
         sandbox_session_id: str | None = None,
-        sandbox_profile: SandboxSecurityProfile | None = None,
         forward_bot_context: bool = False,
-        sandbox_env_setup: Any | None = None,
+        sandbox_blueprint: SandboxBlueprint | None = None,
     ):
         super().__init__(
             config=ToolkitConfig(prefix=prefix) if prefix is not None else None
@@ -273,9 +272,8 @@ class MCPToolkit(BaseToolkit, ResourceLifespanMixin):
         self.header_provider = header_provider
         self.env_provider = env_provider
         self.sandbox_session_id = sandbox_session_id
-        self.sandbox_profile = sandbox_profile
         self.forward_bot_context = forward_bot_context
-        self.sandbox_env_setup = sandbox_env_setup
+        self.sandbox_blueprint = sandbox_blueprint
 
         self._shared_session: ClientSession | None = None
         self._session_pool: dict[str, ClientSession] = {}
@@ -469,34 +467,18 @@ class MCPToolkit(BaseToolkit, ResourceLifespanMixin):
                             from zhenxun.services.ai.sandbox.manager import (
                                 sandbox_manager,
                             )
-                            from zhenxun.services.ai.sandbox.models import (
-                                SandboxSecurityProfile,
-                            )
 
                             target_session_id = (
                                 self.sandbox_session_id
                                 or self._bound_sandbox_session_id
                                 or "mcp_global_session"
                             )
-                            req_profile = (
-                                self.sandbox_profile
-                                or SandboxSecurityProfile(enable_network=True)
-                            )
-
-                            reqs = None
-                            if self.sandbox_env_setup:
-                                from zhenxun.services.ai.sandbox.models import (
-                                    SandboxRequirements,
-                                )
-
-                                reqs = SandboxRequirements(
-                                    env_setup=self.sandbox_env_setup
-                                )
+                            bp = self.sandbox_blueprint or SandboxBlueprint()
+                            bp.enable_network = True
 
                             driver = await sandbox_manager.get_or_create_session(
                                 target_session_id,
-                                profile=req_profile,
-                                requirements=reqs,
+                                blueprint=bp,
                             )
 
                             plugin_name = "universal_mcp"
