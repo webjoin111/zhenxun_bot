@@ -14,7 +14,7 @@ from zhenxun.services.ai.tools.models import (
     ToolkitConfig,
     ToolOptions,
 )
-from zhenxun.services.ai.utils.lifespan import ResourceLifespanMixin
+from zhenxun.utils.lifespan import LifespanManager
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import dump_json_safely, model_copy, parse_as
 
@@ -27,7 +27,8 @@ class BaseToolkit:
     其内部被 @tool 标记的方法将被自动解析为工具。
 
     参数:
-        config: 工具箱的全局配置对象 (ToolkitConfig)。如果不传，则自动读取类内部的 Config 定义。
+        config: 工具箱的全局配置对象 (ToolkitConfig)。
+            如果不传，则自动读取类内部的 Config 定义。
         tools: 除了带有 @tool 装饰器的方法外，要注入的其他独立工具。
         instructions: 当前工具箱实例的补充提示词；未传时使用 default_instructions。
         **kwargs: 预留扩展参数，供子类构造函数透传。
@@ -329,7 +330,7 @@ class CompositeToolkit(BaseToolkit):
         return payload
 
 
-class ApiConnectToolkit(BaseToolkit, ResourceLifespanMixin, ABC):
+class ApiConnectToolkit(BaseToolkit, ABC):
     """
     托管连接池的 Toolkit 基类。
     自动处理第三方凭证的获取、客户端的懒加载初始化，并在会话结束时安全释放连接池资源。
@@ -344,14 +345,14 @@ class ApiConnectToolkit(BaseToolkit, ResourceLifespanMixin, ABC):
 
     def __init__(self, ttl: int = 600, **kwargs: Any):
         super().__init__(**kwargs)
-        self.init_lifespan(ttl=ttl)
+        self.ttl = ttl
         self._clients: dict[str, Any] = {}
+        self.lifespan_manager = LifespanManager()
 
     async def get_client(self, context: RunContext) -> Any:
         """获取当前会话的客户端。如果未初始化，则检查凭证并自动初始化。"""
         session_id = context.session_id or "default_session"
-        self.touch(session_id)
-        self._ensure_watchdog()
+        await self.lifespan_manager.register(session_id, ttl=float(self.ttl), cleanup_callback=self.release_resource)
 
         if session_id in self._clients:
             return self._clients[session_id]
@@ -395,9 +396,8 @@ class ApiConnectToolkit(BaseToolkit, ResourceLifespanMixin, ABC):
         """会话结束时框架调用。如果 TTL <= 0 则立刻回收，否则交由看门狗回收"""
         await super().exit_session(session_id)
         if self.ttl <= 0:
-            async with self._lifespan_lock:
-                await self.release_resource(session_id)
-                self._last_active_times.pop(session_id, None)
+            await self.lifespan_manager.unregister(session_id)
+            await self.release_resource(session_id)
 
 
 StateT = TypeVar("StateT", bound=BaseModel)
@@ -490,7 +490,10 @@ class GroupSharedToolkit(BaseToolkit, Generic[StateT]):
             await self.save_state(state_key, state)
 
     def get_active_state(self, session_id: str | None) -> StateT | None:
-        """获取当前活跃会话的状态 (专供 before_llm_request 等内部框架生命周期钩子使用)"""
+        """获取当前活跃会话的状态。
+
+        (专供 before_llm_request 等内部框架生命周期钩子使用)
+        """
         return self._active_states.get(session_id or "default_session")
 
 

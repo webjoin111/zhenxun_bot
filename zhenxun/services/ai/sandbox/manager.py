@@ -1,11 +1,13 @@
+from typing import Any, cast
+
 import nonebot
 
 from zhenxun.configs.config import Config
 from zhenxun.services.ai.sandbox.models import (
     SandboxBlueprint,
 )
-from zhenxun.services.ai.utils.lifespan import ResourceLifespanMixin
 from zhenxun.services.log import logger
+from zhenxun.utils.lifespan import LifespanManager
 
 from .drivers.base import BaseSandboxClient, BaseSandboxSession
 from .registry import SandboxRegistry
@@ -29,18 +31,25 @@ def register_sandbox_configs():
         help="Docker 沙箱使用的镜像名称 (自定义 Jupyter 增强版)",
         type=str,
     )
+    Config.add_plugin_config(
+        "sandbox",
+        "CLEANUP_TIMEOUT",
+        1800,
+        help="沙箱自动清理的闲置超时时间(秒)。0表示关闭，不自动清理",
+        type=int,
+    )
     logger.info("沙箱(Sandbox) 基础设施配置项注册完成")
 
 
-class _SandboxManager(ResourceLifespanMixin):
+class _SandboxManager:
     """
     沙箱底层环境的全局调度中心。
     负责读取用户配置，并动态分发给对应的安全 Driver 执行。
     """
 
     def __init__(self):
-        self.init_lifespan(ttl=1800)
         self._active_sessions: dict[str, BaseSandboxSession] = {}
+        self.lifespan_manager = LifespanManager()
 
     def _get_client(
         self,
@@ -59,7 +68,7 @@ class _SandboxManager(ResourceLifespanMixin):
         if effective_type not in clients:
             raise RuntimeError(f"未找到指定的沙箱客户端: {effective_type}")
 
-        return clients[effective_type]()
+        return cast(BaseSandboxClient, clients[effective_type]())
 
     async def get_or_create_session(
         self,
@@ -71,52 +80,42 @@ class _SandboxManager(ResourceLifespanMixin):
         if not blueprint:
             blueprint = SandboxBlueprint()
 
-        if (
-            blueprint.python_packages
-            or blueprint.system_packages
-            or blueprint.node_packages
-            or blueprint.install_scripts
-        ):
+        if blueprint.setup_steps:
             blueprint.enable_network = True
 
-        self.touch(session_id)
-        self._ensure_watchdog()
+        cleanup_timeout = Config.get_config("sandbox", "CLEANUP_TIMEOUT", 1800)
+        await self.lifespan_manager.register(
+            session_id, ttl=float(cleanup_timeout), cleanup_callback=self.close_session
+        )
 
         if session_id in self._active_sessions:
             session = self._active_sessions[session_id]
             is_alive = await session.is_alive()
             if not is_alive:
                 logger.warning(
-                    f"⚠️ [SandboxManager] Session '{session_id}' 已失去响应，重建中。"
+                    f"⚠️ Session '{session_id}' 已失去响应，重建中。",
+                    command="SandboxManager",
                 )
                 await self.close_session(session_id)
             else:
                 session.touch()
-                if (
-                    blueprint.python_packages
-                    or blueprint.system_packages
-                    or blueprint.node_packages
-                    or blueprint.install_scripts
-                ):
+                if blueprint.setup_steps:
                     await session.install_dependencies(blueprint)
                 await session.apply_blueprint(blueprint)
                 for p in blueprint.required_extensions:
                     await session.mount_extension(p)
                 return session
 
-        logger.info(f"[SandboxManager] 为 Session '{session_id}' 创建沙箱环境...")
+        logger.info(
+            f"为 Session '{session_id}' 创建沙箱环境...", command="SandboxManager"
+        )
         client = self._get_client(blueprint)
         try:
             session = await client.create(session_id, blueprint)
 
             await session.apply_blueprint(blueprint)
 
-            if (
-                blueprint.python_packages
-                or blueprint.system_packages
-                or blueprint.node_packages
-                or blueprint.install_scripts
-            ):
+            if blueprint.setup_steps:
                 await session.install_dependencies(blueprint)
 
             for p in blueprint.required_extensions:
@@ -125,7 +124,7 @@ class _SandboxManager(ResourceLifespanMixin):
             self._active_sessions[session_id] = session
             return session
         except Exception as e:
-            logger.error(f"[SandboxManager] 创建 Session 失败: {e}")
+            logger.error(f"创建 Session 失败: {e}", command="SandboxManager")
             raise e
 
     async def setup_workspace_environment(
@@ -134,7 +133,8 @@ class _SandboxManager(ResourceLifespanMixin):
         """统一扫描指定工作区，通过 Provisioner 体系完成环境装配"""
         if session_id not in self._active_sessions:
             logger.warning(
-                f"[SandboxManager] 找不到活跃的 Session '{session_id}'，无法配置环境。"
+                f"找不到活跃的 Session '{session_id}'，无法配置环境。",
+                command="SandboxManager",
             )
             return False
 
@@ -143,7 +143,7 @@ class _SandboxManager(ResourceLifespanMixin):
         from zhenxun.services.ai.sandbox.environments import ProvisionerRegistry
 
         for prov in ProvisionerRegistry.get_all().values():
-            await prov.scan_and_setup_workspace(session, workspace_dir)
+            await prov.scan_and_setup_workspace(cast(Any, session), workspace_dir)
         return True
 
     async def release_resource(self, resource_id: str):
@@ -152,23 +152,22 @@ class _SandboxManager(ResourceLifespanMixin):
             try:
                 client_cls = SandboxRegistry.get_client_cls(session.state.sandbox_type)
                 client = client_cls()
-                await client.delete(session)
+                await client.delete(cast(Any, session))
             except Exception as e:
                 logger.error(
-                    f"[SandboxManager] 销毁沙箱环境失败 (Session: {resource_id}): {e}"
+                    f"销毁沙箱环境失败 (Session: {resource_id}): {e}",
+                    command="SandboxManager",
                 )
 
     async def close_session(self, session_id: str) -> None:
-        async with self._lifespan_lock:
-            await self.release_resource(session_id)
-            self._last_active_times.pop(session_id, None)
+        await self.lifespan_manager.unregister(session_id)
+        await self.release_resource(session_id)
 
     async def shutdown_all(self) -> None:
         keys = list(self._active_sessions.keys())
         for sid in keys:
             await self.close_session(sid)
-        if self._watchdog_task and not self._watchdog_task.done():
-            self._watchdog_task.cancel()
+        await self.lifespan_manager.stop()
 
 
 sandbox_manager = _SandboxManager()
@@ -197,8 +196,8 @@ async def _startup_sandboxes():
             except asyncio.TimeoutError:
                 is_alive = False
                 logger.warning(
-                    "[SandboxManager] Docker 引擎探活超时(5s)，"
-                    "可能处于假死状态，已自动禁用本地路由。"
+                    "Docker 引擎探活超时(5s)，可能处于假死状态，已自动禁用本地路由。",
+                    command="SandboxManager",
                 )
             except Exception:
                 is_alive = False
@@ -209,8 +208,8 @@ async def _startup_sandboxes():
                 await DockerSandboxClient.prune_orphan_containers()
             else:
                 logger.debug(
-                    "[SandboxManager] 未检测到可用本地 Docker 引擎，"
-                    "Docker 沙箱路由已自动禁用。"
+                    "未检测到可用本地 Docker 引擎，Docker 沙箱路由已自动禁用。",
+                    command="SandboxManager",
                 )
 
         task = asyncio.create_task(_async_init_docker_sandbox())

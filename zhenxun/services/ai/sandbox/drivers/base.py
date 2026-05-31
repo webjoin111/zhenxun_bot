@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-import asyncio
 import time
 from typing import Any
 
@@ -61,24 +60,10 @@ class BaseSandboxSession(SandboxChannel):
             current_env.update(blueprint.env)
             self._meta["env"] = current_env
 
-        if not blueprint.files:
-            return
-
-        for b_file in blueprint.files:
-            target_path = f"{base_path}/{b_file.path}".replace("//", "/")
-            if b_file.content is not None:
-                content = (
-                    b_file.content.encode("utf-8")
-                    if isinstance(b_file.content, str)
-                    else b_file.content
-                )
-                await self.write(target_path, content)
-            elif b_file.local_path:
-                from pathlib import Path
-                local_path = Path(b_file.local_path)
-                if await asyncio.to_thread(local_path.exists) and await asyncio.to_thread(local_path.is_file):
-                    content = await asyncio.to_thread(local_path.read_bytes)
-                    await self.write(target_path, content)
+        if blueprint.entries:
+            for rel_path, entry in blueprint.entries.items():
+                target_path = f"{base_path}/{rel_path}".replace("//", "/")
+                await entry.apply(self, target_path)
 
     def touch(self) -> None:
         """更新最后活跃时间，防止被 GC 清理"""
@@ -118,7 +103,7 @@ class BaseSandboxSession(SandboxChannel):
         pass
 
     @abstractmethod
-    async def exec(
+    async def run_process(
         self,
         command: str | list[str],
         cwd: str | None = None,
@@ -144,15 +129,7 @@ class BaseSandboxSession(SandboxChannel):
     async def mkdir(self, path: str, parents: bool = False) -> bool:
         pass
 
-    async def execute_raw_command(
-        self,
-        command: str | list[str],
-        cwd: str | None = None,
-        timeout: int = 30,
-        env: dict[str, str] | None = None,
-        on_output: Any = None,
-    ):
-        return await self.exec(command, cwd, timeout, env, on_output)
+
 
     async def write_raw_file(self, path: str, content: str) -> bool:
         return await self.write(path, content.encode("utf-8"))

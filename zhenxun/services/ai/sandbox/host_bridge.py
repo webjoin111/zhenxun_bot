@@ -140,7 +140,6 @@ def emit_event(event_name, data):
     rpc_url = os.environ.get('ZHENXUN_RPC_URL')
     session_id = os.environ.get('ZHENXUN_SESSION_ID')
     if not rpc_url: return
-    
     event_url = rpc_url.replace('/rpc', '/event')
     payload = json.dumps({"session_id": session_id, "event": event_name, "data": data}).encode('utf-8')
     req = urllib.request.Request(event_url, data=payload, headers={'Content-Type': 'application/json'})
@@ -168,8 +167,6 @@ def invoke_host(func_name, **kwargs):
         headers={'Content-Type': 'application/json'}
     )
     response = urllib.request.urlopen(req)
-    
-    # [Phase 3] 支持基于 NDJSON 的流式响应 (AsyncGenerator)
     if response.headers.get('Content-Type') == 'application/x-ndjson':
         def stream_generator():
             for line in response:
@@ -184,7 +181,7 @@ def invoke_host(func_name, **kwargs):
         if "error" in resp_dict:
             raise RuntimeError(f"Host RPC Error: {resp_dict['error']}")
         return resp_dict.get("result")
-"""
+"""  # noqa: E501
 
 
 class SandboxRPCServer:

@@ -148,7 +148,8 @@ class PatchApplier:
             )
         if len(matches) > 1:
             raise PatchError(
-                f"匹配歧义：找到了 {len(matches)} 处相同的代码块。请在 @@ Hunk 中提供更多的上下文行以便唯一定位。"
+                f"匹配歧义：找到了 {len(matches)} 处相同的代码块。"
+                "请在 @@ Hunk 中提供更多的上下文行以便唯一定位。"
             )
 
         idx = matches[0]
@@ -164,7 +165,8 @@ class FileEditorToolkit(BaseToolkit):
 
     default_instructions = (
         "## 智能文件编辑器 (apply_patch)\n"
-        "你拥有修改沙箱文件的权限。当需要修改或创建文件时，你**必须**使用 `apply_patch` 工具。\n"
+        "你拥有修改沙箱文件的权限。当需要修改或创建文件时，"
+        "你**必须**使用 `apply_patch` 工具。\n"
         "该工具使用一种简化、高宽容度的 Diff 语法。由于它是 FREEFORM 的字符串工具，"
         "请直接将补丁作为长字符串参数传入，不要额外包装在 JSON 键里。\n\n"
         "【语法规范】：\n"
@@ -178,9 +180,11 @@ class FileEditorToolkit(BaseToolkit):
         "*** End Patch\n\n"
         "【要求】：\n"
         "1. 支持的操作有 `*** Update File: <path>` 和 `*** Add File: <path>`。\n"
-        "2. 对于 Update，必须提供至少 1-2 行的上下文（以空格开头），以便系统精确定位你要修改的位置。\n"
+        "2. 对于 Update，必须提供至少 1-2 行的上下文"
+        "（以空格开头），以便系统精确定位你要修改的位置。\n"
         "3. 新增行必须以 `+` 开头，删除行以 `-` 开头。\n"
-        "4. 如果要创建新文件，使用 `*** Add File: <path>`，后面的每一行都以 `+` 开头。\n"
+        "4. 如果要创建新文件，使用 `*** Add File: <path>`，"
+        "后面的每一行都以 `+` 开头。\n"
         "5. 一次调用可以包含多个 `*** Update File:` 或 `@@` 块。"
     )
 
@@ -196,7 +200,10 @@ class FileEditorToolkit(BaseToolkit):
 
     @tool(
         name="apply_patch",
-        description="基于简化 Diff 语法的多文件精确编辑器。传入复合语法的纯文本补丁包即可执行创建、修改等操作。",
+        description=(
+            "基于简化 Diff 语法的多文件精确编辑器。"
+            "传入复合语法的纯文本补丁包即可执行创建、修改等操作。"
+        ),
     )
     async def apply_patch(
         self,
@@ -212,7 +219,8 @@ class FileEditorToolkit(BaseToolkit):
             ops = PatchParser.parse(patch_content)
             if not ops:
                 raise ToolRetryError(
-                    "解析补丁失败：未找到合法的 *** Begin Patch 和操作。请严格检查语法。"
+                    "解析补丁失败：未找到合法的 *** Begin Patch 和操作。"
+                    "请严格检查语法。"
                 )
 
             reports = []
@@ -228,7 +236,8 @@ class FileEditorToolkit(BaseToolkit):
                         "Failed to"
                     ):
                         raise ToolRetryError(
-                            f"文件不存在，无法 Update：{op.path}。请先使用 *** Add File 创建。"
+                            f"文件不存在，无法 Update：{op.path}。"
+                            "请先使用 *** Add File 创建。"
                         )
 
                     current_text = old_content

@@ -68,7 +68,7 @@ def get_execution_command(
     return " ".join(cmd_parts)
 
 
-class JupyterKernelClient:
+class JupyterWSClient:
     def __init__(
         self,
         http_session: aiohttp.ClientSession,
@@ -96,9 +96,11 @@ class JupyterKernelClient:
                 f"{self.base_url}/api/kernels/{self.kernel_id}/interrupt"
             ):
                 pass
-            logger.debug(f"[JupyterClient] 成功向 Kernel {self.kernel_id} 发送中断信号")
+            logger.debug(
+                f"[JupyterWSClient] 成功向 Kernel {self.kernel_id} 发送中断信号"
+            )
         except Exception as e:
-            logger.warning(f"[JupyterClient] 中断 Kernel 失败: {e}")
+            logger.warning(f"[JupyterWSClient] 中断 Kernel 失败: {e}")
 
     async def execute(self, code: str, timeout: int = 30, on_output=None):
         background_tasks: set[asyncio.Task[None]] = set()
@@ -107,7 +109,7 @@ class JupyterKernelClient:
             ws = await self._connect_ws()
         except Exception as e:
             return SandboxExecutionResult(
-                exit_code=-1, error=f"连接 Jupyter Kernel 失败: {e}"
+                exit_code=-1, error=f"网络连接 Jupyter Kernel 失败: {e}"
             )
 
         msg_id = uuid.uuid4().hex
@@ -128,7 +130,7 @@ class JupyterKernelClient:
                 ws = await self._connect_ws()
             await ws.send_json(req)
         except Exception as e:
-            logger.warning(f"[JupyterClient] WebSocket 发送失败，尝试重连: {e}")
+            logger.warning(f"[JupyterWSClient] WebSocket 发送失败，尝试重连: {e}")
             self.ws = None
             ws = await self._connect_ws()
             await ws.send_json(req)
@@ -164,12 +166,14 @@ class JupyterKernelClient:
                     current_out_len += len(text)
                     (stdout_parts if is_stdout else stderr_parts).append(text)
                     if on_output:
-                        asyncio.create_task(
+                        t = asyncio.create_task(
                             on_output(
                                 "stdout" if is_stdout else "stderr",
                                 text.encode("utf-8"),
                             )
                         )
+                        background_tasks.add(t)
+                        t.add_done_callback(background_tasks.discard)
                     return True
 
                 if msg_type == "stream":
@@ -230,6 +234,91 @@ class JupyterKernelClient:
             self.ws = None
 
 
+class JupyterServerManager:
+    """管理沙箱内的 Jupyter 引擎生命周期及长连接"""
+
+    def __init__(self, session: BaseSandboxSession):
+        self.session = session
+        self._http_session: aiohttp.ClientSession | None = None
+        self.base_url = ""
+        self.ws_url = ""
+        self._is_started = False
+        self._clients: dict[str, JupyterWSClient] = {}
+
+    async def ensure_started(self, env_vars: dict[str, str] | None = None):
+        if self._is_started:
+            return
+
+        jupyter_port = self.session.get_meta("jupyter_port")
+        if not jupyter_port:
+            raise RuntimeError("沙箱未分配或映射 Jupyter 端口，无法建立服务")
+
+        check_jupyter = await self.session.run_process("command -v jupyter-server")
+        if check_jupyter.exit_code != 0:
+            raise RuntimeError("沙箱内未安装 jupyter-server，请检查 Blueprint")
+
+        env_str = " ".join([f"{k}={v}" for k, v in (env_vars or {}).items()])
+        start_cmd = (
+            f"nohup env {env_str} jupyter-server "
+            "--ServerApp.ip=0.0.0.0 --ServerApp.port=8888 "
+            "--ServerApp.token='' --ServerApp.password='' "
+            "--ServerApp.disable_check_xsrf=True "
+            "--ServerApp.allow_origin='*' --ServerApp.allow_root=True "
+            "> /workspace/jupyter.log 2>&1 &"
+        )
+        await self.session.run_process(start_cmd)
+
+        self.base_url = f"http://127.0.0.1:{jupyter_port}"
+        self.ws_url = f"ws://127.0.0.1:{jupyter_port}"
+        self._http_session = aiohttp.ClientSession()
+
+        for _ in range(15):
+            try:
+                async with self._http_session.get(
+                    f"{self.base_url}/api/kernels"
+                ) as resp:
+                    if resp.status == 200:
+                        self._is_started = True
+                        logger.info(
+                            f"[JupyterManager] Jupyter 引擎拉起成功 (Port: {jupyter_port})"
+                        )
+                        return
+            except Exception:
+                pass
+            await asyncio.sleep(1)
+        raise RuntimeError("Jupyter 服务动态拉起并等待 API 响应超时")
+
+    async def get_client(self, kernel_name: str) -> JupyterWSClient:
+        await self.ensure_started()
+        if kernel_name in self._clients:
+            return self._clients[kernel_name]
+
+        if not self._http_session:
+            raise RuntimeError("HTTP 会话未建立")
+
+        async with self._http_session.post(
+            f"{self.base_url}/api/kernels", json={"name": kernel_name}
+        ) as resp:
+            kernel_id = (await resp.json()).get("id")
+            if not kernel_id:
+                raise RuntimeError(f"分配 Kernel {kernel_name} 失败")
+
+        client = JupyterWSClient(
+            self._http_session, self.base_url, self.ws_url, kernel_id
+        )
+        self._clients[kernel_name] = client
+        return client
+
+    async def close(self):
+        for client in self._clients.values():
+            await client.close()
+        self._clients.clear()
+        if self._http_session:
+            await self._http_session.close()
+            self._http_session = None
+        self._is_started = False
+
+
 def extract_markdown_code_blocks(
     markdown_text: str, supported_languages: list[str] | None = None
 ) -> list["CodeBlock"]:
@@ -245,7 +334,7 @@ def extract_markdown_code_blocks(
     for match in matches:
         language = match[0].strip() if match[0] else ""
         if supported_languages and language.lower() not in [
-            l.lower() for l in supported_languages
+            lang.lower() for lang in supported_languages
         ]:
             continue
         code_blocks.append(CodeBlock(code=match[1], language=language))
@@ -253,10 +342,7 @@ def extract_markdown_code_blocks(
 
 
 class BaseCodeExecutor(ABC):
-    """
-    代码执行器抽象基类 (Autogen 范式)
-    分离沙箱引擎和具体语言的执行逻辑。
-    """
+    """代码执行器抽象基类"""
 
     def __init__(self, session: BaseSandboxSession):
         self.session = session
@@ -318,14 +404,14 @@ class GenericCLIExecutor(BaseCodeExecutor):
 
         if self.profile.compile_cmd:
             compile_cmd = self.profile.compile_cmd.format(source_file=script_path)
-            res = await self.session.exec(
+            res = await self.session.run_process(
                 compile_cmd, timeout=timeout, env=env, on_output=on_output
             )
             if res.exit_code != 0:
                 return res
 
         run_cmd = self.profile.run_cmd.format(source_file=script_path)
-        return await self.session.exec(
+        return await self.session.run_process(
             run_cmd, timeout=timeout, env=env, on_output=on_output
         )
 
@@ -333,7 +419,9 @@ class GenericCLIExecutor(BaseCodeExecutor):
 class CodeExecutorRegistry:
     """多语言代码执行器动态注册中心"""
 
-    _executors: ClassVar[dict[str, dict[str, dict[bool, type[BaseCodeExecutor]]]]] = {}
+    _executors: ClassVar[
+        dict[str, dict[str, dict[bool, Callable[[Any], BaseCodeExecutor]]]]
+    ] = {}
     _profiles: ClassVar[dict[str, "LanguageProfile"]] = {}
 
     _aliases: ClassVar[dict[str, str]] = {
@@ -353,7 +441,7 @@ class CodeExecutorRegistry:
     def register(
         cls,
         language: str,
-        executor_cls: type[BaseCodeExecutor],
+        executor_cls: Callable[[Any], BaseCodeExecutor],
         is_stateful: bool = False,
         scope: str | None = None,
     ) -> None:
@@ -367,7 +455,23 @@ class CodeExecutorRegistry:
 
         cls._executors[ns][lang_norm][is_stateful] = executor_cls
         logger.debug(
-            f"[CodeExecutorRegistry] 成功注册执行器: {ns} -> {lang_norm} (Stateful: {is_stateful}) -> {executor_cls.__name__}"
+            f"[CodeExecutorRegistry] 成功注册执行器: {ns} -> {lang_norm} "
+            f"(Stateful: {is_stateful})"
+        )
+
+    @classmethod
+    def register_jupyter_language(
+        cls,
+        language: str,
+        kernel_name: str,
+        scope: str | None = None,
+    ) -> None:
+        """语法糖：快速注册一门基于 Jupyter Kernel 的有状态语言"""
+        cls.register(
+            language,
+            lambda session: GenericJupyterExecutor(session, kernel_name=kernel_name),
+            is_stateful=True,
+            scope=scope,
         )
 
     @classmethod
@@ -403,7 +507,8 @@ class CodeExecutorRegistry:
             return GenericCLIExecutor(session, cls._profiles[lang_norm])
 
         raise ValueError(
-            f"当前沙箱生态未提供针对语言 '{language}' 的代码执行器。支持的语言有: {cls.get_supported_languages()}"
+            f"当前沙箱生态未提供针对语言 '{language}' 的代码执行器。"
+            f"支持的语言有: {cls.get_supported_languages()}"
         )
 
     @classmethod
@@ -415,63 +520,13 @@ class CodeExecutorRegistry:
         return list(langs)
 
 
-class PythonJupyterExecutor(BaseCodeExecutor):
-    """Python 有状态多模态执行器。动态在沙箱内按需启动 Jupyter Server。"""
+class GenericJupyterExecutor(BaseCodeExecutor):
+    """基于 Jupyter 协议的泛化有状态执行器。支持多语言 REPL。"""
 
-    def __init__(self, session):
+    def __init__(self, session, kernel_name: str = "python3"):
         super().__init__(session)
-        self.jupyter_client = None
-        self._http_session = None
-
-    async def _ensure_jupyter_started(self):
-        if self.jupyter_client:
-            return
-
-        jupyter_port = self.session.get_meta("jupyter_port")
-        if not jupyter_port:
-            raise RuntimeError("沙箱未映射 Jupyter 端口")
-
-        check_jupyter = await self.session.exec("command -v jupyter-server")
-        if check_jupyter.exit_code != 0:
-            raise RuntimeError("沙箱内未安装 jupyter-server，无法启动高级环境")
-
-        rpc_env = await self._prepare_rpc_env()
-        env_str = " ".join([f"{k}={v}" for k, v in rpc_env.items()])
-
-        start_cmd = (
-            f"nohup env {env_str} jupyter-server "
-            "--ServerApp.ip=0.0.0.0 --ServerApp.port=8888 "
-            "--ServerApp.token='' --ServerApp.password='' "
-            "--ServerApp.disable_check_xsrf=True "
-            "--ServerApp.allow_origin='*' --ServerApp.allow_root=True "
-            "> /workspace/jupyter.log 2>&1 &"
-        )
-        await self.session.exec(start_cmd)
-
-        base_url = f"http://127.0.0.1:{jupyter_port}"
-        ws_url = f"ws://127.0.0.1:{jupyter_port}"
-
-        self._http_session = aiohttp.ClientSession()
-        for _ in range(15):
-            try:
-                async with self._http_session.get(f"{base_url}/api/kernels") as resp:
-                    if resp.status == 200:
-                        break
-            except Exception:
-                pass
-            await asyncio.sleep(1)
-        else:
-            raise RuntimeError("Jupyter 服务动态拉起超时")
-
-        async with self._http_session.post(
-            f"{base_url}/api/kernels", json={"name": "python3"}
-        ) as resp:
-            kernel_id = (await resp.json()).get("id")
-
-        self.jupyter_client = JupyterKernelClient(
-            self._http_session, base_url, ws_url, kernel_id
-        )
-        logger.info("[PythonJupyterExecutor] Jupyter 内核动态拉起成功！")
+        self.kernel_name = kernel_name
+        self.manager = JupyterServerManager(session)
 
     async def execute_code_blocks(
         self,
@@ -480,7 +535,11 @@ class PythonJupyterExecutor(BaseCodeExecutor):
         injected_code: str | None = None,
         on_output: Callable[[str, bytes], Awaitable[None]] | None = None,
     ) -> SandboxExecutionResult:
-        await self._ensure_jupyter_started()
+        try:
+            rpc_env = await self._prepare_rpc_env()
+            await self.manager.ensure_started(env_vars=rpc_env)
+        except Exception as e:
+            return SandboxExecutionResult(exit_code=-1, error=str(e))
 
         if injected_code:
             await self.session.write(
@@ -488,18 +547,19 @@ class PythonJupyterExecutor(BaseCodeExecutor):
             )
 
         combined_code = "\n".join([b.code for b in code_blocks])
-        result = await self.jupyter_client.execute(
+
+        try:
+            client = await self.manager.get_client(self.kernel_name)
+        except Exception as e:
+            return SandboxExecutionResult(exit_code=-1, error=str(e))
+
+        result = await client.execute(
             combined_code, timeout=timeout, on_output=on_output
         )
         return result
 
     async def close(self):
-        if self.jupyter_client:
-            await self.jupyter_client.close()
-            self.jupyter_client = None
-        if self._http_session:
-            await self._http_session.close()
-            self._http_session = None
+        await self.manager.close()
 
 
 CodeExecutorRegistry.register_profile(
@@ -527,15 +587,13 @@ CodeExecutorRegistry.register_profile(
         run_cmd="node {source_file}",
     )
 )
-CodeExecutorRegistry.register(
-    "python", PythonJupyterExecutor, is_stateful=True, scope="global"
-)
+CodeExecutorRegistry.register_jupyter_language("python", "python3", scope="global")
 
 __all__ = [
     "BaseCodeExecutor",
     "CodeExecutorRegistry",
     "GenericCLIExecutor",
-    "PythonJupyterExecutor",
+    "GenericJupyterExecutor",
     "extract_markdown_code_blocks",
     "get_execution_command",
 ]

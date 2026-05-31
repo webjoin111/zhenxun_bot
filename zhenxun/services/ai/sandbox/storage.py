@@ -1,9 +1,6 @@
 import hashlib
 from pathlib import PurePath, PurePosixPath
 from typing import Final
-from abc import ABC, abstractmethod
-from typing import Any, Literal
-from pydantic import BaseModel, Field
 
 _INSTALL_MARKER: Final[str] = "INSTALL_VFS_HELPER_V1"
 
@@ -54,7 +51,6 @@ resolve_path() {
 
     resolved_parent=$(resolve_path "$parent" "$depth" "$seen")
     candidate_path="$resolved_parent/$base"
-    
     if [ -L "$candidate_path" ]; then
         case ":$seen:" in
             *":$candidate_path:"*)
@@ -135,65 +131,3 @@ def coerce_posix_path(path: str | PurePath) -> PurePosixPath:
     return PurePosixPath(path)
 
 
-class BaseMount(BaseModel, ABC):
-    """虚拟挂载抽象基类"""
-
-    target_path: str = Field(description="沙箱内部的挂载目标路径")
-    read_only: bool = Field(default=True)
-
-    @abstractmethod
-    async def mount(self, driver: Any) -> bool:
-        """执行具体的挂载逻辑 (由 Driver 回调)"""
-        pass
-
-
-class RcloneMount(BaseMount):
-    """基于 Rclone 的云原生对象存储挂载器"""
-
-    type: Literal["rclone"] = "rclone"
-    remote_type: str = Field(description="rclone 后端类型，如 s3, webdav, oss")
-    config: dict[str, str] = Field(description="rclone 配置键值对")
-    remote_path: str = Field(default="", description="远端路径，如 bucket_name/path")
-
-    async def mount(self, driver: Any) -> bool:
-        from zhenxun.services.log import logger
-
-        check = await driver.execute_raw_command("command -v rclone")
-        if check.exit_code != 0:
-            logger.info(f"[{driver.session_id}] 正在热装配 rclone...")
-            await driver.execute_raw_command(
-                "apt-get update -qq && apt-get install -y -qq rclone fuse3"
-            )
-
-        config_lines = ["[zx_remote]"]
-        config_lines.append(f"type = {self.remote_type}")
-        for k, v in self.config.items():
-            config_lines.append(f"{k} = {v}")
-        config_content = "\n".join(config_lines)
-
-        await driver.write_raw_file("/workspace/.rclone.conf", config_content)
-        await driver.execute_raw_command(f"mkdir -p {self.target_path}")
-
-        cmd = (
-            f"rclone mount zx_remote:{self.remote_path} {self.target_path} "
-            f"--config /workspace/.rclone.conf --daemon "
-        )
-        if self.read_only:
-            cmd += "--read-only "
-
-        res = await driver.execute_raw_command(cmd)
-        if res.exit_code != 0:
-            logger.error(f"Rclone 挂载失败: {res.stderr}")
-            return False
-
-        logger.info(f"[{driver.session_id}] 成功挂载 Rclone 存储至 {self.target_path}")
-        return True
-
-
-class LocalDirMount(BaseMount):
-    """基于本地目录映射的挂载器"""
-    type: Literal["local_dir"] = "local_dir"
-    source_path: str = Field(description="宿主机源目录路径")
-
-    async def mount(self, driver: Any) -> bool:
-        return True

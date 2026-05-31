@@ -171,7 +171,8 @@ class SandboxToolkit(BaseToolkit):
         name="execute_code",
         description=(
             "在沙箱环境中执行代码。\n"
-            "支持多语言执行，请在 language 参数中指定具体的编程语言（如 python, bash 等）。\n"
+            "支持多语言执行，请在 language 参数中指定具体的编程语言"
+            "（如 python, bash 等）。\n"
             "默认超时时间为 45 秒。如果你的代码需要更长的时间或等待用户输入，"
             "它将被挂在后台运行。\n"
             "你将收到目前的屏幕输出，并可以决定后续操作。"
@@ -197,13 +198,13 @@ class SandboxToolkit(BaseToolkit):
             from zhenxun.services.ai.core.exceptions import ToolRetryError
 
             raise ToolRetryError(
-                f"当前沙箱不支持该语言 '{language}'。支持的语言有: {supported}。请换用支持的语言重新编写代码！"
+                f"当前沙箱不支持该语言 '{language}'。支持的语言有: {supported}。"
+                "请换用支持的语言重新编写代码！"
             )
 
         bp = model_copy(self.blueprint, deep=True)
         if self._injected_packages:
-            bp.python_packages.extend(self._injected_packages)
-            bp.python_packages = list(dict.fromkeys(bp.python_packages))
+            bp.with_python_packages(self._injected_packages)
 
         await ui.send_text("正在分析代码依赖并分配沙箱环境...")
         executor = await sandbox_manager.get_or_create_session(session_id, bp)
@@ -396,7 +397,7 @@ class SandboxToolkit(BaseToolkit):
         )
 
         if not is_interactive:
-            res = await executor.exec(command)
+            res = await executor.run_process(command)
 
             if getattr(res, "is_timeout", False):
                 return ToolResult(

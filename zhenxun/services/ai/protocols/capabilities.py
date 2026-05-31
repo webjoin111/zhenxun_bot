@@ -183,7 +183,7 @@ class AbstractCapability:
 
 
 class CapabilityRegistry:
-    """[Phase 4] Capability 序列化注册表"""
+    """Capability 序列化注册表"""
 
     _registry: dict[str, type[AbstractCapability]] = {}
 

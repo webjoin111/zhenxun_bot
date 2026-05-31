@@ -1,5 +1,4 @@
 import ast
-import re
 from typing import Any, cast
 
 from pydantic import BaseModel, Field
@@ -79,7 +78,8 @@ class SkillSandboxExecutionMixin:
             return (
                 ToolResult(
                     output=(
-                        f"❌ 技能执行被系统拦截：缺少必需的全局环境变量 {missing_keys}。\n"
+                        f"❌ 技能执行被系统拦截：缺少必需的全局环境变量 "
+                        f"{missing_keys}。\n"
                         "💡 [智能体自愈引导]：当前技能的底层配置缺失，无法正常运行。"
                         "请你立即停止尝试，并向用户抱歉，提示用户（或 Bot 管理员）"
                         "在机器人后端的 `data/ai/skill_envs.json` 文件中为该技能配置"
@@ -107,43 +107,9 @@ class SkillSandboxExecutionMixin:
         arg_list = shlex.split(args)
         cmd = get_execution_command(f"scripts/{script_name}", arg_list)
 
-        result = await cmd_executor.execute_raw_command(
+        result = await cmd_executor.run_process(
             cmd, cwd=target_workspace, timeout=60, env=env_vars
         )
-
-        if result.exit_code != 0:
-            err_text = result.stderr or result.stdout
-            node_match = re.search(r"Cannot find module '([^']+)'", err_text)
-            py_match = re.search(r"No module named '([^']+)'", err_text)
-
-            if (node_match and node_match.group(1)) or (py_match and py_match.group(1)):
-                is_node = bool(node_match)
-                pkg = (
-                    (node_match.group(1) if node_match else None)
-                    if node_match
-                    else (py_match.group(1) if py_match else None)
-                )
-                install_cmd = (
-                    f"npm install {pkg}"
-                    if is_node
-                    else f"uv pip install --system {pkg} 或 pip install {pkg}"
-                )
-
-                final_output = f"""❌ 脚本执行失败 (Exit Code: {result.exit_code})。
-输出日志:
-{err_text}
-
-💡 [智能体自愈引导]：当前沙箱环境缺失依赖包 [{pkg}]！
-这通常是因为技能作者未能正确在 SKILL.md 中声明该依赖。
-**解决方案**：请你立即调用 `execute_skill_command` 工具执行 `{install_cmd}`，
-等待安装成功后，再重新调用 `run_skill_script` 执行当前脚本！"""
-                return (
-                    ToolResult(
-                        output=final_output,
-                    )
-                    .as_error()
-                    .with_log(f"脚本因缺失依赖 {pkg} 失败，已引导 Agent 自愈。")
-                )
 
         output = (
             result.stdout + ("\nSTDERR:\n" + result.stderr if result.stderr else "")
@@ -209,7 +175,8 @@ class SkillSandboxExecutionMixin:
             return (
                 ToolResult(
                     output=(
-                        f"❌ 技能执行被系统拦截：缺少必需的全局环境变量 {missing_keys}。\n"
+                        f"❌ 技能执行被系统拦截：缺少必需的全局环境变量 "
+                        f"{missing_keys}。\n"
                         "💡 [智能体自愈引导]：当前技能的底层配置缺失，无法正常运行。"
                         "请你立即停止尝试，并向用户抱歉，提示用户（或 Bot 管理员）"
                         "在机器人后端的 `data/ai/skill_envs.json` 文件中为该技能配置"
@@ -232,7 +199,7 @@ class SkillSandboxExecutionMixin:
                 if isinstance(v, str | int | float | bool):
                     env_vars[k] = str(v)
 
-        result = await cmd_executor.execute_raw_command(
+        result = await cmd_executor.run_process(
             command, cwd=target_workspace, timeout=180, env=env_vars
         )
 
@@ -244,18 +211,6 @@ class SkillSandboxExecutionMixin:
             final_output = f"""🚨 终端命令执行发生严重系统异常或超时被强杀
 (Exit Code: {result.exit_code})！
 这通常意味着网络不通、下载数据过大耗时太长，或沙箱环境崩溃。输出为空。"""
-        elif result.exit_code == 127 or "command not found" in output.lower():
-            final_output = f"""❌ 终端命令执行失败
-(Exit Code: {result.exit_code})。提示“命令未找到”。
-输出日志:
-{output}
-
-💡 [系统自愈引导]：当前沙箱环境缺少该命令对应的依赖程序！
-请查阅你刚刚阅读的技能指南中的 Quick Start 或 Prerequisites 部分，
-找到对应的安装命令（例如 `npm install -g xxx`, `npx ...` 或
-`pip install xxx`）。
-请先调用 `execute_skill_command` 执行这些安装命令，等待安装成功后，
-再重新执行你原本的任务命令！"""
         elif result.exit_code != 0:
             final_output = f"""❌ 终端命令执行失败 (Exit Code: {result.exit_code})。
 输出日志:
@@ -420,9 +375,10 @@ class SkillMetaToolkit(BaseToolkit, SkillSandboxExecutionMixin):
         "   - **终端执行**：若指南中提供的是纯命令行终端指令"
         "（例如 `curl`, `infsh`, `gh` 等），请调用 "
         "`execute_skill_command` 在技能专属沙箱中直接执行该命令。\n"
-        "   - **智能自愈**：如果执行脚本时报错 `ModuleNotFoundError` 等依赖缺失错误，"
-        "你必须调用 `execute_skill_command` 手动执行 "
-        "`uv pip install ...` 或 `npm install ...` 补齐依赖后再重试。\n"
+        "   - **智能自愈 (Agentic Healing)**：如果执行脚本或命令时失败（如 Exit Code 非 0），"
+        "你必须自主阅读输出日志 (Stderr/Stdout)，分析报错原因（如缺少依赖、命令不存在、代码逻辑错误等）。\n"
+        "     - 如果是缺少依赖，请主动调用 `execute_skill_command` 使用相应的包管理器（如 `uv pip install <pkg>` 或 `npm install <pkg>`）安装缺失的依赖，安装成功后再次重试目标任务。\n"
+        "     - 如果是其他错误，请结合技能指南调整参数或操作流程后重试。\n"
         "4. 如需阅读参考文档，请参考 `<available_references>` 节点并调用 "
         "`read_skill_file`。"
     )

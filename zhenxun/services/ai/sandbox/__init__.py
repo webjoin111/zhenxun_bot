@@ -19,8 +19,8 @@ from .registry import SandboxRegistry
 
 __all__ = [
     "CodeBlock",
-    "SandboxBlueprint",
     "InteractiveTerminalSession",
+    "SandboxBlueprint",
     "SandboxChannel",
     "SandboxExecutionResult",
     "SandboxRegistry",

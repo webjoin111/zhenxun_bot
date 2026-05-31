@@ -1,4 +1,6 @@
 import asyncio
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 import io
 from pathlib import Path
 import re
@@ -6,6 +8,7 @@ import tarfile
 from typing import Any
 
 import aiodocker
+import anyio
 
 from zhenxun.configs.config import Config
 from zhenxun.services.ai.core.exceptions import SandboxPathEscapeError, WorkspaceIOError
@@ -14,7 +17,11 @@ from zhenxun.services.ai.sandbox.models import (
     SandboxExecutionResult,
     SandboxSessionState,
 )
-from zhenxun.services.ai.sandbox.protocols import InteractiveTerminalSession
+from zhenxun.services.ai.sandbox.protocols import (
+    InteractiveTerminalSession,
+    ProcessStreamMessage,
+    SandboxProcessStream,
+)
 from zhenxun.services.ai.sandbox.storage import RESOLVE_PATH_HELPER, coerce_posix_path
 from zhenxun.services.log import logger
 
@@ -77,7 +84,7 @@ class DockerInteractiveTerminalSession(InteractiveTerminalSession):
         if self.exec_stream:
             await self.exec_stream.write_in(text.encode("utf-8"))
 
-    async def read_output(self, timeout: int = 5) -> str:
+    async def read_output(self, timeout: int = 5) -> str:  # noqa: ASYNC109
         lines = self.buffer.split("\n")
         return "\n".join(lines[-50:]).strip()
 
@@ -91,6 +98,25 @@ class DockerInteractiveTerminalSession(InteractiveTerminalSession):
         if self.exec_stream:
             await self.exec_stream.close()
             self.exec_stream = None
+
+
+class DockerSandboxProcessStream(SandboxProcessStream):
+    """包装 aiodocker 的流，使其符合 SandboxProcessStream 协议"""
+
+    def __init__(self, docker_stream):
+        self.stream = docker_stream
+
+    async def read(self) -> ProcessStreamMessage | None:
+        msg = await self.stream.read_out()
+        if msg is None:
+            return None
+        return ProcessStreamMessage(stream_type=msg.stream, data=msg.data)
+
+    async def write(self, data: bytes) -> None:
+        await self.stream.write_in(data)
+
+    async def close(self) -> None:
+        await self.stream.close()
 
 
 class DockerSandboxSession(BaseSandboxSession):
@@ -115,13 +141,34 @@ class DockerSandboxSession(BaseSandboxSession):
     async def create_pty_session(self) -> InteractiveTerminalSession:
         return DockerInteractiveTerminalSession(self)
 
+    @asynccontextmanager
+    async def create_stream_process(
+        self,
+        command: str | list[str],
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> AsyncGenerator[SandboxProcessStream, None]:
+        cmd_list = ["/bin/sh", "-c", command] if isinstance(command, str) else command
+        env_list = [f"{k}={v}" for k, v in env.items()] if env else None
+
+        exec_inst = await self.container.exec(
+            cmd=cmd_list,
+            stdin=True,
+            stdout=True,
+            stderr=True,
+            environment=env_list,
+            workdir=cwd or "/workspace",
+        )
+        async with exec_inst.start(detach=False) as raw_stream:
+            yield DockerSandboxProcessStream(raw_stream)
+
     async def _ensure_vfs_helper(self):
         """预置路径安全探针"""
         if self._vfs_helper_installed:
             return
-        check = await self.exec(f"test -x {RESOLVE_PATH_HELPER.install_path}")
+        check = await self.run_process(f"test -x {RESOLVE_PATH_HELPER.install_path}")
         if check.exit_code != 0:
-            res = await self.exec(RESOLVE_PATH_HELPER.install_command())
+            res = await self.run_process(RESOLVE_PATH_HELPER.install_command())
             if res.exit_code != 0:
                 raise RuntimeError(f"安装沙箱 VFS 探针失败: {res.stderr}")
         self._vfs_helper_installed = True
@@ -135,7 +182,7 @@ class DockerSandboxSession(BaseSandboxSession):
         is_write = "1" if for_write else "0"
 
         cmd = [str(RESOLVE_PATH_HELPER.install_path), base_dir, target_posix, is_write]
-        res = await self.exec(cmd)
+        res = await self.run_process(cmd)
 
         if res.exit_code == 0:
             resolved = res.stdout.strip()
@@ -147,11 +194,11 @@ class DockerSandboxSession(BaseSandboxSession):
             raise SandboxPathEscapeError(path=str(path), resolved_path=resolved_path)
         raise WorkspaceIOError(str(path), f"探针解析路径异常: {res.stderr}")
 
-    async def exec(
+    async def run_process(
         self,
         command: str | list[str],
         cwd: str | None = None,
-        timeout: float | None = 30.0,
+        timeout: float | None = 30.0,  # noqa: ASYNC109
         env: dict[str, str] | None = None,
         on_output: Any = None,
     ) -> SandboxExecutionResult:
@@ -236,7 +283,7 @@ class DockerSandboxSession(BaseSandboxSession):
             return buf.getvalue()
 
         try:
-            await self.exec(f"rm -f '{secure_path.as_posix()}'")
+            await self.run_process(f"rm -f '{secure_path.as_posix()}'")
 
             await self.mkdir(secure_path.parent, parents=True)
             tar_bytes = await asyncio.to_thread(_create_tar)
@@ -249,14 +296,44 @@ class DockerSandboxSession(BaseSandboxSession):
     async def rm(self, path: str | Path, recursive: bool = False) -> bool:
         secure_path = await self._validate_remote_path(path, for_write=True)
         flag = "-rf" if recursive else "-f"
-        res = await self.exec(f"rm {flag} '{secure_path.as_posix()}'")
+        res = await self.run_process(f"rm {flag} '{secure_path.as_posix()}'")
         return res.exit_code == 0
 
     async def mkdir(self, path: str | Path, parents: bool = False) -> bool:
         secure_path = await self._validate_remote_path(path, for_write=True)
         flag = "-p" if parents else ""
-        res = await self.exec(f"mkdir {flag} '{secure_path.as_posix()}'")
+        res = await self.run_process(f"mkdir {flag} '{secure_path.as_posix()}'")
         return res.exit_code == 0
+
+    async def upload_raw_dir(
+        self, local_dir_path: str, sandbox_target_path: str
+    ) -> bool:
+
+        aio_path = anyio.Path(local_dir_path)
+        if not await aio_path.exists() or not await aio_path.is_dir():
+            return False
+
+        local_path = Path(local_dir_path)
+
+        def _create_tar():
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w") as tar:
+                for item in local_path.rglob("*"):
+                    if item.is_file():
+                        arcname = item.relative_to(local_path).as_posix()
+                        tar.add(item, arcname=arcname)
+            return buf.getvalue()
+
+        try:
+            await self.mkdir(sandbox_target_path, parents=True)
+            tar_bytes = await asyncio.to_thread(_create_tar)
+            await self.container.put_archive(sandbox_target_path, tar_bytes)
+            return True
+        except Exception as e:
+            from zhenxun.services.log import logger
+
+            logger.error(f"[Docker I/O] 上传目录失败: {e}")
+            return False
 
     async def close(self) -> None:
         if self.container:
@@ -270,6 +347,7 @@ class DockerSandboxClient(BaseSandboxClient):
     backend_id = "docker"
     _global_docker_client = None
     _init_lock = asyncio.Lock()
+    _engine_available = False
 
     async def create(
         self,
@@ -327,7 +405,7 @@ class DockerSandboxClient(BaseSandboxClient):
         return session
 
     async def resume(self, state: SandboxSessionState) -> BaseSandboxSession:
-        raise NotImplementedError("Phase 2/3 Docker Driver 不支持无状态重建恢复。")
+        raise NotImplementedError("Docker Driver 不支持无状态重建恢复。")
 
     async def delete(self, session: BaseSandboxSession) -> None:
         await session.close()
@@ -336,18 +414,49 @@ class DockerSandboxClient(BaseSandboxClient):
     async def close_env(cls):
         if cls._global_docker_client:
             await cls._global_docker_client.close()
+            cls._global_docker_client = None
 
     @classmethod
     async def check_engine_alive(cls):
+        import aiodocker
+
+        if cls._global_docker_client is None:
+            async with cls._init_lock:
+                if cls._global_docker_client is None:
+                    cls._global_docker_client = aiodocker.Docker()
+        await cls._global_docker_client.system.info()
         return True
 
     @classmethod
     async def prune_orphan_containers(cls):
-        pass
+        if not cls._global_docker_client:
+            return
+        try:
+            containers = await cls._global_docker_client.containers.list(
+                filters={"label": ["zhenxun_component=sandbox"]}, all=True
+            )
+            count = 0
+            for c in containers:
+                try:
+                    await c.delete(force=True)
+                    count += 1
+                except Exception:
+                    pass
+            if count > 0:
+                from zhenxun.services.log import logger
+
+                logger.info(
+                    f"启动检测：已成功清理 {count} 个由于上次异常退出遗留的孤儿沙箱容器。",
+                    command="SandboxManager",
+                )
+        except Exception as e:
+            from zhenxun.services.log import logger
+
+            logger.warning(f"清理孤儿容器失败: {e}", command="SandboxManager")
 
     @classmethod
-    def set_engine_status(cls, status):
-        pass
+    def set_engine_status(cls, status: bool):
+        cls._engine_available = status
 
 
 from zhenxun.services.ai.sandbox.registry import SandboxRegistry

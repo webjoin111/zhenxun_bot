@@ -42,7 +42,7 @@ class SkillFrontmatter(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def parse_blueprint(cls, values: dict[str, Any]) -> dict[str, Any]:
-        env_setup_data = values.get("env_setup", {}) # keep compatibility with older yaml files that use env_setup
+        env_setup_data = values.get("env_setup", {})
         blueprint = values.get("blueprint")
         if isinstance(blueprint, SandboxBlueprint):
             return values
@@ -113,11 +113,17 @@ class SkillFrontmatter(BaseModel):
                     if cmd not in bins:
                         bins.append(cmd)
 
-        values["blueprint"] = {
-            "python_packages": list(dict.fromkeys(python_packages)),
-            "system_packages": list(dict.fromkeys(system_packages)),
-            "install_scripts": install_scripts,
-        }
+        from zhenxun.services.ai.sandbox.models import AptSetup, PythonSetup, ShellSetup
+
+        steps = []
+        if system_packages:
+            steps.append(AptSetup(packages=list(dict.fromkeys(system_packages))))
+        if python_packages:
+            steps.append(PythonSetup(packages=list(dict.fromkeys(python_packages))))
+        if install_scripts:
+            steps.append(ShellSetup(scripts=install_scripts))
+
+        values["blueprint"] = {"setup_steps": steps}
         values["required_envs"] = list(dict.fromkeys(required_envs))
         return values
 

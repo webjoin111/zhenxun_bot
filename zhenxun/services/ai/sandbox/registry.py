@@ -1,9 +1,11 @@
-from typing import ClassVar, TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
+
 from zhenxun.services.log import logger
 
 if TYPE_CHECKING:
-    from zhenxun.services.ai.sandbox.drivers.base import BaseSandboxClient
     from zhenxun.services.ai.sandbox.addons.base import BaseSandboxExtension
+    from zhenxun.services.ai.sandbox.drivers.base import BaseSandboxClient
+
 
 class SandboxRegistry:
     _clients: ClassVar[dict[str, type["BaseSandboxClient"]]] = {}

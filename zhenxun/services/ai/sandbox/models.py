@@ -2,11 +2,19 @@
 沙箱相关核心类型定义
 """
 
+from abc import ABC, abstractmethod
+import asyncio
 import hashlib
 import json
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+from zhenxun.services.log import logger
+
+if TYPE_CHECKING:
+    from zhenxun.services.ai.sandbox.drivers.base import BaseSandboxSession
 
 
 class LanguageProfile(BaseModel):
@@ -28,15 +36,130 @@ class LanguageProfile(BaseModel):
     """是否注入 RPC 存根"""
 
 
-class BlueprintFile(BaseModel):
-    """蓝图预置文件配置"""
+class BaseEntry(BaseModel, ABC):
+    """沙箱物化项(Artifacts)抽象基类"""
 
-    path: str
-    """沙箱内文件路径"""
-    content: str | bytes | None = None
-    """文件内容，支持文本或二进制"""
-    local_path: str | None = None
-    """宿主机本地文件路径"""
+    @abstractmethod
+    async def apply(self, session: "BaseSandboxSession", dest: str) -> None:
+        """将当前项物化(应用)到沙箱中的指定目标路径"""
+        pass
+
+
+class MemoryFile(BaseEntry):
+    """基于内存字符串或二进制的数据物化"""
+
+    type: Literal["memory_file"] = "memory_file"
+    content: str | bytes
+
+    async def apply(self, session: "BaseSandboxSession", dest: str) -> None:
+        data = (
+            self.content.encode("utf-8")
+            if isinstance(self.content, str)
+            else self.content
+        )
+        await session.write(dest, data)
+
+
+class LocalFile(BaseEntry):
+    """基于宿主机本地单文件的物化"""
+
+    type: Literal["local_file"] = "local_file"
+    src: str
+
+    async def apply(self, session: "BaseSandboxSession", dest: str) -> None:
+        local_path = Path(self.src)
+        if await asyncio.to_thread(local_path.is_file):
+            content = await asyncio.to_thread(local_path.read_bytes)
+            await session.write(dest, content)
+        else:
+            logger.warning(f"[Sandbox] 本地文件 {self.src} 不存在，已跳过物化。")
+
+
+class LocalDir(BaseEntry):
+    """基于宿主机本地目录的物化 (会自动打包上传)"""
+
+    type: Literal["local_dir"] = "local_dir"
+    src: str
+
+    async def apply(self, session: "BaseSandboxSession", dest: str) -> None:
+        success = await session.upload_raw_dir(self.src, dest)
+        if not success:
+            logger.warning(f"[Sandbox] 本地目录 {self.src} 上传失败，已跳过物化。")
+
+
+EntryUnion = Annotated[MemoryFile | LocalFile | LocalDir, Field(discriminator="type")]
+
+
+class BaseSetupStep(BaseModel, ABC):
+    """环境装配步骤基类，多态支持任何第三方语言的安装"""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @abstractmethod
+    async def apply(self, session: Any) -> None:
+        """在沙箱会话中执行该装配步骤"""
+        pass
+
+
+class AptSetup(BaseSetupStep):
+    type: Literal["apt"] = "apt"
+    packages: list[str]
+
+    async def apply(self, session: Any) -> None:
+        if not self.packages:
+            return
+        pkg_str = " ".join(self.packages)
+        logger.info(f"[Sandbox] 正在安装系统级依赖 (Apt): {pkg_str}")
+        await session.run_process(
+            "sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && "
+            f"sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq {pkg_str}",
+            timeout=300,
+        )
+
+
+class PythonSetup(BaseSetupStep):
+    type: Literal["python"] = "python"
+    packages: list[str]
+
+    async def apply(self, session: Any) -> None:
+        if not self.packages:
+            return
+        pkg_str = " ".join(self.packages)
+        check_uv = await session.run_process("command -v uv")
+        if check_uv.exit_code != 0:
+            logger.info("[Sandbox] 未检测到 uv，正在极速下载 uv...")
+            await session.run_process(
+                "pip install uv --disable-pip-version-check -q", timeout=60
+            )
+        logger.info(f"[Sandbox] 正在安装 Python 依赖: {pkg_str}")
+        res = await session.run_process(
+            f"uv pip install --system {pkg_str}", timeout=120
+        )
+        if res.exit_code != 0:
+            logger.warning(f"[Sandbox] uv 安装报错，尝试降级使用 pip: {res.stderr}")
+            await session.run_process(f"pip install {pkg_str} -q", timeout=180)
+
+
+class NodeSetup(BaseSetupStep):
+    type: Literal["node"] = "node"
+    packages: list[str]
+
+    async def apply(self, session: Any) -> None:
+        if not self.packages:
+            return
+        pkg_str = " ".join(self.packages)
+        logger.info(f"[Sandbox] 正在安装 Node 依赖: {pkg_str}")
+        await session.run_process(f"npm install -g {pkg_str}", timeout=180)
+
+
+class ShellSetup(BaseSetupStep):
+    type: Literal["shell"] = "shell"
+    scripts: list[str]
+
+    async def apply(self, session: Any) -> None:
+        for script in self.scripts:
+            logger.info(f"[Sandbox] 正在执行自定义装配脚本: {script}")
+            await session.run_process(script, timeout=300)
 
 
 class SandboxBlueprint(BaseModel):
@@ -49,17 +172,11 @@ class SandboxBlueprint(BaseModel):
     needs_state: bool = Field(default=False)
     """是否需要持久化状态"""
 
-    python_packages: list[str] = Field(default_factory=list)
-    """Python 依赖包"""
-    system_packages: list[str] = Field(default_factory=list)
-    """系统级依赖包 (apt)"""
-    node_packages: list[str] = Field(default_factory=list)
-    """Node 依赖包 (npm)"""
-    install_scripts: list[str] = Field(default_factory=list)
-    """自定义 Shell 脚本"""
+    setup_steps: list[BaseSetupStep] = Field(default_factory=list)
+    """多态环境装配图元管线"""
 
-    files: list[BlueprintFile] = Field(default_factory=list)
-    """预置文件列表"""
+    entries: dict[str, EntryUnion] = Field(default_factory=dict)
+    """沙箱物化节点树(Artifacts)，键为沙箱内的相对目标路径"""
     env: dict[str, str] = Field(default_factory=dict)
     """环境变量"""
 
@@ -81,37 +198,44 @@ class SandboxBlueprint(BaseModel):
         self.needs_state = enable
         return self
 
+    def with_setup_step(self, step: BaseSetupStep) -> "SandboxBlueprint":
+        """声明一个多态环境装配步骤"""
+        self.setup_steps.append(step)
+        return self
+
     def with_python_packages(self, packages: list[str]) -> "SandboxBlueprint":
         """追加预置 Python 依赖包"""
-        self.python_packages.extend(packages)
-        self.python_packages = list(dict.fromkeys(self.python_packages))
+        self.setup_steps.append(PythonSetup(packages=packages))
         return self
 
     def with_system_packages(self, packages: list[str]) -> "SandboxBlueprint":
         """追加预置系统包依赖"""
-        self.system_packages.extend(packages)
-        self.system_packages = list(dict.fromkeys(self.system_packages))
+        self.setup_steps.append(AptSetup(packages=packages))
         return self
 
     def with_node_packages(self, packages: list[str]) -> "SandboxBlueprint":
         """追加预置 Node 依赖包"""
-        self.node_packages.extend(packages)
-        self.node_packages = list(dict.fromkeys(self.node_packages))
+        self.setup_steps.append(NodeSetup(packages=packages))
         return self
 
     def with_install_scripts(self, scripts: list[str]) -> "SandboxBlueprint":
         """追加自定义安装脚本"""
-        self.install_scripts.extend(scripts)
+        self.setup_steps.append(ShellSetup(scripts=scripts))
         return self
 
     def with_file(self, path: str, content: str | bytes) -> "SandboxBlueprint":
-        """预置内存字符串或二进制文件"""
-        self.files.append(BlueprintFile(path=path, content=content))
+        """声明预置内存字符串或二进制文件"""
+        self.entries[path] = MemoryFile(content=content)
         return self
 
     def with_local_file(self, path: str, local_path: str) -> "SandboxBlueprint":
-        """预置本地宿主机文件挂载"""
-        self.files.append(BlueprintFile(path=path, local_path=local_path))
+        """声明预置本地宿主机单文件"""
+        self.entries[path] = LocalFile(src=local_path)
+        return self
+
+    def with_local_dir(self, path: str, local_dir: str) -> "SandboxBlueprint":
+        """声明预置本地宿主机完整目录"""
+        self.entries[path] = LocalDir(src=local_dir)
         return self
 
     def with_env(self, key: str, value: str) -> "SandboxBlueprint":
@@ -127,11 +251,13 @@ class SandboxBlueprint(BaseModel):
 
     def calculate_hash(self) -> str:
         """计算当前环境配置的 MD5 指纹，用于缓存命中"""
+        entries_dict = {
+            k: self.entries[k].model_dump() for k in sorted(self.entries.keys())
+        }
+
         data_to_hash = {
-            "py": sorted(self.python_packages),
-            "sys": sorted(self.system_packages),
-            "node": sorted(self.node_packages),
-            "scripts": self.install_scripts,
+            "steps": [s.model_dump() for s in self.setup_steps],
+            "entries": entries_dict,
         }
         json_str = json.dumps(data_to_hash, separators=(",", ":"))
         return hashlib.md5(json_str.encode("utf-8")).hexdigest()
@@ -146,17 +272,8 @@ class SandboxBlueprint(BaseModel):
             other.sandbox_type if other.sandbox_type != "auto" else self.sandbox_type
         )
 
-        self.python_packages = list(
-            dict.fromkeys(self.python_packages + other.python_packages)
-        )
-        self.system_packages = list(
-            dict.fromkeys(self.system_packages + other.system_packages)
-        )
-        self.node_packages = list(
-            dict.fromkeys(self.node_packages + other.node_packages)
-        )
-        self.install_scripts.extend(other.install_scripts)
-        self.files.extend(other.files)
+        self.setup_steps.extend(other.setup_steps)
+        self.entries.update(other.entries)
         self.env.update(other.env)
         self.required_extensions = list(
             dict.fromkeys(self.required_extensions + other.required_extensions)

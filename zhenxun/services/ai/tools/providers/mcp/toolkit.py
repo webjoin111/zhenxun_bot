@@ -21,8 +21,8 @@ from zhenxun.services.ai.sandbox.models import SandboxBlueprint
 from zhenxun.services.ai.tools.core.tool import BaseTool
 from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
 from zhenxun.services.ai.tools.models import ToolDefinition, ToolkitConfig, ToolResult
-from zhenxun.services.ai.utils.lifespan import ResourceLifespanMixin
 from zhenxun.services.log import logger
+from zhenxun.utils.lifespan import LifespanManager
 from zhenxun.utils.pydantic_compat import model_dump
 
 _MESSAGE_START_CHARS = {"{", "["}
@@ -89,7 +89,8 @@ async def filtered_stdio_client(
                             if isinstance(item, ValidationError):
                                 err_input = item.errors()[0].get("input", "")
                                 logger.debug(
-                                    f"🔇 [MCP Stdout Filter] {server_name} 忽略脏数据: {str(err_input)[:100].strip()}..."
+                                    f"🔇 [MCP Stdout Filter] {server_name} 忽略脏数据: "
+                                    f"{str(err_input)[:100].strip()}..."
                                 )
                             continue
                         await filtered_send.send(item)
@@ -155,9 +156,11 @@ class MCPRemoteTool(BaseTool):
         for attempt in range(max_retries):
             if self.toolkit.isolation == "per_session" and context:
                 sid = context.session_id or f"temp_{id(context)}"
-                self.toolkit.touch(sid)
+                await self.toolkit.lifespan_manager.touch(sid, float(self.toolkit.ttl))
             else:
-                self.toolkit.touch(self.toolkit.server_name)
+                await self.toolkit.lifespan_manager.touch(
+                    self.toolkit.server_name, float(self.toolkit.ttl)
+                )
 
             session = await self.toolkit.get_session(context)
             if not session:
@@ -229,7 +232,7 @@ class MCPRemoteTool(BaseTool):
         return tool_result
 
 
-class MCPToolkit(BaseToolkit, ResourceLifespanMixin):
+class MCPToolkit(BaseToolkit):
     """模型上下文协议 (MCP) 的工具箱封装 (支持声明式挂载与动态隔离)"""
 
     def __init__(
@@ -274,6 +277,7 @@ class MCPToolkit(BaseToolkit, ResourceLifespanMixin):
         self.sandbox_session_id = sandbox_session_id
         self.forward_bot_context = forward_bot_context
         self.sandbox_blueprint = sandbox_blueprint
+        self.ttl = ttl
 
         self._shared_session: ClientSession | None = None
         self._session_pool: dict[str, ClientSession] = {}
@@ -281,7 +285,7 @@ class MCPToolkit(BaseToolkit, ResourceLifespanMixin):
         self._is_initialized = False
         self._bound_sandbox_session_id: str | None = None
 
-        self.init_lifespan(ttl=ttl)
+        self.lifespan_manager = LifespanManager()
 
         self._shared_task: asyncio.Task | None = None
         self._task_pool: dict[str, asyncio.Task] = {}
@@ -355,8 +359,11 @@ class MCPToolkit(BaseToolkit, ResourceLifespanMixin):
         self, context: RunContext | None = None
     ) -> ClientSession | None:
         if self.isolation == "shared":
-            self.touch(self.server_name)
-            self._ensure_watchdog()
+            await self.lifespan_manager.register(
+                self.server_name,
+                ttl=float(self.ttl),
+                cleanup_callback=self.release_resource,
+            )
             if not self._is_initialized:
                 await self.initialize(context)
             return self._shared_session
@@ -367,8 +374,9 @@ class MCPToolkit(BaseToolkit, ResourceLifespanMixin):
                 return self._shared_session
 
             session_id = context.session_id or f"temp_{id(context)}"
-            self.touch(session_id)
-            self._ensure_watchdog()
+            await self.lifespan_manager.register(
+                session_id, ttl=float(self.ttl), cleanup_callback=self.release_resource
+            )
 
             if not self._is_initialized:
                 await self.initialize()
@@ -612,8 +620,11 @@ class MCPToolkit(BaseToolkit, ResourceLifespanMixin):
             raise self._init_exceptions["shared"]
 
     async def get_tools(self, context: RunContext | None = None) -> dict[str, BaseTool]:
-        self.touch(self.server_name)
-        self._ensure_watchdog()
+        await self.lifespan_manager.register(
+            self.server_name,
+            ttl=float(self.ttl),
+            cleanup_callback=self.release_resource,
+        )
         if not self._is_initialized:
             await self.initialize(context)
 
@@ -639,7 +650,8 @@ class MCPToolkit(BaseToolkit, ResourceLifespanMixin):
                 await asyncio.wait_for(task, timeout=5.0)
             except asyncio.TimeoutError:
                 logger.warning(
-                    f"MCP server task for {self.server_name} ({session_id}) timed out, cancelling."
+                    f"MCP server task for {self.server_name} ({session_id}) "
+                    "timed out, cancelling."
                 )
                 task.cancel()
 
@@ -649,14 +661,8 @@ class MCPToolkit(BaseToolkit, ResourceLifespanMixin):
         self._init_exceptions.pop(session_id, None)
 
     async def close(self):
+        await self.lifespan_manager.stop()
         current_task = asyncio.current_task()
-        if (
-            self._watchdog_task
-            and not self._watchdog_task.done()
-            and self._watchdog_task is not current_task
-        ):
-            self._watchdog_task.cancel()
-        self._watchdog_task = None
 
         self._stop_events["shared"].set()
 

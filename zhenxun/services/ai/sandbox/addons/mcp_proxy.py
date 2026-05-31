@@ -7,10 +7,9 @@ from anyio import create_memory_object_stream, create_task_group
 from mcp.shared.message import SessionMessage
 from mcp.types import JSONRPCMessage
 
-
 from zhenxun.services.ai.sandbox.addons.base import BaseMcpProxyExtension
+from zhenxun.services.ai.sandbox.protocols import SupportsStreamExecution
 from zhenxun.services.ai.sandbox.registry import SandboxRegistry
-
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_dump_json, model_validate
 
@@ -24,35 +23,21 @@ class UniversalMcpExtension(BaseMcpProxyExtension):
     async def connect_mcp(
         self, command: str, args: list[str], env: dict[str, str] | None = None
     ) -> AsyncGenerator[tuple[Any, Any], None]:
-        # 验证底层是否是 Docker 实例
-        if not getattr(self.session, "container", None):
-             raise RuntimeError("目前 MCP 代理仅支持基于 Docker 的沙箱底座。")
-        async with self._connect_docker(command, args, env) as streams:
-            yield streams
+        if not isinstance(self.session, SupportsStreamExecution):
+            raise RuntimeError(
+                "当前沙箱驱动不支持流式后台进程执行 (SupportsStreamExecution)，无法启动原生 MCP 代理。"
+            )
 
-    @asynccontextmanager
-    async def _connect_docker(
-        self, command: str, args: list[str], env: dict[str, str] | None = None
-    ):
         logger.info(
-            "[UniversalMcpExtension] 正在 Docker 沙箱内原生启动 MCP 服务器: "
+            "[UniversalMcpExtension] 正在沙箱内原生启动 MCP 服务器: "
             f"{command} {' '.join(args)}"
         )
 
         cmd_list = [command, *args]
-        env_list = [f"{k}={v}" for k, v in env.items()] if env else None
 
-        session = self.session
-        exec_inst = await session.container.exec(
-            cmd=cmd_list,
-            stdin=True,
-            stdout=True,
-            stderr=False,
-            environment=env_list,
-            workdir="/workspace",
-        )
-
-        async with exec_inst.start(detach=False) as raw_stream:
+        async with self.session.create_stream_process(
+            command=cmd_list, cwd="/workspace", env=env
+        ) as process_stream:
             read_prod, read_cons = create_memory_object_stream(10)
             write_prod, write_cons = create_memory_object_stream(10)
 
@@ -60,10 +45,10 @@ class UniversalMcpExtension(BaseMcpProxyExtension):
                 buffer = b""
                 try:
                     while True:
-                        msg = await raw_stream.read_out()
+                        msg = await process_stream.read()
                         if msg is None:
                             break
-                        if msg.stream == 1:
+                        if msg.stream_type == 1:
                             buffer += msg.data
                             while b"\n" in buffer:
                                 line, buffer = buffer.split(b"\n", 1)
@@ -90,7 +75,7 @@ class UniversalMcpExtension(BaseMcpProxyExtension):
                             ).encode("utf-8")
                             + b"\n"
                         )
-                        await raw_stream.write_in(data)
+                        await process_stream.write(data)
                 except Exception:
                     pass
 
