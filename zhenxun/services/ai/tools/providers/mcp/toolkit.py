@@ -15,12 +15,13 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.message import SessionMessage
 from pydantic import ValidationError
 
+from zhenxun.services.ai.core.models import ToolDefinition
 from zhenxun.services.ai.run import RunContext
 from zhenxun.services.ai.sandbox.addons.base import BaseMcpProxyExtension
 from zhenxun.services.ai.sandbox.models import SandboxBlueprint
 from zhenxun.services.ai.tools.core.tool import BaseTool
 from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
-from zhenxun.services.ai.tools.models import ToolDefinition, ToolkitConfig, ToolResult
+from zhenxun.services.ai.tools.models import ToolkitConfig, ToolResult
 from zhenxun.services.log import logger
 from zhenxun.utils.lifespan import LifespanManager
 from zhenxun.utils.pydantic_compat import model_dump
@@ -140,7 +141,9 @@ class MCPRemoteTool(BaseTool):
             metadata=self.metadata or {},
         )
         if context and self.settings.capabilities:
-            from zhenxun.services.ai.protocols.capabilities import CombinedCapability
+            from zhenxun.services.ai.protocols.capabilities import (
+                CombinedCapability,
+            )
 
             combined_cap = CombinedCapability(self.settings.capabilities)
             defs = await combined_cap.prepare_tools(context, [tool_def])

@@ -33,7 +33,10 @@ class MemoryReader:
         ):
             return ""
 
-        ltm_scope = memory_manager.get_long_term_memory(self.memory_config, namespace=self.session_meta.namespace or "global")
+        ltm_scope = memory_manager.get_long_term_memory(
+            self.memory_config,
+            namespace=self.session_meta.namespace or "global",
+        )
         if not ltm_scope:
             return ""
 
@@ -52,7 +55,10 @@ class MemoryReader:
         """
         if not self.memory_config or not self.memory_config.slots.enable:
             return ""
-        slot_ctx = memory_manager.get_slot_context(self.memory_config, namespace=self.session_meta.namespace or "global")
+        slot_ctx = memory_manager.get_slot_context(
+            self.memory_config,
+            namespace=self.session_meta.namespace or "global",
+        )
         if not slot_ctx:
             return ""
 
@@ -87,12 +93,17 @@ class MemoryReader:
         拉取短期对话历史，并执行 Token 压缩。
         """
         current_history: list[LLMMessage] = []
-        chat_context = memory_manager.get_chat_context(self.memory_config, namespace=self.session_meta.namespace or "global")
+        if override_history is not None:
+            current_history = list(override_history)
+
+        chat_context = memory_manager.get_chat_context(
+            self.memory_config,
+            namespace=self.session_meta.namespace or "global",
+        )
 
         if self.memory_config and self.memory_config.short_term.enable and chat_context:
             if override_history is not None:
                 await chat_context.set_messages(self.session_meta, override_history)
-                current_history = override_history
             else:
                 current_history = await chat_context.get_messages(self.session_meta)
 
@@ -190,6 +201,9 @@ class MemoryWriter:
         """将新产生的对话增量保存到数据库"""
         if not new_messages:
             return
-        chat_ctx = memory_manager.get_chat_context(self.memory_config, namespace=self.session_meta.namespace or "global")
+        chat_ctx = memory_manager.get_chat_context(
+            self.memory_config,
+            namespace=self.session_meta.namespace or "global",
+        )
         if chat_ctx and self.memory_config and self.memory_config.short_term.enable:
             await chat_ctx.add_messages(self.session_meta, new_messages)

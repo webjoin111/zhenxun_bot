@@ -6,16 +6,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from zhenxun.services.ai.core.messages import LLMMessage, LLMResponse
-
-if TYPE_CHECKING:
-    from zhenxun.services.ai.tools.models import ToolChoice
-else:
-    ToolChoice = Any
+from zhenxun.services.ai.core.models import ToolChoice
 
 
 class LLMContext(BaseModel):

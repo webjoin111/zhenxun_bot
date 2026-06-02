@@ -13,18 +13,22 @@ class InteractiveTerminalSession(Protocol):
     async def start(self, cmd: str, env: dict[str, str] | None = None) -> None:
         """启动并挂载终端会话"""
         ...
+
     @abstractmethod
     async def send_input(self, text: str) -> None:
         """向终端发送标准输入"""
         ...
+
     @abstractmethod
     async def read_output(self, timeout: int = 5) -> str:
         """读取当前终端屏幕输出画面"""
         ...
+
     @abstractmethod
     async def interrupt(self) -> None:
         """发送强制中断信号(Ctrl+C)"""
         ...
+
     @abstractmethod
     async def close(self) -> None:
         """释放并关闭终端资源"""
@@ -51,10 +55,12 @@ class SandboxProcessStream(Protocol):
     async def read(self) -> "ProcessStreamMessage | None":
         """异步读取下一块输出流数据"""
         ...
+
     @abstractmethod
     async def write(self, data: bytes) -> None:
         """异步写入数据到进程标准输入"""
         ...
+
     @abstractmethod
     async def close(self) -> None:
         """关闭并终止输入输出流"""
@@ -86,12 +92,15 @@ class SupportsFileSystem(Protocol):
     async def write_raw_file(self, path: str | Path, content: str) -> bool:
         """使用字符串极速覆写文件"""
         ...
+
     async def read_raw_file(self, path: str | Path) -> str:
         """直接读取文件内容为文本字符串"""
         ...
+
     async def delete_raw_file(self, path: str | Path) -> bool:
         """直接删除指定物理文件"""
         ...
+
     async def upload_raw_dir(
         self, local_dir_path: str | Path, sandbox_target_path: str | Path
     ) -> bool:
@@ -101,12 +110,15 @@ class SupportsFileSystem(Protocol):
     async def write(self, path: str | Path, data: bytes) -> bool:
         """底层二进制安全写入文件"""
         ...
+
     async def read(self, path: str | Path) -> bytes:
         """底层二进制安全读取文件"""
         ...
+
     async def rm(self, path: str | Path, recursive: bool = False) -> bool:
         """执行标准的 rm 删除操作"""
         ...
+
     async def mkdir(self, path: str | Path, parents: bool = False) -> bool:
         """执行标准的 mkdir 创建目录操作"""
         ...
@@ -128,14 +140,22 @@ class SandboxChannel(ABC):
 
 class StatefulCodeClient(Protocol):
     """有状态代码执行客户端通信协议"""
+
     @abstractmethod
-    async def execute(self, code: str, timeout: int = 30, on_output: Callable[[str, bytes], Awaitable[None]] | None = None) -> SandboxExecutionResult:
+    async def execute(
+        self,
+        code: str,
+        timeout: int = 30,
+        on_output: Callable[[str, bytes], Awaitable[None]] | None = None,
+    ) -> SandboxExecutionResult:
         """执行指定代码并获取结果"""
         ...
+
     @abstractmethod
     async def interrupt(self) -> None:
         """发送强制中断信号(模拟Ctrl+C)"""
         ...
+
     @abstractmethod
     async def close(self) -> None:
         """关闭底层网络及进程连接"""
@@ -144,14 +164,17 @@ class StatefulCodeClient(Protocol):
 
 class BaseEngineManager(Protocol):
     """沙箱后台引擎生命周期管理器协议"""
+
     @abstractmethod
     async def ensure_started(self, env_vars: dict[str, str] | None = None) -> None:
         """确保后台引擎主服务已在沙箱中成功启动"""
         ...
+
     @abstractmethod
     async def get_client(self, kernel_name: str) -> StatefulCodeClient:
         """分配并获取指定语言内核的通信客户端"""
         ...
+
     @abstractmethod
     async def close(self) -> None:
         """安全关闭引擎并回收所有分配的客户端资源"""

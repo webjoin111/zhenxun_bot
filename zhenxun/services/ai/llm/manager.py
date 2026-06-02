@@ -89,7 +89,8 @@ class RoutedLLMModel(LLMModelBase):
             try:
                 if idx == start_idx:
                     logger.debug(
-                        f"👉 [Router] 路由组 '{self.group_name}' 正在请求节点模型 '{m_name}'..."
+                        f"👉 [Router] 路由组 '{self.group_name}' "
+                        f"正在请求节点模型 '{m_name}'..."
                     )
                 else:
                     logger.debug(
@@ -116,11 +117,13 @@ class RoutedLLMModel(LLMModelBase):
                     LLMErrorCode.CONTENT_FILTERED,
                 ] or not getattr(e, "recoverable", True):
                     logger.warning(
-                        f"🚫 [Router] 节点 '{m_name}' 返回不可恢复的业务错误 ({e.code.name})，停止故障转移。"
+                        f"🚫 [Router] 节点 '{m_name}' "
+                        f"返回不可恢复的业务错误 ({e.code.name})，停止故障转移。"
                     )
                     raise e
                 logger.warning(
-                    f"⚠️ [Router] 节点 '{m_name}' 发生错误 ({e.code.name})，触发故障转移(Fallback)..."
+                    f"⚠️ [Router] 节点 '{m_name}' 发生错误 ({e.code.name})，"
+                    "触发故障转移(Fallback)..."
                 )
                 errors.append(f"{m_name}({e.code.name})")
             except Exception as e:
@@ -132,7 +135,9 @@ class RoutedLLMModel(LLMModelBase):
         if all_nodes_bypassed:
             fallback_model = health_manager.get_best_fallback_route(self.model_names)
             logger.warning(
-                f"⚠️ [Router] 组 '{self.group_name}' 内所有节点均已宕机并处于冷却期！触发全死保底机制，强制放行 '{fallback_model}' 探活..."
+                f"⚠️ [Router] 组 '{self.group_name}' "
+                "内所有节点均已宕机并处于冷却期！"
+                f"触发全死保底机制，强制放行 '{fallback_model}' 探活..."
             )
             try:
                 async with await get_model_instance(
@@ -152,7 +157,8 @@ class RoutedLLMModel(LLMModelBase):
                 errors.append(f"{fallback_model}(保底探活彻底失败:{e})")
 
         raise LLMException(
-            f"路由组 '{self.group_name}' 中的所有模型节点均请求失败。错误链路: {' -> '.join(errors)}",
+            f"路由组 '{self.group_name}' 中的所有模型节点均请求失败。"
+            f"错误链路: {' -> '.join(errors)}",
             code=LLMErrorCode.GENERATION_FAILED,
         )
 
@@ -376,7 +382,8 @@ def _resolve_model_group(group_name: str, visited: set | None = None) -> list[st
                         resolved_models.append(item)
                 else:
                     logger.warning(
-                        f"⚠️ [Router] 路由组 '{group_name}' 中的模型 '{item}' 未在 PROVIDERS 中配置，已被自动剔除！"  # noqa: E501
+                        f"⚠️ [Router] 路由组 '{group_name}' 中的模型 "
+                        f"'{item}' 未在 PROVIDERS 中配置，已被自动剔除！"
                     )
             else:
                 logger.warning(f"路由组 '{group_name}' 包含无效格式的项目 '{item}'。")

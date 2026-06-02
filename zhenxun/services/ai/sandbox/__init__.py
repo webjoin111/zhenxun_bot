@@ -1,8 +1,5 @@
 from .drivers import docker  # noqa: F401
-from .host_bridge import sandbox_function
-from .manager import sandbox_manager
 from .models import (
-    CodeBlock,
     SandboxBlueprint,
     SandboxExecutionResult,
     SandboxSessionState,
@@ -18,7 +15,6 @@ from .protocols import (
 from .registry import SandboxRegistry
 
 __all__ = [
-    "CodeBlock",
     "InteractiveTerminalSession",
     "SandboxBlueprint",
     "SandboxChannel",
@@ -29,6 +25,4 @@ __all__ = [
     "SupportsFileSystem",
     "SupportsInteractivePTY",
     "SupportsPortMapping",
-    "sandbox_function",
-    "sandbox_manager",
 ]

@@ -96,7 +96,7 @@ class ProviderConfig(BaseModel):
 
 class DefaultModelsConfig(BaseModel):
     """按任务分类的默认模型配置"""
-    chat: str | None = Field(default="Gemini/gemini-2.5-flash")
+    chat: str | None = Field(default="Gemini/gemini-3.5-flash")
     embedding: str | None = Field(default="Gemini/gemini-embedding-2")
     tts: str | None = Field(default="Gemini/gemini-3.1-flash-tts-preview")
     image: str | None = Field(default="Gemini/gemini-2.5-flash-image")
@@ -121,7 +121,7 @@ class LLMConfig(BaseModel):
     model_groups: dict[str, list[str]] = Field(
         default_factory=lambda: {
             "cheap_models": [
-                "Gemini/gemini-2.5-flash",
+                "Gemini/gemini-3.5-flash",
                 "Doubao/doubao-seed-1-6-250615",
             ],
         }

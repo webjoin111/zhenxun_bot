@@ -3,8 +3,7 @@ from typing import Any, cast
 
 from pydantic import BaseModel, Field
 
-from zhenxun.services.ai.run import RunContext
-from zhenxun.services.ai.sandbox.manager import sandbox_manager
+from zhenxun.services.ai.run import Inject, RunContext
 from zhenxun.services.ai.sandbox.models import SandboxBlueprint
 from zhenxun.services.ai.sandbox.protocols import (
     SupportsCommandExecution,
@@ -43,6 +42,7 @@ class SkillSandboxExecutionMixin:
         script_name: str,
         args: str,
         context: RunContext | None,
+        sandbox: Any,
         **kwargs,
     ) -> ToolResult:
 
@@ -54,7 +54,7 @@ class SkillSandboxExecutionMixin:
         bp = model_copy(skill.frontmatter.blueprint, deep=True)
         bp.enable_network = skill.frontmatter.enable_network
 
-        executor = await sandbox_manager.get_or_create_session(session_id, blueprint=bp)
+        executor = await sandbox.get_or_create_session(session_id, blueprint=bp)
         fs_executor = cast(SupportsFileSystem, executor)
         cmd_executor = cast(SupportsCommandExecution, executor)
 
@@ -63,7 +63,7 @@ class SkillSandboxExecutionMixin:
         if skill.id not in executor.loaded_skills:
             await fs_executor.upload_raw_dir(str(skill.path), target_workspace)
             try:
-                await sandbox_manager.setup_workspace_environment(
+                await sandbox.setup_workspace_environment(
                     session_id, target_workspace
                 )
             except Exception as e:
@@ -141,6 +141,7 @@ class SkillSandboxExecutionMixin:
         skill: Skill,
         command: str,
         context: RunContext | None,
+        sandbox: Any,
         **kwargs,
     ) -> ToolResult:
         session_id = (
@@ -151,7 +152,7 @@ class SkillSandboxExecutionMixin:
         bp = model_copy(skill.frontmatter.blueprint, deep=True)
         bp.enable_network = skill.frontmatter.enable_network
 
-        executor = await sandbox_manager.get_or_create_session(session_id, blueprint=bp)
+        executor = await sandbox.get_or_create_session(session_id, blueprint=bp)
         fs_executor = cast(SupportsFileSystem, executor)
         cmd_executor = cast(SupportsCommandExecution, executor)
 
@@ -160,7 +161,7 @@ class SkillSandboxExecutionMixin:
         if skill.id not in executor.loaded_skills:
             await fs_executor.upload_raw_dir(str(skill.path), target_workspace)
             try:
-                await sandbox_manager.setup_workspace_environment(
+                await sandbox.setup_workspace_environment(
                     session_id, target_workspace
                 )
             except Exception as e:
@@ -252,10 +253,12 @@ class SkillStaticToolkit(BaseToolkit, SkillSandboxExecutionMixin):
 
                 def make_func(filepath=script_file, code=code_content):
                     async def run_script(
-                        args: str = "", context: RunContext | None = None, **kwargs
+                        args: str = "", context: RunContext | None = None, sandbox: Inject.Sandbox = None, **kwargs
                     ) -> ToolResult:
+                        if sandbox is None and context is not None:
+                            sandbox = Inject._providers["sandbox"]["global"](context)
                         return await self._execute_skill_script_in_sandbox(
-                            self.skill, filepath.name, args, context, **kwargs
+                            self.skill, filepath.name, args, context, sandbox, **kwargs
                         )
 
                     return run_script
@@ -410,6 +413,7 @@ class SkillMetaToolkit(BaseToolkit, SkillSandboxExecutionMixin):
         script_name: str,
         args: str = "",
         context: RunContext | None = None,
+        sandbox: Inject.Sandbox = None,
         **kwargs,
     ) -> ToolResult:
         script_name = script_name.strip()
@@ -424,8 +428,11 @@ class SkillMetaToolkit(BaseToolkit, SkillSandboxExecutionMixin):
                 output=f"越权操作/未找到技能 {skill_name} 或不包含脚本 {script_name}",
             ).as_error()
 
+        if sandbox is None and context is not None:
+            sandbox = Inject._providers["sandbox"]["global"](context)
+
         return await self._execute_skill_script_in_sandbox(
-            skill, script_name, args, context, **kwargs
+            skill, script_name, args, context, sandbox, **kwargs
         )
 
     @tool(
@@ -441,6 +448,7 @@ class SkillMetaToolkit(BaseToolkit, SkillSandboxExecutionMixin):
         skill_name: str,
         command: str,
         context: RunContext | None = None,
+        sandbox: Inject.Sandbox = None,
         **kwargs,
     ) -> ToolResult:
         skill = await self._get_skill(skill_name)
@@ -449,8 +457,11 @@ class SkillMetaToolkit(BaseToolkit, SkillSandboxExecutionMixin):
                 output=f"越权操作或未找到技能: {skill_name}",
             ).as_error()
 
+        if sandbox is None and context is not None:
+            sandbox = Inject._providers["sandbox"]["global"](context)
+
         return await self._execute_skill_command_in_sandbox(
-            skill, command, context, **kwargs
+            skill, command, context, sandbox, **kwargs
         )
 
     @tool(
@@ -462,7 +473,7 @@ class SkillMetaToolkit(BaseToolkit, SkillSandboxExecutionMixin):
     )
     @silent()
     async def read_skill_file(
-        self, skill_name: str, file_path: str, context: RunContext | None = None
+        self, skill_name: str, file_path: str, context: RunContext | None = None, sandbox: Inject.Sandbox = None
     ) -> ToolResult:
         skill = await self._get_skill(skill_name)
         if not skill:
@@ -485,7 +496,10 @@ class SkillMetaToolkit(BaseToolkit, SkillSandboxExecutionMixin):
         )
         bp = SandboxBlueprint(enable_network=skill.frontmatter.enable_network)
         try:
-            executor = await sandbox_manager.get_or_create_session(
+            if sandbox is None and context is not None:
+                sandbox = Inject._providers["sandbox"]["global"](context)
+
+            executor = await sandbox.get_or_create_session(
                 session_id, blueprint=bp
             )
             fs_executor = cast(SupportsFileSystem, executor)

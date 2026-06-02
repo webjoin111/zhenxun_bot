@@ -14,7 +14,7 @@ PATTERNS_GEMINI_2_5_FLASH = [
     "gemini-flash-latest",
 ]
 PATTERNS_GEMINI_2_5_PRO = ["gemini-2.5-pro*"]
-PATTERNS_GEMINI_3 = ["gemini-3*", "gemini-exp*"]
+PATTERNS_GEMINI_3 = ["gemini-3*"]
 PATTERNS_OPENAI_REASONING = ["o1-*", "o3-*", "deepseek-r1*", "deepseek-reasoner"]
 PATTERNS_DEEPSEEK_V4 = ["deepseek-v4*"]
 PATTERNS_MINIMAX_REASONING = ["*MiniMax-M2*", "*minimax-m2*"]

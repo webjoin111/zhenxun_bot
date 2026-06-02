@@ -294,7 +294,9 @@ async def generate_structured(
             structured_config.merge_with(config) if config else structured_config
         )
 
-        from zhenxun.services.ai.protocols.capabilities import ReflexionCapability
+        from zhenxun.services.ai.tools.engine.global_capabilities import (
+            ReflexionCapability,
+        )
 
         extra_context = {
             "output_processor": output_processor,

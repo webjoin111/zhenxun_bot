@@ -17,10 +17,16 @@ class MemoryManagementToolkit(BaseToolkit):
     default_instructions = (
         "## 长期记忆管理系统 (LTM)\n"
         "你拥有管理用户个人设定和长期记忆的权限。请遵循以下规则：\n"
-        "1. **记录新事实**：当涉及用户偏好、经历或明确要求记住新事物时，使用 `save_memory`。\n"
-        "2. **更新旧事实**：如果发现用户设定的信息发生了改变（例如名字改了、喜欢的东西变了），请先通过 `search_memory` 找到旧记忆的 ID，然后直接使用 `update_memory` 覆盖。\n"
-        "3. **深度记忆**：如果用户提供 URL 要求深入分析并记忆，使用 `read_url_to_memory`。\n"
-        "4. **隐式服务**：除非用户询问，否则无需显式汇报『已记住』，直接在后续对话中体现即可。"
+        "1. **记录新事实**：当涉及用户偏好、"
+        "经历或明确要求记住新事物时，使用 `save_memory`。\n"
+        "2. **更新旧事实**：如果发现用户设定的信息发生了改变"
+        "（例如名字改了、喜欢的东西变了），"
+        "请先通过 `search_memory` 找到旧记忆的 ID，"
+        "然后直接使用 `update_memory` 覆盖。\n"
+        "3. **深度记忆**：如果用户提供 URL 要求深入分析并记忆，"
+        "使用 `read_url_to_memory`。\n"
+        "4. **隐式服务**：除非用户询问，否则无需显式汇报『已记住』，"
+        "直接在后续对话中体现即可。"
     )
 
     def __init__(
@@ -49,7 +55,12 @@ class MemoryManagementToolkit(BaseToolkit):
 
     @tool(
         name="search_memory",
-        description="在长期记忆中主动检索关于用户的设定和事实。支持自然语言模糊搜索。可通过 filters 进行元数据的精确匹配（例如：{'source': 'web_reader'}）。",
+        description=(
+            "在长期记忆中主动检索关于用户的设定和事实。"
+            "支持自然语言模糊搜索。"
+            "可通过 filters 进行元数据的精确匹配"
+            "（例如：{'source': 'web_reader'}）。"
+        ),
     )
     @silent()
     async def search_memory(
@@ -62,7 +73,10 @@ class MemoryManagementToolkit(BaseToolkit):
             return ToolResult(output="未检索到相关记忆。")
 
         results = [
-            f"ID: {m.record.id} | 内容: {m.record.content} | 重要性: {m.record.metadata.get('importance', 0.5)}"
+            (
+                f"ID: {m.record.id} | 内容: {m.record.content} | "
+                f"重要性: {m.record.metadata.get('importance', 0.5)}"
+            )
             for m in matches
         ]
         return ToolResult(output="检索到的记忆如下：\n" + "\n".join(results))
@@ -76,12 +90,21 @@ class MemoryManagementToolkit(BaseToolkit):
         self, record_id: str, new_content: str, importance: float = 0.5
     ) -> ToolResult:
         success = await self.memory_scope.update(
-            session=self.session_meta, record_id=record_id, new_content=new_content, importance=importance
+            session=self.session_meta,
+            record_id=record_id,
+            new_content=new_content,
+            importance=importance,
         )
         if success:
-            logger.info(f"[Agentic Memory] AI 主动更新记忆: {record_id} -> {new_content}")
-            return ToolResult(output=f"记忆 {record_id} 更新成功。新内容：{new_content}")
-        return ToolResult(output=f"更新失败：未找到ID为 {record_id} 的记忆。").as_error()
+            logger.info(
+                f"[Agentic Memory] AI 主动更新记忆: {record_id} -> {new_content}"
+            )
+            return ToolResult(
+                output=f"记忆 {record_id} 更新成功。新内容：{new_content}"
+            )
+        return ToolResult(
+            output=f"更新失败：未找到ID为 {record_id} 的记忆。"
+        ).as_error()
 
     @tool(
         name="delete_memory",

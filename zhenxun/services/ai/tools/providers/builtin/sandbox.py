@@ -1,18 +1,11 @@
 import asyncio
-from collections.abc import Callable
 from typing import Any, Protocol
 
 from zhenxun.services.ai.run import Inject, RunContext
-from zhenxun.services.ai.sandbox.host_bridge import (
-    build_python_functions_file,
-    to_stub,
-)
 from zhenxun.services.ai.sandbox.models import (
-    CodeBlock,
     SandboxBlueprint,
     SandboxExecutionResult,
 )
-from zhenxun.services.ai.sandbox.runtimes import extract_markdown_code_blocks
 from zhenxun.services.ai.tools.core.decorators import silent, tool
 from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
 from zhenxun.services.ai.tools.models import ToolResult
@@ -26,7 +19,7 @@ class PythonPluginProtocol(Protocol):
 
     async def execute(
         self,
-        code_blocks: list["CodeBlock"],
+        code: str,
         timeout: int = 30,
         injected_code: str | None = None,
     ) -> SandboxExecutionResult: ...
@@ -34,138 +27,67 @@ class PythonPluginProtocol(Protocol):
 
 class SandboxToolkit(BaseToolkit):
     default_instructions = (
-        "## 🖥️ 沙箱工作区与终端交互\n"
-        "系统为你提供了物理隔离的沙箱环境，支持高级数据分析和交互式终端操作。"
-        "请严格区分以下两种场景：\n"
-        "1. **数据分析与纯代码计算**：使用 `execute_code`。\n"
-        "支持跨语言执行（需通过 language 显式指定，如 python, bash）。\n"
-        "Python 环境支持自动处理依赖并能拦截绘图(如 matplotlib)，"
-        "但**绝对不支持 `input()` 交互**。\n"
-        "2. **交互式程序与长效服务**：如果你的代码包含 `input()` "
-        "或需要启动 Web Server，你**必须**遵循以下流程：\n"
-        "   - **第一步**：使用 `write_sandbox_file` "
-        "将代码写入文件（如 `/workspace/game.py`）。\n"
-        "   - **第二步**：使用 `execute_terminal_command` "
-        "并设置 `is_interactive=True` 运行该文件。\n"
-        "   - **后续交互**：调用此命令后，系统会分配虚拟终端并返回初始屏幕画面。"
-        "你需要通过观察屏幕来决定下一步。"
-        "使用 `send_sandbox_input` 填入所需数据（别忘了换行符 `\\n`），"
-        "并使用 `read_sandbox_screen` 随时刷新屏幕。\n"
-        "   - **⚠️ 重要警告：终端占用**\n"
-        "     同一个终端只能运行一个前台程序！"
-        "如果程序陷入死循环或报错，你**必须首先**调用 `interrupt_sandbox` "
-        "发送 Ctrl+C 中断它，然后才能修改代码重新执行！\n"
-        "3. **文件操作**：使用 `write_sandbox_file` 和 `read_sandbox_file` "
-        "管理沙箱内的文件。"
+        "## 🖥️ 沙箱工作区交互规范\n"
+        "你拥有物理隔离的沙箱环境。请严格遵循以下调度规则：\n"
+        "1. **短时/非交互任务**：直接使用 `execute_code`（如数据计算、算法运行）。"
+        "⚠️ 该工具**严禁包含 `input()`** 等阻塞式交互。\n"
+        "2. **长驻/交互式任务**：若需运行 Web Server 或含 `input()` 的交互程序，"
+        "**必须**：\n"
+        "   - 先用 `write_sandbox_file` 将代码保存至沙箱（如 `/workspace/app.py`）。\n"
+        "   - 再用 `execute_terminal_command(is_interactive=True)` 启动并挂起进程。\n"
+        "   - 通过 `send_sandbox_input` / `read_sandbox_screen` 与屏幕画面交互。\n"
+        "3. **终端互斥锁**：虚拟终端只能单线程运行前台程序。"
+        "若程序报错或死循环卡死，**必须**先调用 `interrupt_sandbox` "
+        "打断它，方可进行后续修改。"
     )
 
     def __init__(
         self,
         blueprint: SandboxBlueprint | None = None,
-        injected_functions: list[Callable] | None = None,
         sandbox_session_id: str | None = None,
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
-        self.injected_functions = injected_functions
         self.blueprint = blueprint or SandboxBlueprint()
 
-        self._injected_code: str | None = None
         self.sandbox_session_id = sandbox_session_id
-        self._injected_packages: list[str] = []
 
-        if injected_functions:
-            self._injected_code = build_python_functions_file(injected_functions)
-            stubs = "\n".join([to_stub(f) for f in injected_functions])
+    async def _get_session(self, context: RunContext, sandbox: Any) -> Any:
+        """获取或创建沙箱会话实例"""
+        session_id = (
+            self.sandbox_session_id or context.session_id or "default_sandbox_session"
+        )
+        return await sandbox.get_or_create_session(session_id, self.blueprint)
 
-            for f in injected_functions:
-                pkgs = getattr(f, "__sandbox_python_packages__", [])
-                self._injected_packages.extend(pkgs)
-
-            self._injected_packages = list(dict.fromkeys(self._injected_packages))
-
-            addon_prompt = (
-                "\n\n### 📦 [系统预置宿主函数]\n"
-                "系统已在沙箱的 `/workspace/zhenxun_host.py` 中为你预置了以下核心函数。"
-                "你可以直接在代码中通过 `from zhenxun_host import xxx` "
-                "来安全调用它们：\n"
-                f"```python\n{stubs}\n```"
-            )
-            self._instance_instructions = (
-                self._instance_instructions or self.default_instructions
-            ) + addon_prompt
-
-        self._executors = {}
-        self._code_executors = {}
-        self._interactive_sessions = {}
+    def _get_pty(self, context: RunContext) -> Any:
+        """从上下文获取虚拟终端"""
+        session_id = self.sandbox_session_id or context.session_id or "default"
+        return context.session.shared_state.get(f"pty_{session_id}")
 
     async def enter_session(self, session_id: str, context: RunContext) -> None:
-        from zhenxun.services.ai.sandbox.manager import sandbox_manager
-
         target_session = self.sandbox_session_id or session_id
 
         logger.info(f"[SandboxToolkit] 预热沙箱环境 (Session: {target_session})")
-
-        from zhenxun.services.ai.sandbox.host_bridge import sandbox_rpc_server
-
-        injected_funcs = getattr(self, "injected_functions", None)
-        if injected_funcs:
-            for func in injected_funcs:
-                if getattr(func, "__sandbox_host_callable__", False):
-                    sandbox_rpc_server.register_route(
-                        target_session, func.__name__, func
-                    )
-
-        async def _on_sandbox_event(event_name: str, data: Any):
-            if context.run.streamer:
-                from zhenxun.services.ai.core.stream_events import ToolStreamChunk
-
-                if event_name == "image":
-                    import base64
-
-                    from nonebot_plugin_alconna import Image as AlcImage
-                    from nonebot_plugin_alconna import UniMessage
-
-                    img_msg = UniMessage() + AlcImage(raw=base64.b64decode(data))
-                    await context.run.streamer.send(
-                        ToolStreamChunk(
-                            tool_name="Sandbox-IPC",
-                            content="[🖼️ 收到代码抛出的实时图片]",
-                            metadata={"display": img_msg},
-                        )
-                    )
-                else:
-                    await context.run.streamer.send(
-                        ToolStreamChunk(
-                            tool_name="Sandbox-IPC",
-                            content=f"📦 [IPC推流] {event_name}: {data}",
-                        )
-                    )
-
-        sandbox_rpc_server.register_event_handler(target_session, _on_sandbox_event)
-
-        self._executors[target_session] = await sandbox_manager.get_or_create_session(
-            target_session, self.blueprint
-        )
+        sandbox: Any = Inject._providers["sandbox"]["global"](context)
+        await sandbox.get_or_create_session(target_session, self.blueprint)
 
     async def exit_session(self, session_id: str) -> None:
         target_session = self.sandbox_session_id or session_id
-
-        from zhenxun.services.ai.sandbox.host_bridge import sandbox_rpc_server
-
-        sandbox_rpc_server.unregister_session(target_session)
 
         logger.debug(
             f"[SandboxToolkit] 当前 Agent 交互轮次结束，"
             f"沙箱及代码执行器继续驻留内存以保障状态穿透 (Session: {target_session})"
         )
+        from zhenxun.services.ai.run import get_current_run_context
 
-        session = self._interactive_sessions.pop(target_session, None)
-        if session:
-            try:
-                await session.close()
-            except Exception:
-                pass
+        context = get_current_run_context()
+        if context:
+            session = context.session.shared_state.pop(f"pty_{target_session}", None)
+            if session:
+                try:
+                    await session.close()
+                except Exception:
+                    pass
 
     @tool(
         name="execute_code",
@@ -179,17 +101,21 @@ class SandboxToolkit(BaseToolkit):
         ),
     )
     async def execute_code(
-        self, code: str, language: str, context: RunContext, ui: Inject.UI
+        self,
+        code: str,
+        language: str,
+        context: RunContext,
+        ui: Inject.UI,
+        sandbox: Inject.Sandbox,
     ) -> ToolResult:
-        session_id = self.sandbox_session_id or (
-            context.session_id if context.session_id else "default_sandbox_session"
+        session_id = (
+            self.sandbox_session_id or context.session_id or "default_sandbox_session"
         )
         logger.info(
             f"大模型请求执行 {language} 代码 (Session: {session_id}, "
             f"长度: {len(code)} 字符)"
         )
 
-        from zhenxun.services.ai.sandbox.manager import sandbox_manager
         from zhenxun.services.ai.sandbox.runtimes import CodeExecutorRegistry
 
         ns = getattr(context.session, "namespace", "global") if context else "global"
@@ -203,36 +129,30 @@ class SandboxToolkit(BaseToolkit):
             )
 
         bp = model_copy(self.blueprint, deep=True)
-        if self._injected_packages:
-            bp.with_python_packages(self._injected_packages)
 
         await ui.send_text("正在分析代码依赖并分配沙箱环境...")
-        executor = await sandbox_manager.get_or_create_session(session_id, bp)
-        self._executors[session_id] = executor
+        executor = await self._get_session(context, sandbox)
 
-        code_executor = self._code_executors.get(session_id)
+        state_key = f"code_exec_{session_id}_{language}"
+        code_executor = context.session.shared_state.get(state_key)
         if not code_executor:
             code_executor = CodeExecutorRegistry.create_executor(
                 language, bp.needs_state, executor, namespace=ns
             )
-
-            self._code_executors[session_id] = code_executor
+            context.session.shared_state[state_key] = code_executor
 
         await ui.send_text(f"沙箱已就绪，正在后台执行 {language} 代码...")
-        system_notice = None
 
-        is_stateful = code_executor.__class__.__name__ == "PythonJupyterExecutor"
-        if not is_stateful:
-            system_notice = (
-                "> [!NOTE] **环境降级提示**\n"
-                "> 当前沙箱处于轻量级降级模式，不支持 matplotlib 绘图，"
-                "且上下文变量无法在多次工具调用间保存。"
-                "请确保你的代码每次都能独立运行并使用 print 输出结果。"
-            )
+        import re
 
-        blocks = extract_markdown_code_blocks(code, [language, ""])
-        if not blocks:
-            blocks = [CodeBlock(code=code, language=language)]
+        clean_code = code.strip()
+        match = re.search(
+            r"^```[a-zA-Z0-9_-]*\r?\n(.*?)\r?\n```$",
+            clean_code,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if match:
+            clean_code = match.group(1)
 
         line_buffer = ""
 
@@ -255,10 +175,9 @@ class SandboxToolkit(BaseToolkit):
                         )
 
         try:
-            result = await code_executor.execute_code_blocks(
-                code_blocks=blocks,
+            result = await code_executor.execute_code(
+                code=clean_code,
                 timeout=45,
-                injected_code=self._injected_code,
                 on_output=_stream_output,
             )
         except Exception as e:
@@ -275,41 +194,27 @@ class SandboxToolkit(BaseToolkit):
             output_parts.append(f"Exit Code: {result.exit_code}")
 
         if result.stdout:
-            out_str = result.stdout.strip()
-            if len(out_str) > 2000:
-                out_str = out_str[:2000] + "\n...[输出过长，已被系统安全截断]..."
-            output_parts.append(f"Stdout:\n{out_str}")
+            output_parts.append(f"Stdout:\n{result.stdout.strip()[:2000]}")
 
         if result.stderr:
-            err_str = result.stderr.strip()
-            if len(err_str) > 2000:
-                err_str = err_str[:2000] + "\n...[输出过长，已被系统安全截断]..."
-            output_parts.append(f"Stderr:\n{err_str}")
+            output_parts.append(f"Stderr:\n{result.stderr.strip()[:2000]}")
 
         if result.error:
             output_parts.append(f"System Error:\n{result.error}")
 
         output_text = "\n".join(output_parts)
 
+        system_notice = ""
         if result.is_timeout:
-            system_notice = (system_notice or "") + (
-                "\n\n### ⚠️ 系统最高级警告：代码执行发生软超时！\n"
-                "目前该 Python 进程**仍在沙箱后台挂起运行**！它可能处于以下状态：\n"
-                "1. 卡在 `input()` 等待标准输入。\n"
-                "2. 陷入了死循环 (如 `while True`)。\n\n"
-                "#### 🚀 下一步行动指南\n"
-                "- **交互场景**：若它在等待输入，"
-                "请立即调用 `send_sandbox_input` 填入所需数据。\n"
-                "- **异常场景**：若属于死循环或报错，"
-                "请**务必首先**调用 `interrupt_sandbox` "
-                "强制杀死该进程，然后再尝试修改并重新执行代码！"
+            system_notice = (
+                "\n\n⚠️ 警告: 代码执行超时！进程仍在后台挂起，"
+                "若为死循环请立刻使用 `interrupt_sandbox`。"
             )
-        elif result.exit_code != 0 or result.error or result.stderr:
-            system_notice = (system_notice or "") + (
-                "\n\n### 💡 影子反思系统引导\n"
-                "检测到代码执行失败或产生错误输出！\n"
-                "请仔细分析上述日志，定位 Python 逻辑漏洞，"
-                "修正代码后重新调用本工具执行。"
+        if result.stderr and "StdinNotImplementedError" in result.stderr:
+            system_notice += (
+                "\n\n🚨 致命错误: 当前环境不支持 input()。"
+                "请将代码写入文件并通过 "
+                "execute_terminal_command(is_interactive=True) 运行！"
             )
 
         image_bytes_list = []
@@ -327,22 +232,6 @@ class SandboxToolkit(BaseToolkit):
             for filename, file_bytes in result.artifacts.items():
                 if filename.endswith((".png", ".jpg", ".jpeg")):
                     image_bytes_list.append(file_bytes)
-
-        if result.exit_code != 0 and not is_stateful:
-            system_notice = (
-                (system_notice or "")
-                + "\n(提示：发生错误可能是因为轻量级环境缺少依赖，"
-                "或你的代码没有正确导入模块)"
-            )
-
-        if result.stderr and "StdinNotImplementedError" in result.stderr:
-            system_notice = (
-                (system_notice or "") + "\n\n### 🚨 致命错误：环境限制\n"
-                "当前高级环境不支持交互式输入 `input()`！\n"
-                "请按照系统指南：先用 `write_sandbox_file` "
-                "将你的代码保存为 `.py` 文件，"
-                "然后使用 `execute_terminal_command` 在真实终端中运行它！"
-            )
 
         from zhenxun.services.ai.core.messages import (
             ImagePart,
@@ -383,31 +272,24 @@ class SandboxToolkit(BaseToolkit):
         command: str,
         context: RunContext,
         ui: Inject.UI,
+        sandbox: Inject.Sandbox,
         is_interactive: bool = False,
     ) -> ToolResult:
-        session_id = self.sandbox_session_id or (
-            context.session_id if context.session_id else "default_sandbox_session"
-        )
-
-        from zhenxun.services.ai.sandbox.manager import sandbox_manager
+        session_id = self.sandbox_session_id or context.session_id or "default"
 
         await ui.send_text(f"正在虚拟终端执行命令: {command} ...")
-        executor = await sandbox_manager.get_or_create_session(
-            session_id, self.blueprint
-        )
+        executor = await self._get_session(context, sandbox)
 
         if not is_interactive:
             res = await executor.run_process(command)
 
             if getattr(res, "is_timeout", False):
                 return ToolResult(
-                    output=f"⚠️ 警告：命令执行发生软超时（进程被挂起）！\n"
-                    f"Stdout:\n{res.stdout}\n"
-                    f"Stderr:\n{res.stderr}\n\n"
-                    "[系统引导]：这通常是因为你的代码包含 `input()` "
-                    "或启动了持久化服务导致进程阻塞。\n"
-                    "由于你使用了 is_interactive=False，系统无法与挂起的进程交互！\n"
-                    "👉 请务必设置 `is_interactive=True` 重新调用本工具执行！",
+                    output=(
+                        "⚠️ 警告: 命令执行超时！若程序需常驻或等待输入，"
+                        f"请务必设置 is_interactive=True。\n"
+                        f"Stdout: {res.stdout}\nStderr: {res.stderr}"
+                    )
                 ).as_error()
 
             return ToolResult(
@@ -418,23 +300,19 @@ class SandboxToolkit(BaseToolkit):
                 )
             )
 
-        session = self._interactive_sessions.get(session_id)
-        if session:
-            await session.close()
+        pty = self._get_pty(context)
+        if pty:
+            await pty.close()
 
         interactive_session = await executor.create_pty_session()
-
-        self._interactive_sessions[session_id] = interactive_session
+        context.session.shared_state[f"pty_{session_id}"] = interactive_session
 
         try:
             await interactive_session.start(command)
             await asyncio.sleep(1.5)
             screen = await interactive_session.read_output()
             return ToolResult(
-                output=f"已成功在虚拟终端启动程序。\n"
-                f"📺 初始屏幕快照如下:\n```text\n{screen}\n```\n\n"
-                f"请仔细阅读屏幕快照，如果程序在等待输入，"
-                f"请调用 `send_sandbox_input` 发送按键（记得带换行符）。"
+                output=f"📺 虚拟终端已启动，屏幕快照:\n```text\n{screen}\n```"
             )
         except Exception as e:
             return ToolResult(output=f"虚拟屏幕启动异常: {e}").as_error()
@@ -448,15 +326,13 @@ class SandboxToolkit(BaseToolkit):
         ),
     )
     async def send_sandbox_input(self, text: str, context: RunContext) -> ToolResult:
-        session_id = self.sandbox_session_id or (
-            context.session_id if context.session_id else "default_sandbox_session"
-        )
-        interactive_session = self._interactive_sessions.get(session_id)
+        interactive_session = self._get_pty(context)
         if not interactive_session:
             return ToolResult(
-                output="错误：当前会话没有处于运行中的交互式虚拟屏幕！"
-                "请先使用 execute_terminal_command("
-                "is_interactive=True) 启动程序。",
+                output=(
+                    "错误：没有运行中的交互式虚拟屏幕。"
+                    "请先调用 execute_terminal_command(is_interactive=True)。"
+                )
             ).as_error()
 
         text = text.replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t")
@@ -477,10 +353,7 @@ class SandboxToolkit(BaseToolkit):
         ),
     )
     async def read_sandbox_screen(self, context: RunContext) -> ToolResult:
-        session_id = self.sandbox_session_id or (
-            context.session_id if context.session_id else "default_sandbox_session"
-        )
-        interactive_session = self._interactive_sessions.get(session_id)
+        interactive_session = self._get_pty(context)
         if not interactive_session:
             return ToolResult(output="没有运行中的虚拟屏幕。").as_error()
 
@@ -494,10 +367,7 @@ class SandboxToolkit(BaseToolkit):
         ),
     )
     async def interrupt_sandbox(self, context: RunContext) -> ToolResult:
-        session_id = self.sandbox_session_id or (
-            context.session_id if context.session_id else "default_sandbox_session"
-        )
-        interactive_session = self._interactive_sessions.get(session_id)
+        interactive_session = self._get_pty(context)
         if not interactive_session:
             return ToolResult(output="没有运行中的虚拟屏幕需要中断。").as_error()
 
@@ -515,18 +385,9 @@ class SandboxToolkit(BaseToolkit):
     )
     @silent()
     async def write_sandbox_file(
-        self, path: str, content: str, context: RunContext
+        self, path: str, content: str, context: RunContext, sandbox: Inject.Sandbox
     ) -> ToolResult:
-        session_id = self.sandbox_session_id or (
-            context.session_id if context.session_id else "default_sandbox_session"
-        )
-        executor = self._executors.get(session_id)
-        if not executor:
-            from zhenxun.services.ai.sandbox.manager import sandbox_manager
-
-            executor = await sandbox_manager.get_or_create_session(
-                session_id, self.blueprint
-            )
+        executor = await self._get_session(context, sandbox)
 
         success = await executor.write(path, content.encode("utf-8"))
         if success:
@@ -546,17 +407,10 @@ class SandboxToolkit(BaseToolkit):
         description="从沙箱文件系统中读取指定文件的文本内容。",
     )
     @silent()
-    async def read_sandbox_file(self, path: str, context: RunContext) -> ToolResult:
-        session_id = self.sandbox_session_id or (
-            context.session_id if context.session_id else "default_sandbox_session"
-        )
-        executor = self._executors.get(session_id)
-        if not executor:
-            from zhenxun.services.ai.sandbox.manager import sandbox_manager
-
-            executor = await sandbox_manager.get_or_create_session(
-                session_id, self.blueprint
-            )
+    async def read_sandbox_file(
+        self, path: str, context: RunContext, sandbox: Inject.Sandbox
+    ) -> ToolResult:
+        executor = await self._get_session(context, sandbox)
 
         try:
             content_bytes = await executor.read(path)

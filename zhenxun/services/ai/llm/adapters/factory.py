@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from zhenxun.services.ai.core.configs import LLMEmbeddingConfig
 from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
-from zhenxun.services.ai.tools.models import ToolChoice
+from zhenxun.services.ai.core.models import ToolChoice
 
 from .base import BaseAdapter, RequestData, ResponseData
 

@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 from collections import defaultdict
 import json
 import time
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from nonebot.permission import SUPERUSER
 
@@ -18,8 +20,14 @@ from zhenxun.services.ai.core.events.event_types import (
 )
 from zhenxun.services.ai.core.exceptions import (
     AbortException,
+    GuardrailViolationError,
+    LLMErrorCode,
+    LLMException,
+    ModelRetry,
     NeedsAuthException,
+    SchemaParseError,
     ToolFatalError,
+    ToolRetryError,
 )
 from zhenxun.services.ai.core.messages import LLMResponse
 from zhenxun.services.ai.protocols.capabilities import (
@@ -28,9 +36,11 @@ from zhenxun.services.ai.protocols.capabilities import (
     WrapRunHandler,
     WrapToolExecuteHandler,
 )
-from zhenxun.services.ai.protocols.middleware import LLMContext
 from zhenxun.services.ai.run import AgentRunResult, RunContext
 from zhenxun.services.ai.tools.models import ToolResult
+
+if TYPE_CHECKING:
+    from zhenxun.services.ai.protocols.middleware import LLMContext
 from zhenxun.services.cache.runtime_cache import LevelUserMemoryCache
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import GoldHandle
@@ -122,10 +132,13 @@ class StuckDetectionCapability(AbstractCapability):
             recent_hashes = action_hashes[:max_repeated_errors]
             if len(set(recent_hashes)) == 1:
                 logger.warning(
-                    f"[StuckDetection] 拦截到死循环：连续 {max_repeated_errors} 次产生完全相同的状态哈希碰撞。"
+                    "[StuckDetection] 拦截到死循环：连续 "
+                    f"{max_repeated_errors} 次产生完全相同的状态哈希碰撞。"
                 )
                 raise ToolFatalError(
-                    f"Agent 触发终极防呆机制：连续 {max_repeated_errors} 次产生完全相同的无效工具调用状态，已物理阻断以节省 Token。"
+                    "Agent 触发终极防呆机制：连续 "
+                    f"{max_repeated_errors} 次产生完全相同的"
+                    "无效工具调用状态，已物理阻断以节省 Token。"
                 )
 
         return llm_context
@@ -457,7 +470,8 @@ class ToolSideEffectCapability(AbstractCapability):
 class ToolRetryAndReflectionCapability(AbstractCapability):
     """
     重试与自愈反思中间件。
-    接管原执行器中的重试计数与致命异常熔断。将 Python 异常优雅地转化为大模型的反思 Prompt。
+    接管原执行器中的重试计数与致命异常熔断。
+    将 Python 异常优雅地转化为大模型的反思 Prompt。
     """
 
     async def wrap_tool_execute(
@@ -494,7 +508,7 @@ class ToolRetryAndReflectionCapability(AbstractCapability):
             policy = ToolExecutionPolicy(tool)
             max_retries_limit = policy.max_retries
 
-            if isinstance(e, (ToolFatalError, ToolFinishException)):
+            if isinstance(e, ToolFatalError | ToolFinishException):
                 display_msg = getattr(e, "display_content", f"❌ 系统致命错误: {e}")
                 raise AbortException(reason=str(e), display=display_msg)
 
@@ -507,6 +521,174 @@ class ToolRetryAndReflectionCapability(AbstractCapability):
             return ToolResult(output=f"执行发生异常: {e}").as_error()
 
 
+class ReflexionCapability(AbstractCapability):
+    """自愈反思与验证引擎 (Reflexion Engine)。
+    统一处理结构化解析失败 and 语义护栏拦截。"""
+
+    async def on_tool_execute_error(self, context, tool_name, error):
+        from zhenxun.services.ai.core.engine.structured_parser import (
+            DEFAULT_IVR_TEMPLATE,
+        )
+
+        if isinstance(error, ToolRetryError | ModelRetry):
+            error_msg = getattr(error, "message", str(error))
+            feedback_prompt = DEFAULT_IVR_TEMPLATE.format(error_msg=error_msg)
+            context.run.add_system_prompt(feedback_prompt)
+            return ToolResult(
+                output=f"执行失败：{error_msg}",
+            ).as_error()
+        raise error
+
+    async def wrap_model_request(
+        self,
+        context: RunContext,
+        llm_context: LLMContext,
+        handler: WrapModelRequestHandler,
+    ) -> LLMResponse:
+        output_processor = llm_context.extra.get("output_processor")
+        guardrails = llm_context.extra.get("guardrails", [])
+
+        if not output_processor and not guardrails:
+            return await handler(llm_context)
+
+        max_retries = llm_context.extra.get("max_retries", 3)
+        error_template = (
+            output_processor.error_template if output_processor else "{error_msg}"
+        )
+
+        ivr_messages = list(llm_context.messages)
+        last_exception: Exception | None = None
+
+        for attempt in range(max_retries + 1):
+            llm_context.messages = list(ivr_messages)
+            current_response_text: str = ""
+
+            try:
+                response = await handler(llm_context)
+                current_response_text = response.text
+
+                if response.tool_calls:
+                    return response
+
+                if output_processor:
+                    final_obj = await output_processor.validate_and_parse(
+                        current_response_text, context=context
+                    )
+                else:
+                    final_obj = current_response_text
+
+                failed_feedbacks = []
+                for v in guardrails:
+                    v_res = await v.validate(current_response_text, final_obj, context)
+                    if not v_res.success:
+                        failed_feedbacks.append(v_res.feedback or "未知校验失败")
+
+                if failed_feedbacks:
+                    raise GuardrailViolationError("\n".join(failed_feedbacks))
+                response.parsed_obj = final_obj
+                return response
+
+            except Exception as e:
+                from typing import cast
+
+                from zhenxun.services.ai.core.messages import LLMMessage
+
+                is_model_retry = isinstance(e, ModelRetry)
+                is_llm_error = isinstance(e, LLMException)
+                llm_error: LLMException | None = (
+                    cast(LLMException, e) if is_llm_error else None
+                )
+                last_exception = e
+
+                if (
+                    not is_model_retry
+                    and llm_error
+                    and llm_error.code
+                    not in (
+                        LLMErrorCode.RESPONSE_PARSE_ERROR,
+                        LLMErrorCode.API_RESPONSE_INVALID,
+                    )
+                ):
+                    raise e
+
+                if attempt < max_retries:
+                    if is_model_retry:
+                        error_msg = getattr(e, "message", str(e))
+                        raw_response = current_response_text
+                    else:
+                        error_msg = (
+                            llm_error.details.get("validation_error", str(e))
+                            if llm_error
+                            else str(e)
+                        )
+                        raw_response = current_response_text or (
+                            llm_error.details.get("raw_response", "")
+                            if llm_error
+                            else ""
+                        )
+
+                    logger.warning(
+                        "输出校验未通过 "
+                        f"(尝试 {attempt + 1}/{max_retries + 1})。"
+                        f"启动反思修复闭环... 失败原因: {error_msg}"
+                    )
+
+                    if raw_response:
+                        ivr_messages.append(
+                            cast(
+                                LLMMessage,
+                                LLMMessage.assistant_text_response(raw_response),
+                            )
+                        )
+
+                    if isinstance(e, SchemaParseError):
+                        feedback_prompt = (
+                            "### ❌ [格式解析失败]\n"
+                            "你输出的结构化数据（JSON）格式损坏或字段不匹配，"
+                            "未能通过 Schema 校验。\n\n"
+                            "**解析错误报告：**\n"
+                            f"> {error_msg}\n\n"
+                            "**修正要求：** 请仔细检查缺失的必填字段、错误的数据类型或"
+                            "未闭合的括号，严格参考你可用的工具 Schema 定义，"
+                            "重新输出正确格式的数据。"
+                        )
+                    elif isinstance(e, GuardrailViolationError):
+                        feedback_prompt = (
+                            "### 🛡️ [业务护栏违规]\n"
+                            "你输出的数据格式完全正确，但在业务逻辑层触发了合规/风控护栏。\n\n"
+                            "**拦截原因报告：**\n"
+                            f"> {error_msg}\n\n"
+                            "**修正要求：** 请结合上述反馈报告，"
+                            "反思你的决策逻辑或内容生成，"
+                            "在保持数据格式正确的前提下，重新生成符合护栏规范的内容。"
+                        )
+                    else:
+                        if output_processor and error_template:
+                            feedback_prompt = error_template.format(error_msg=error_msg)
+                        else:
+                            from zhenxun.services.ai.core.engine import (
+                                structured_parser as sp,
+                            )
+
+                            feedback_prompt = sp.DEFAULT_IVR_TEMPLATE.format(
+                                error_msg=error_msg
+                            )
+                    ivr_messages.append(
+                        cast(LLMMessage, LLMMessage.user(feedback_prompt))
+                    )
+                    continue
+
+                if llm_error and not getattr(llm_error, "recoverable", True):
+                    raise llm_error
+
+        if last_exception:
+            raise last_exception
+        raise LLMException(
+            "反思循环耗尽，未能生成符合所有校验规则的合法结果。",
+            code=LLMErrorCode.GENERATION_FAILED,
+        )
+
+
 GLOBAL_CAPABILITIES: dict[str, list[AbstractCapability]] = defaultdict(list)
 
 for _cap in [
@@ -517,6 +699,7 @@ for _cap in [
     EventDispatcherCapability(),
     ToolSideEffectCapability(),
     ToolRetryAndReflectionCapability(),
+    ReflexionCapability(),
 ]:
     GLOBAL_CAPABILITIES["global"].append(_cap)
 

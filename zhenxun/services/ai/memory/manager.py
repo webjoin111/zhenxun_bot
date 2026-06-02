@@ -11,7 +11,7 @@ from zhenxun.services.ai.memory.storage import (
     InMemorySlotContext,
     MemoryScope,
 )
-from zhenxun.services.ai.rag import Embedder, StorageBackend
+from zhenxun.services.ai.rag.backends import Embedder, StorageBackend
 from zhenxun.services.ai.rag.consolidation import Consolidator as MemoryConsolidator
 from zhenxun.services.ai.rag.consolidation import NullConsolidator
 from zhenxun.utils.utils import infer_plugin_namespace

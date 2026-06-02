@@ -129,9 +129,11 @@ class CommonLLMConfig(BaseModel):
     top_k: int | None = Field(default=None, gt=0)
     """仅从概率最高的前 K 个 Token 中采样 (并非所有模型支持)。"""
     frequency_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
-    """频率惩罚。正值根据新 Token 在文本中的现有频率对其进行惩罚，降低模型逐字重复同一行的可能性。"""
+    """频率惩罚。正值根据新 Token 在文本中的现有频率对其进行惩罚，
+    降低模型逐字重复同一行的可能性。"""
     presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
-    """存在惩罚。正值根据新 Token 到目前为止是否出现在文本中对其进行惩罚，增加模型谈论新主题的可能性。"""
+    """存在惩罚。正值根据新 Token 到目前为止是否出现在文本中对其进行惩罚，
+    增加模型谈论新主题的可能性。"""
     repetition_penalty: float | None = Field(default=None, ge=0.0, le=2.0)
     """重复惩罚系数 (部分非 OpenAI 兼容模型独有)。"""
     stop: list[str] | str | None = Field(default=None)

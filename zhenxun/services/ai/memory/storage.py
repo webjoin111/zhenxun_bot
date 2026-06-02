@@ -1,7 +1,10 @@
 from collections.abc import Callable
 import datetime
 import time
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from zhenxun.services.ai.rag.engine import ScopedRAGClient
 
 from nonebot.utils import is_coroutine_callable
 from pydantic import TypeAdapter
@@ -21,8 +24,7 @@ from zhenxun.services.ai.memory.interfaces import (
     BaseSlotContext,
 )
 from zhenxun.services.ai.memory.models import MemorySlot, SessionMetadata, SlotScope
-from zhenxun.services.ai.rag import BaseRecord, SearchResult
-from zhenxun.services.ai.rag.engine import ScopedRAGClient
+from zhenxun.services.ai.rag.models import BaseRecord, SearchResult
 from zhenxun.services.db_context import Model
 from zhenxun.utils.pydantic_compat import model_dump
 
@@ -32,7 +34,7 @@ class MemoryScope:
 
     def __init__(
         self,
-        rag_client: ScopedRAGClient,
+        rag_client: "ScopedRAGClient",
         async_write: bool = True,
         capacity_limit: int = 500,
         evict_ratio: float = 0.2,

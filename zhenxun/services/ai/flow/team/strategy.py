@@ -54,7 +54,9 @@ class BaseTeamStrategy(ABC):
             result="The Strategy has not implemented generate_plan() yet."
         )
 
-    def _build_leader_agent(self, team: Any, name: str, instruction: str, tools: list[Any]) -> Agent:
+    def _build_leader_agent(
+        self, team: Any, name: str, instruction: str, tools: list[Any]
+    ) -> Agent:
         """
         统一的团队 Leader / Planner 装配工厂。
         自动处理无状态配置以及 HITL 状态继承。

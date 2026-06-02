@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from zhenxun.services.ai.core.configs import (
     GenerationConfig,
@@ -14,10 +14,7 @@ from zhenxun.services.ai.core.messages import (
     LLMMessage,
     LLMResponse,
 )
-
-if TYPE_CHECKING:
-    from zhenxun.services.ai.tools.models import ToolChoice
-
+from zhenxun.services.ai.core.models import ToolChoice
 
 
 class LLMModelBase(ABC):

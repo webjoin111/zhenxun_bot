@@ -11,9 +11,9 @@ from zhenxun.services.ai.llm.adapters.base import RequestData, ResponseData
 if TYPE_CHECKING:
     from zhenxun.services.ai.core.configs import LLMEmbeddingConfig, TTSConfig
     from zhenxun.services.ai.core.messages import AudioResponse, RerankResult
+    from zhenxun.services.ai.core.models import ToolChoice, ToolDefinition
     from zhenxun.services.ai.llm.adapters.base import BaseAdapter
     from zhenxun.services.ai.llm.service import LLMModel
-    from zhenxun.services.ai.tools.models import ToolChoice, ToolDefinition
 
 
 class ConfigMapper(ABC):

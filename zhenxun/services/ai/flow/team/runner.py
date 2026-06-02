@@ -23,7 +23,7 @@ from zhenxun.services.ai.flow.team.models import (
 )
 from zhenxun.services.ai.flow.team.strategy import BaseTeamStrategy
 from zhenxun.services.ai.run import AgentRunResult, RunContext
-from zhenxun.services.ai.run.models import AgentRunEnd, AgentRunError
+from zhenxun.services.ai.run.models import AgentRunEnd
 from zhenxun.services.log import logger
 
 
@@ -44,7 +44,10 @@ class TeamRunner:
         session_id: str,
         queue: asyncio.Queue,
     ):
-        """辅助方法：执行单一 Agent 任务，并将内部产生的 UI 事件与最终结果通过队列透传回主线程"""
+        """
+        辅助方法：执行单一 Agent 任务，
+        并将内部产生的 UI 事件与最终结果通过队列透传回主线程
+        """
         if isinstance(action.agent, str):
             target_agent = next(
                 (m for m in self.team.members if m.name == action.agent), None
@@ -102,11 +105,6 @@ class TeamRunner:
                 async for event in stream_result.stream_events():
                     if isinstance(event, AgentRunEnd):
                         agent_res = event.result
-                    elif isinstance(event, AgentRunError):
-                        if isinstance(event.error, HandoffException):
-                            handoff_exc = event.error
-                        else:
-                            raise event.error
                     else:
                         await queue.put(("yield_event", event))
         except HandoffException as he:
@@ -119,11 +117,28 @@ class TeamRunner:
                 return
             else:
                 logger.debug(
-                    f"Agent {target_agent.name} 触发局部控制流: {type(cfe).__name__} - {cfe}"
+                    f"Agent {target_agent.name} 触发局部控制流: "
+                    f"{type(cfe).__name__} - {cfe}"
                 )
                 agent_res = AgentRunResult(output=str(cfe), usage=UsageInfo())
         except Exception as e:
+            from zhenxun.services.ai.core.exceptions import AbortException, LLMException
+
             logger.error(f"Agent {target_agent.name} 执行崩溃: {e}")
+
+            if isinstance(e, LLMException):
+                abort_msg = getattr(e, "user_friendly_message", str(e))
+                display_msg = (
+                    f"❌ 智能体 {target_agent.name} 执行发生致命故障: "
+                    f"{abort_msg}"
+                )
+                abort_err = AbortException(
+                    reason=str(e),
+                    display=display_msg,
+                )
+                await queue.put(("control_flow_error", abort_err))
+                return
+
             agent_res = AgentRunResult(output=f"Error: {e}", usage=UsageInfo())
 
         if handoff_exc:

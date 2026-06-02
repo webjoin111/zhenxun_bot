@@ -32,8 +32,6 @@ class LanguageProfile(BaseModel):
     """运行命令"""
     deps_install_cmd: str | None = None
     """依赖安装命令"""
-    inject_rpc_stub: bool = False
-    """是否注入 RPC 存根"""
 
 
 class BaseEntry(BaseModel, ABC):
@@ -162,6 +160,17 @@ class ShellSetup(BaseSetupStep):
             await session.run_process(script, timeout=300)
 
 
+class BindMount(BaseModel):
+    """宿主机物理目录绑定映射配置"""
+
+    host_path: str
+    """宿主机绝对路径"""
+    sandbox_path: str = "/workspace"
+    """沙箱内目标路径，默认覆盖 /workspace"""
+    read_only: bool = False
+    """是否以只读模式挂载"""
+
+
 class SandboxBlueprint(BaseModel):
     """沙箱大一统声明式蓝图配置"""
 
@@ -182,6 +191,9 @@ class SandboxBlueprint(BaseModel):
 
     required_extensions: list[str] = Field(default_factory=list)
     """需要自动挂载的扩展"""
+
+    bind_mounts: list[BindMount] = Field(default_factory=list)
+    """宿主机目录物理挂载映射列表 (Bind Mounts)"""
 
     def with_sandbox_type(self, sandbox_type: str) -> "SandboxBlueprint":
         """设置沙箱驱动类型"""
@@ -235,6 +247,16 @@ class SandboxBlueprint(BaseModel):
 
     def with_local_dir(self, path: str, local_dir: str) -> "SandboxBlueprint":
         """声明预置本地宿主机完整目录"""
+        from zhenxun.services.log import logger
+
+        for bm in self.bind_mounts:
+            if path.startswith(bm.sandbox_path) or bm.sandbox_path.startswith(path):
+                logger.warning(
+                    f"⚠️ [Sandbox] 路径 '{path}' 和物理挂载映射 "
+                    f"'{bm.sandbox_path}' 存在重叠！\n"
+                    "继续使用 with_local_dir 打包上传可能会引发冗余上传"
+                    "或双向覆盖冲突。建议直接使用物理挂载。"
+                )
         self.entries[path] = LocalDir(src=local_dir)
         return self
 
@@ -249,6 +271,30 @@ class SandboxBlueprint(BaseModel):
             self.required_extensions.append(extension)
         return self
 
+    def with_workspace(
+        self,
+        local_path: str | Path,
+        remote_path: str = "/workspace",
+        read_only: bool = False,
+    ) -> "SandboxBlueprint":
+        """声明宿主机物理目录双向挂载 (Bind Mount)"""
+        from pathlib import Path
+
+        from zhenxun.services.log import logger
+
+        if remote_path in self.entries:
+            logger.warning(
+                f"⚠️ [Sandbox] 目标沙箱路径 '{remote_path}' "
+                "已包含普通实体映射(如 LocalDir/File)。\n"
+                "强制绑定物理挂载 (Bind Mount) 将会遮蔽原有实体。"
+            )
+
+        abs_path = Path(local_path).resolve().as_posix()
+        self.bind_mounts.append(
+            BindMount(host_path=abs_path, sandbox_path=remote_path, read_only=read_only)
+        )
+        return self
+
     def calculate_hash(self) -> str:
         """计算当前环境配置的 MD5 指纹，用于缓存命中"""
         entries_dict = {
@@ -258,6 +304,7 @@ class SandboxBlueprint(BaseModel):
         data_to_hash = {
             "steps": [s.model_dump() for s in self.setup_steps],
             "entries": entries_dict,
+            "bind_mounts": [m.model_dump() for m in self.bind_mounts],
         }
         json_str = json.dumps(data_to_hash, separators=(",", ":"))
         return hashlib.md5(json_str.encode("utf-8")).hexdigest()
@@ -278,6 +325,7 @@ class SandboxBlueprint(BaseModel):
         self.required_extensions = list(
             dict.fromkeys(self.required_extensions + other.required_extensions)
         )
+        self.bind_mounts.extend(other.bind_mounts)
         return self
 
 
@@ -317,12 +365,3 @@ class SandboxSessionState(BaseModel):
     """工作区目录是否已初始化完成"""
     extra_data: dict[str, Any] = Field(default_factory=dict)
     """会话的其它序列化元数据"""
-
-
-class CodeBlock(BaseModel):
-    """大模型生成的、将被沙箱执行的代码块抽象结构"""
-
-    code: str
-    """具体的代码片段内容"""
-    language: str
-    """代码的编程语言，如 python, sh, bash 等"""

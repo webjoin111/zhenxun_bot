@@ -35,11 +35,7 @@ from zhenxun.services.ai.llm.config.generation import IntentBuilder
 from zhenxun.services.ai.llm.manager import get_model_instance
 from zhenxun.services.ai.memory.builder import MemoryBuilder
 from zhenxun.services.ai.memory.models import MemoryConfig, SessionMetadata
-from zhenxun.services.ai.protocols.capabilities import (
-    AbstractCapability,
-    HitlCapability,
-    SkillCapability,
-)
+from zhenxun.services.ai.protocols.capabilities import AbstractCapability
 from zhenxun.services.ai.protocols.tool import ToolExecutable
 from zhenxun.services.ai.run import (
     AgentDepsT,
@@ -52,9 +48,11 @@ from zhenxun.services.ai.run import (
     ToolsPrepareFunc,
 )
 from zhenxun.services.ai.run.models import AgentRunEnd, AgentRunError, AgentRunStart
+from zhenxun.services.ai.tools.engine.global_capabilities import ReflexionCapability
 from zhenxun.services.ai.tools.models import (
     GlobalToolFilter,
 )
+from zhenxun.services.ai.tools.providers.skills.capabilities import SkillCapability
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_construct, model_copy
 from zhenxun.utils.utils import infer_plugin_namespace
@@ -169,9 +167,9 @@ class Agent(
         self.capabilities: list[AbstractCapability] = []
 
         if self.runtime_config.enable_hitl:
-            self.capabilities.append(HitlCapability())
+            from zhenxun.services.ai.tools.providers.builtin.hitl import HITLToolkit
 
-        from zhenxun.services.ai.protocols.capabilities import ReflexionCapability
+            self.tool_definitions.append(HITLToolkit())
 
         self.capabilities.append(ReflexionCapability())
 
@@ -512,7 +510,6 @@ class Agent(
                 context.session_id = _meta.session_id
                 context.session.session_id = _meta.session_id
 
-        from zhenxun.services.ai.protocols.capabilities import CombinedCapability
         from zhenxun.services.ai.tools.engine.global_capabilities import (
             GLOBAL_CAPABILITIES,
         )
@@ -582,6 +579,8 @@ class Agent(
         base_caps = GLOBAL_CAPABILITIES.get("global", []).copy()
         if self.namespace != "global" and self.namespace in GLOBAL_CAPABILITIES:
             base_caps.extend(GLOBAL_CAPABILITIES[self.namespace])
+
+        from zhenxun.services.ai.protocols.capabilities import CombinedCapability
 
         combined_cap = CombinedCapability(
             base_caps

@@ -101,26 +101,7 @@ class StreamedRunResult(Generic[OutputDataT]):
                 self._result = cast(AgentRunResult[OutputDataT], event.result)
                 self.is_complete = True
             elif isinstance(event, AgentRunError):
-                from zhenxun.services.ai.core.exceptions import ControlFlowException
-
-                if isinstance(event.error, ControlFlowException):
-                    from zhenxun.services.ai.core.messages import UsageInfo
-                    from zhenxun.services.log import logger
-
-                    logger.info(f"⏭️ 任务执行被业务控制流安全中止: {event.error}")
-
-                    output_val = (
-                        getattr(event.error, "result_output", None)
-                        or getattr(event.error, "display", None)
-                        or str(event.error)
-                    )
-                    self._result = cast(
-                        AgentRunResult[OutputDataT],
-                        AgentRunResult(output=output_val, usage=UsageInfo()),
-                    )
-                    self.is_complete = True
-                else:
-                    raise event.error
+                raise event.error
             yield event
 
     async def stream_text(self, delta: bool = False) -> AsyncIterator[str]:

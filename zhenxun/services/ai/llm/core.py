@@ -423,7 +423,8 @@ class HealthManager:
             if time.time() >= stats.cooldown_until:
                 stats.state = RouteHealthState.HALF_OPEN
                 logger.info(
-                    f"🔄 [L7 Router] 节点 '{route_name}' 冷却期结束，进入 HALF_OPEN 半开试探状态。"
+                    f"🔄 [L7 Router] 节点 '{route_name}' "
+                    "冷却期结束，进入 HALF_OPEN 半开试探状态。"
                 )
                 return True
             return False
@@ -448,7 +449,8 @@ class HealthManager:
 
             if stats.state != RouteHealthState.CLOSED:
                 logger.info(
-                    f"✅ [L7 Router] 节点 '{route_name}' 试探成功！已完全恢复健康状态 (CLOSED)。"
+                    f"✅ [L7 Router] 节点 '{route_name}' "
+                    "试探成功！已完全恢复健康状态 (CLOSED)。"
                 )
                 stats.state = RouteHealthState.CLOSED
                 stats.cooldown_until = 0.0
@@ -473,7 +475,8 @@ class HealthManager:
             await self._save_to_file_internal()
 
         logger.warning(
-            f"🚨 [L7 Router] 节点 '{route_name}' 发生服务端故障，已触发熔断 (OPEN)，冷却 {cooldown_duration} 秒。错误: {error_msg}"
+            f"🚨 [L7 Router] 节点 '{route_name}' 发生服务端故障，"
+            f"已触发熔断 (OPEN)，冷却 {cooldown_duration} 秒。错误: {error_msg}"
         )
 
     def get_best_fallback_route(self, route_names: list[str]) -> str:
@@ -577,7 +580,9 @@ class HealthManager:
             stats = provider_state.api_keys.setdefault(api_key, KeyHealthStatus())
             if cooldown_duration > 0:
                 stats.cooldown_until = now + cooldown_duration
-                stats.status = "COOLDOWN" if cooldown_duration < 31536000 else "DISABLED"
+                stats.status = (
+                    "COOLDOWN" if cooldown_duration < 31536000 else "DISABLED"
+                )
             stats.failures += 1
             stats.last_error = error_message[:256]
             await self._save_to_file_internal()

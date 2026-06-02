@@ -22,8 +22,10 @@ class MemorySlotToolkit(BaseToolkit):
     default_instructions = (
         "## 记忆槽管理系统 (Memory Slots)\n"
         "系统已为你提供了类似记事本的记忆槽功能，用于保存关键偏好、人设或当前任务状态。\n"
-        "1. 被记录在槽位中的内容会自动以 `<memory_slots>` 的 XML 形式注入你的系统提示词。\n"
-        "2. 当用户偏好改变，或者任务状态发生变迁时，请主动调用 `update_slot` 覆盖对应标签的内容。\n"
+        "1. 被记录在槽位中的内容会自动以 `<memory_slots>` "
+        "的 XML 形式注入你的系统提示词。\n"
+        "2. 当用户偏好改变，或者任务状态发生变迁时，"
+        "请主动调用 `update_slot` 覆盖对应标签的内容。\n"
         "3. 当你要追加清单项目时，可使用 `append_slot`。"
     )
 
@@ -49,7 +51,10 @@ class MemorySlotToolkit(BaseToolkit):
         return ToolResult(output=f"[{label}] 内容:\n{slot.content}")
 
     @tool(
-        description="更新或新建记忆槽的内容（全量覆写）。若要保存长期有效的用户画像请将 scope 设为 global。"
+        description=(
+            "更新或新建记忆槽的内容（全量覆写）。"
+            "若要保存长期有效的用户画像请将 scope 设为 global。"
+        )
     )
     @silent()
     async def update_slot(
@@ -83,7 +88,10 @@ class MemorySlotToolkit(BaseToolkit):
         slot = await self._slot_ctx.get_slot(self.session_meta, label)
         if not slot:
             return ToolResult(
-                output=f"错误：标签为 '{label}' 的槽位不存在，请先使用 update_slot 创建。"
+                output=(
+                    f"错误：标签为 '{label}' 的槽位不存在，"
+                    "请先使用 update_slot 创建。"
+                )
             ).as_error()
 
         sep = "\n" if slot.content and not slot.content.endswith("\n") else ""
@@ -91,7 +99,10 @@ class MemorySlotToolkit(BaseToolkit):
 
         if len(new_content) > slot.size_limit:
             return ToolResult(
-                output=f"错误：追加后总长度超过限制 ({len(new_content)} > {slot.size_limit})。"
+                output=(
+                    "错误：追加后总长度超过限制 "
+                    f"({len(new_content)} > {slot.size_limit})。"
+                )
             ).as_error()
 
         slot.content = new_content

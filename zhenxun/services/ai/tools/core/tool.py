@@ -11,10 +11,10 @@ from zhenxun.services.ai.core.exceptions import (
     ToolFatalError,
     ToolRetryError,
 )
+from zhenxun.services.ai.core.models import ToolDefinition
 from zhenxun.services.ai.run import RunContext
 from zhenxun.services.ai.tools.models import (
     ResolvedToolPayload,
-    ToolDefinition,
     ToolOptions,
     ToolResult,
 )
@@ -204,7 +204,9 @@ class BaseTool:
         )
 
         if context and self.settings.capabilities:
-            from zhenxun.services.ai.protocols.capabilities import CombinedCapability
+            from zhenxun.services.ai.protocols.capabilities import (
+                CombinedCapability,
+            )
 
             combined_cap = CombinedCapability(self.settings.capabilities)
             defs = await combined_cap.prepare_tools(context, [tool_def])

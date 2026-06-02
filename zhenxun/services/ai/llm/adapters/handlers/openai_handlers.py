@@ -10,7 +10,6 @@ if TYPE_CHECKING:
     from zhenxun.services.ai.core.messages import AudioResponse
     from zhenxun.services.ai.llm.adapters.base import BaseAdapter
     from zhenxun.services.ai.llm.service import LLMModel
-    from zhenxun.services.ai.tools.models import ToolChoice
 
 import json_repair
 
@@ -34,7 +33,12 @@ from zhenxun.services.ai.core.messages import (
     ToolMessage,
     UserMessage,
 )
-from zhenxun.services.ai.core.models import ModelCapabilities, ModelDetail
+from zhenxun.services.ai.core.models import (
+    ModelCapabilities,
+    ModelDetail,
+    ToolDefinition,
+    ToolChoice
+)
 from zhenxun.services.ai.llm.adapters.base import (
     RequestData,
     ResponseData,
@@ -51,7 +55,6 @@ from zhenxun.services.ai.llm.adapters.handlers.base import (
     ResponseParser,
     ToolSerializer,
 )
-from zhenxun.services.ai.tools.models import ToolDefinition
 from zhenxun.services.log import logger
 
 

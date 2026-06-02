@@ -39,9 +39,12 @@ class Transition(BaseModel):
     description: str = ""
     """自然语言描述的移交条件（提供给大模型 LLMRouter 思考时使用）"""
     input_schema: type[BaseModel] | BaseOutputDefinition | None = None
-    """(可选) 强类型的输入约束。如果设置，LLMRouter 决定移交时必须且只能生成符合该 Schema 的 JSON 参数，并作为 context_data 传递。"""
+    """(可选) 强类型的输入约束。如果设置，
+    LLMRouter 决定移交时必须且只能生成符合该 Schema 的 JSON 参数，
+    并作为 context_data 传递。"""
     trigger_regex: str | None = None
-    """(可选) 正则表达式。如果用户的输入匹配此正则，将触发极速硬路由，跳过大模型思考。"""
+    """(可选) 正则表达式。
+    如果用户的输入匹配此正则，将触发极速硬路由，跳过大模型思考。"""
     trigger_func: Callable[..., Any] | None = None
     """(可选) 自定义校验函数。返回 True 或目标名称时触发硬路由。支持依赖注入。"""
 

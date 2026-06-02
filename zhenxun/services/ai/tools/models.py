@@ -5,7 +5,7 @@
 from dataclasses import dataclass, field
 from enum import Enum, auto
 import sys
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -71,26 +71,6 @@ class TaskType(Enum):
     MULTIMODAL = "multimodal"
 
 
-class ToolDefinition(BaseModel):
-    """结构化的工具定义模型"""
-
-    name: str = Field(...)
-    """工具名称"""
-    description: str = Field(...)
-    """工具描述"""
-    parameters: dict[str, Any] = Field(default_factory=dict)
-    """JSON Schema 参数"""
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    """元数据"""
-
-
-class ToolChoice(BaseModel):
-    """工具选择配置"""
-
-    mode: Literal["auto", "none", "any", "required"] = Field(default="auto")
-    """工具选择模式"""
-    allowed_function_names: list[str] | None = Field(default=None)
-    """允许调用的函数名称列表"""
 
 
 class ToolResult(BaseModel):
@@ -366,9 +346,6 @@ __all__ = [
     "ResolvedToolPayload",
     "TaskType",
     "ToolCategory",
-    "ToolChoice",
-    "ToolDefinition",
-    "ToolErrorResult",
     "ToolErrorType",
     "ToolMetadata",
     "ToolOptions",

@@ -19,10 +19,11 @@ from nonebot_plugin_alconna.model import CommandResult
 from pydantic import BaseModel
 
 from zhenxun.services.ai.core.exceptions import ToolRetryError
+from zhenxun.services.ai.core.models import ToolDefinition
 from zhenxun.services.ai.run import RunContext
 from zhenxun.services.ai.tools.core.schema import build_schema_hint
 from zhenxun.services.ai.tools.core.tool import BaseTool
-from zhenxun.services.ai.tools.models import ToolDefinition, ToolOptions, ToolResult
+from zhenxun.services.ai.tools.models import ToolOptions, ToolResult
 from zhenxun.services.log import logger
 
 

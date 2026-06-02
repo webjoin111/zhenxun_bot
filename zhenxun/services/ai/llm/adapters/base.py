@@ -14,8 +14,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from zhenxun.configs.path_config import TEMP_PATH
-from zhenxun.services.ai.core.configs import LLMEmbeddingConfig
-from zhenxun.services.ai.core.configs import TTSConfig
+from zhenxun.services.ai.core.configs import LLMEmbeddingConfig, TTSConfig
 from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
 from zhenxun.services.ai.core.messages import (
     AudioResponse,
@@ -30,7 +29,7 @@ from zhenxun.services.log import logger
 if TYPE_CHECKING:
     from zhenxun.services.ai.core.configs import GenerationConfig
     from zhenxun.services.ai.core.messages import LLMMessage
-    from zhenxun.services.ai.tools.models import ToolChoice
+    from zhenxun.services.ai.core.models import ToolChoice
 
     from ..service import LLMModel
 

@@ -65,7 +65,7 @@ class SchemaPipeline:
 
 
 class RootRefInlineTransformer(BaseSchemaTransformer):
-    """将根节点的 $ref 展开，保留 $defs 供内部递归使用 (OpenAI 严格模式要求根节点必须是 object)"""
+    """将根节点的 $ref 展开，保留 $defs 供内部递归使用"""
 
     def process_node(
         self, node: dict[str, Any], is_root: bool = False
@@ -152,7 +152,10 @@ class GeminiFormatTransformer(BaseSchemaTransformer):
 
 
 class StrictObjectTransformer(BaseSchemaTransformer):
-    """强制对象必须关闭 additionalProperties，并将所有 properties 设为 required (OpenAI/DeepSeek 专用)"""
+    """
+    强制对象必须关闭 additionalProperties，
+    并将所有 properties 设为 required (OpenAI/DeepSeek 专用)
+    """
 
     def process_node(
         self, node: dict[str, Any], is_root: bool = False
@@ -167,7 +170,10 @@ class StrictObjectTransformer(BaseSchemaTransformer):
 
 
 class OpenAIUnionFlattenTransformer(BaseSchemaTransformer):
-    """将 anyOf/allOf/oneOf 拍平，选取第一个非 null 的类型作为降级方案 (OpenAI 严格模式不支持复杂 Union)"""
+    """
+    将 anyOf/allOf/oneOf 拍平，选取第一个非 null 的类型作为降级方案
+    (OpenAI 严格模式不支持复杂 Union)
+    """
 
     def process_node(
         self, node: dict[str, Any], is_root: bool = False
@@ -217,7 +223,10 @@ class DeepSeekFallbackTransformer(BaseSchemaTransformer):
 
 
 class GeminiCyclicRefTransformer(BaseSchemaTransformer):
-    """识别并处理循环引用：Gemini 要求循环引用的 $ref 决不能出现在父级的 required 列表中"""
+    """
+    识别并处理循环引用：
+    Gemini 要求循环引用的 $ref 决不能出现在父级的 required 列表中
+    """
 
     def __init__(self, full_schema: dict):
         self.cyclic_refs = self._detect_cycles(full_schema)
@@ -252,7 +261,7 @@ class GeminiCyclicRefTransformer(BaseSchemaTransformer):
             for ref in find_refs(node):
                 if ref.startswith("#/$defs/") or ref.startswith("#/definitions/"):
                     next_def = ref.split("/")[-1]
-                    check_cycle(next_def, visited, path + [def_name])
+                    check_cycle(next_def, visited, [*path, def_name])
 
         visited_set = set()
         for name in defs:
@@ -284,7 +293,7 @@ class GeminiCyclicRefTransformer(BaseSchemaTransformer):
 
 
 class RefComplianceTransformer(BaseSchemaTransformer):
-    """合规清理：各大模型 (Gemini/OpenAI Strict) 均规定，如果包含 $ref，同级不允许出现任何非 $ 开头的键 (如 description, title)"""
+    """如果包含 $ref，同级不允许出现任何非 $ 开头的键 (如 description, title)"""
 
     def process_node(
         self, node: dict[str, Any], is_root: bool = False

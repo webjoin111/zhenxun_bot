@@ -29,12 +29,12 @@ from zhenxun.services.ai.core.models import (
     ModelCapabilities,
     ModelDetail,
     ModelModality,
+    ToolChoice,
 )
 from zhenxun.services.ai.llm.engine import BaseEngine
 from zhenxun.services.ai.protocols import LLMContext
 from zhenxun.services.ai.protocols.llm import LLMModelBase
 from zhenxun.services.ai.protocols.middleware import LLMMiddleware, NextCall
-from zhenxun.services.ai.tools.models import ToolChoice
 from zhenxun.services.log import logger
 
 from .core import (

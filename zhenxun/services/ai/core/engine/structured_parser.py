@@ -12,12 +12,10 @@ from zhenxun.services.ai.core.exceptions import (
     SchemaParseError,
     SubmitStructuredException,
 )
+from zhenxun.services.ai.core.models import ToolDefinition
 from zhenxun.services.ai.protocols.tool import ToolExecutable
 from zhenxun.services.ai.run import OutputDataT
-from zhenxun.services.ai.tools.models import (
-    ToolDefinition,
-    ToolResult,
-)
+from zhenxun.services.ai.tools.models import ToolResult
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_json_schema, model_validate
 

@@ -25,7 +25,8 @@ class UniversalMcpExtension(BaseMcpProxyExtension):
     ) -> AsyncGenerator[tuple[Any, Any], None]:
         if not isinstance(self.session, SupportsStreamExecution):
             raise RuntimeError(
-                "当前沙箱驱动不支持流式后台进程执行 (SupportsStreamExecution)，无法启动原生 MCP 代理。"
+                "当前沙箱驱动不支持流式后台进程执行 (SupportsStreamExecution)，"
+                "无法启动原生 MCP 代理。"
             )
 
         logger.info(

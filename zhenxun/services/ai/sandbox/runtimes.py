@@ -2,16 +2,13 @@ from abc import ABC, abstractmethod
 import asyncio
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-import re
 from typing import Any, ClassVar
 import uuid
 
 import aiohttp
 
 from zhenxun.services.ai.sandbox.drivers.base import BaseSandboxSession
-from zhenxun.services.ai.sandbox.host_bridge import STUB_TEMPLATE, sandbox_rpc_server
 from zhenxun.services.ai.sandbox.models import (
-    CodeBlock,
     LanguageProfile,
     SandboxExecutionResult,
 )
@@ -280,7 +277,8 @@ class JupyterServerManager:
                     if resp.status == 200:
                         self._is_started = True
                         logger.info(
-                            f"[JupyterManager] Jupyter 引擎拉起成功 (Port: {jupyter_port})"
+                            "[JupyterManager] Jupyter 引擎拉起成功 "
+                            f"(Port: {jupyter_port})"
                         )
                         return
             except Exception:
@@ -319,56 +317,16 @@ class JupyterServerManager:
         self._is_started = False
 
 
-def extract_markdown_code_blocks(
-    markdown_text: str, supported_languages: list[str] | None = None
-) -> list["CodeBlock"]:
-    """
-    从 Markdown 文本中提取指定语言的代码块。
-    支持如 ```python ... ``` 格式。
-    """
-    pattern = re.compile(
-        r"```[ \t]*(\w+)?[ \t]*\r?\n(.*?)\r?\n[ \t]*```", re.IGNORECASE | re.DOTALL
-    )
-    matches = pattern.findall(markdown_text)
-    code_blocks: list[CodeBlock] = []
-    for match in matches:
-        language = match[0].strip() if match[0] else ""
-        if supported_languages and language.lower() not in [
-            lang.lower() for lang in supported_languages
-        ]:
-            continue
-        code_blocks.append(CodeBlock(code=match[1], language=language))
-    return code_blocks
-
-
 class BaseCodeExecutor(ABC):
     """代码执行器抽象基类"""
 
     def __init__(self, session: BaseSandboxSession):
         self.session = session
 
-    async def _prepare_rpc_env(self) -> dict[str, str]:
-        """将 stub 写入工作区，并返回需要注入的环境变量"""
-        await self.session.write(
-            "/workspace/zhenxun_stub.py", STUB_TEMPLATE.encode("utf-8")
-        )
-
-        is_docker = self.session.state.sandbox_type == "docker"
-        host_ip = "host.docker.internal" if is_docker else "127.0.0.1"
-
-        base_env = self.session.get_meta("env", {})
-        base_env.update(
-            {
-                "ZHENXUN_RPC_URL": f"http://{host_ip}:{sandbox_rpc_server.port}/rpc",
-                "ZHENXUN_SESSION_ID": self.session.session_id or "default",
-            }
-        )
-        return base_env
-
     @abstractmethod
-    async def execute_code_blocks(
+    async def execute_code(
         self,
-        code_blocks: list[CodeBlock],
+        code: str,
         timeout: int = 30,
         injected_code: str | None = None,
         on_output: Callable[[str, bytes], Awaitable[None]] | None = None,
@@ -383,24 +341,21 @@ class GenericCLIExecutor(BaseCodeExecutor):
         super().__init__(session)
         self.profile = profile
 
-    async def execute_code_blocks(
+    async def execute_code(
         self,
-        code_blocks: list[CodeBlock],
+        code: str,
         timeout: int = 30,
         injected_code: str | None = None,
         on_output: Callable[[str, bytes], Awaitable[None]] | None = None,
     ) -> SandboxExecutionResult:
         env = None
-        if self.profile.inject_rpc_stub:
-            if injected_code:
-                await self.session.write(
-                    "/workspace/zhenxun_host.py", injected_code.encode("utf-8")
-                )
-            env = await self._prepare_rpc_env()
+        if injected_code:
+            await self.session.write(
+                "/workspace/zhenxun_host.py", injected_code.encode("utf-8")
+            )
 
-        combined_code = "\n".join([b.code for b in code_blocks])
         script_path = f"/workspace/main{self.profile.source_ext}"
-        await self.session.write(script_path, combined_code.encode("utf-8"))
+        await self.session.write(script_path, code.encode("utf-8"))
 
         if self.profile.compile_cmd:
             compile_cmd = self.profile.compile_cmd.format(source_file=script_path)
@@ -528,16 +483,15 @@ class GenericJupyterExecutor(BaseCodeExecutor):
         self.kernel_name = kernel_name
         self.manager = JupyterServerManager(session)
 
-    async def execute_code_blocks(
+    async def execute_code(
         self,
-        code_blocks: list[CodeBlock],
+        code: str,
         timeout: int = 30,
         injected_code: str | None = None,
         on_output: Callable[[str, bytes], Awaitable[None]] | None = None,
     ) -> SandboxExecutionResult:
         try:
-            rpc_env = await self._prepare_rpc_env()
-            await self.manager.ensure_started(env_vars=rpc_env)
+            await self.manager.ensure_started()
         except Exception as e:
             return SandboxExecutionResult(exit_code=-1, error=str(e))
 
@@ -546,16 +500,12 @@ class GenericJupyterExecutor(BaseCodeExecutor):
                 "/workspace/zhenxun_host.py", injected_code.encode("utf-8")
             )
 
-        combined_code = "\n".join([b.code for b in code_blocks])
-
         try:
             client = await self.manager.get_client(self.kernel_name)
         except Exception as e:
             return SandboxExecutionResult(exit_code=-1, error=str(e))
 
-        result = await client.execute(
-            combined_code, timeout=timeout, on_output=on_output
-        )
+        result = await client.execute(code, timeout=timeout, on_output=on_output)
         return result
 
     async def close(self):
@@ -568,7 +518,6 @@ CodeExecutorRegistry.register_profile(
         aliases=["py"],
         source_ext=".py",
         run_cmd="python3 {source_file}",
-        inject_rpc_stub=True,
     )
 )
 CodeExecutorRegistry.register_profile(
@@ -594,6 +543,5 @@ __all__ = [
     "CodeExecutorRegistry",
     "GenericCLIExecutor",
     "GenericJupyterExecutor",
-    "extract_markdown_code_blocks",
     "get_execution_command",
 ]

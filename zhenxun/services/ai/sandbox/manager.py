@@ -41,7 +41,7 @@ def register_sandbox_configs():
     logger.info("沙箱(Sandbox) 基础设施配置项注册完成")
 
 
-class _SandboxManager:
+class SandboxManager:
     """
     沙箱底层环境的全局调度中心。
     负责读取用户配置，并动态分发给对应的安全 Driver 执行。
@@ -170,7 +170,7 @@ class _SandboxManager:
         await self.lifespan_manager.stop()
 
 
-sandbox_manager = _SandboxManager()
+sandbox_manager = SandboxManager()
 
 
 driver = nonebot.get_driver()
@@ -178,10 +178,6 @@ driver = nonebot.get_driver()
 
 @driver.on_startup
 async def _startup_sandboxes():
-    from zhenxun.services.ai.sandbox.host_bridge import sandbox_rpc_server
-
-    await sandbox_rpc_server.start()
-
     clients = SandboxRegistry.get_all_clients()
     if "docker" in clients:
         import asyncio
@@ -219,10 +215,6 @@ async def _startup_sandboxes():
 
 @driver.on_shutdown
 async def _shutdown_sandboxes():
-    from zhenxun.services.ai.sandbox.host_bridge import sandbox_rpc_server
-
-    await sandbox_rpc_server.stop()
-
     await sandbox_manager.shutdown_all()
     clients = SandboxRegistry.get_all_clients()
     if "docker" in clients and getattr(clients["docker"], "_engine_available", False):

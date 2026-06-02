@@ -372,6 +372,13 @@ class DockerSandboxClient(BaseSandboxClient):
 
         image = Config.get_config("sandbox", "DOCKER_IMAGE", "zhenxun-sandbox:latest")
 
+        binds = []
+        if blueprint and blueprint.bind_mounts:
+            for mount in blueprint.bind_mounts:
+                mode = "ro" if mount.read_only else "rw"
+                # aiodocker 的 Bind 格式为 "host_path:container_path:mode"
+                binds.append(f"{mount.host_path}:{mount.sandbox_path}:{mode}")
+
         container_config = {
             "Image": image,
             "Env": ["NODE_PATH=/usr/local/lib/node_modules"],
@@ -380,6 +387,7 @@ class DockerSandboxClient(BaseSandboxClient):
                 "PortBindings": port_bindings,
                 "Memory": 512 * 1024 * 1024,
                 "MemorySwap": 512 * 1024 * 1024,
+                "Binds": binds,
             },
             "Labels": {"zhenxun_component": "sandbox"},
         }
@@ -446,7 +454,8 @@ class DockerSandboxClient(BaseSandboxClient):
                 from zhenxun.services.log import logger
 
                 logger.info(
-                    f"启动检测：已成功清理 {count} 个由于上次异常退出遗留的孤儿沙箱容器。",
+                    "启动检测：已成功清理 "
+                    f"{count} 个由于上次异常退出遗留的孤儿沙箱容器。",
                     command="SandboxManager",
                 )
         except Exception as e:

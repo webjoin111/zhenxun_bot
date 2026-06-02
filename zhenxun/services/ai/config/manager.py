@@ -50,7 +50,7 @@ def get_default_providers() -> list[dict[str, Any]]:
             "api_base": "https://api.siliconflow.cn",
             "api_type": "openai",
             "models": [
-                {"model_name": "deepseek-ai/DeepSeek-V3"},
+                {"model_name": "deepseek-ai/DeepSeek-V4-Flash"},
                 {"model_name": "BAAI/bge-m3"},
                 {"model_name": "BAAI/bge-reranker-v2-m3"},
             ],
@@ -61,8 +61,8 @@ def get_default_providers() -> list[dict[str, Any]]:
             "api_base": "https://open.bigmodel.cn",
             "api_type": "glm",
             "models": [
-                {"model_name": "glm-4-flash"},
-                {"model_name": "glm-4-plus"},
+                {"model_name": "glm-4.6v-flash"},
+                {"model_name": "glm-5v-turbo"},
             ],
         },
         {
@@ -74,9 +74,8 @@ def get_default_providers() -> list[dict[str, Any]]:
             "api_base": "https://generativelanguage.googleapis.com",
             "api_type": "gemini",
             "models": [
-                {"model_name": "gemini-2.5-flash"},
-                {"model_name": "gemini-2.5-pro"},
-                {"model_name": "gemini-2.5-flash-lite"},
+                {"model_name": "gemini-3.5-flash"},
+                {"model_name": "gemini-3.1-flash-lite"},
                 {"model_name": "gemini-2.5-flash-image"},
                 {"model_name": "gemini-embedding-2"},
                 {"model_name": "gemini-3.1-flash-tts-preview"},
@@ -88,8 +87,7 @@ def get_default_providers() -> list[dict[str, Any]]:
             "api_base": "https://openrouter.ai/api",
             "api_type": "openrouter",
             "models": [
-                {"model_name": "google/gemini-2.5-pro"},
-                {"model_name": "google/gemini-2.5-flash"},
+                {"model_name": "google/gemini-3.1-flash-lite"},
                 {"model_name": "x-ai/grok-4"},
             ],
         },
@@ -150,7 +148,9 @@ def register_llm_configs():
         model_dump(llm_config.context_settings),
         help=(
             "智能上下文管理与压缩配置。\n"
-            "包含: default_strategy(默认策略: unlimited为不压缩, sliding_window为滑动窗口, llm_summary为模型总结, structured_summary为结构化总结), "
+            "包含: default_strategy(默认策略: unlimited为不压缩, "
+            "sliding_window为滑动窗口, llm_summary为模型总结, "
+            "structured_summary为结构化总结), "
             "trigger_threshold(触发阈值), max_history_turns(最大轮数), "
             "strategy_kwargs(各模式特有参数), vision_window_size(多模态保留轮数)"
         ),

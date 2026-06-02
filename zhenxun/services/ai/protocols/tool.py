@@ -6,13 +6,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from zhenxun.services.ai.core.models import ToolDefinition
+
 if TYPE_CHECKING:
     from zhenxun.services.ai.run import RunContext
-    from zhenxun.services.ai.tools.models import ResolvedToolPayload
-    from zhenxun.services.ai.tools.models import ToolDefinition, ToolResult
-else:
-    ToolDefinition = Any
-    ToolResult = Any
+    from zhenxun.services.ai.tools.models import (
+        ResolvedToolPayload,
+        ToolResult,
+    )
 
 
 class ToolExecutable(Protocol):
@@ -50,7 +51,9 @@ class ToolResolvable(Protocol):
     都可以直接被 Agent 或 LLM 的 tools 参数接收。
     """
 
-    async def resolve(self, context: 'RunContext | None' = None) -> 'ResolvedToolPayload': ...
+    async def resolve(
+        self, context: "RunContext | None" = None
+    ) -> "ResolvedToolPayload": ...
 
 
 class ToolProvider(Protocol):

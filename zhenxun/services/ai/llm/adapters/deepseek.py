@@ -1,14 +1,17 @@
 from typing import TYPE_CHECKING, Any
 
 from zhenxun.services.ai.core.configs import GenerationConfig
-from zhenxun.services.ai.core.models import ModelCapabilities, ModelDetail
+from zhenxun.services.ai.core.models import (
+    ModelCapabilities,
+    ModelDetail,
+    ToolDefinition,
+)
 from zhenxun.services.ai.llm.adapters.handlers.openai_handlers import (
     OpenAIConfigMapper,
     OpenAITextHandler,
     OpenAIToolSerializer,
 )
 from zhenxun.services.ai.llm.adapters.openai import OpenAICompatAdapter
-from zhenxun.services.ai.tools.models import ToolDefinition
 
 if TYPE_CHECKING:
     from zhenxun.services.ai.llm.service import LLMModel
@@ -28,9 +31,9 @@ class DeepSeekToolSerializer(OpenAIToolSerializer):
         from zhenxun.services.ai.llm.schema_transformer import (
             DeepSeekFallbackTransformer,
             OpenAIUnionFlattenTransformer,
-            RootRefInlineTransformer,
             RefComplianceTransformer,
             RemoveUnsupportedKeysTransformer,
+            RootRefInlineTransformer,
             SchemaPipeline,
             StrictObjectTransformer,
             TypeEnforcerTransformer,

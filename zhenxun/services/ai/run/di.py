@@ -54,6 +54,7 @@ CurrentOriginalInput = Annotated[str, Hidden(), _InjectMarker("original_input")]
 UpstreamResults = Annotated[dict[str, Any], Hidden(), _InjectMarker("upstream_results")]
 ToolkitState = Annotated[Any, Hidden(), _InjectMarker("toolkit_state")]
 CurrentBlackboard = Annotated[Any, Hidden(), _InjectMarker("blackboard")]
+CurrentSandbox = Annotated[Any, Hidden(), _InjectMarker("sandbox")]
 
 
 class Inject:
@@ -148,6 +149,9 @@ class Inject:
 
     Blackboard = CurrentBlackboard
     """自动注入：当前工作流/团队挂载的强类型黑板 (BlackboardManager) 实例"""
+
+    Sandbox = CurrentSandbox
+    """自动注入：当前沙箱环境管理器实例"""
 
 
 class BaseParamResolver:
@@ -340,6 +344,10 @@ def _resolve_session(ctx):
 
 Inject.register_provider("session", _resolve_session, scope="global")
 Inject.register_provider("ui", lambda ctx: UIController(ctx), scope="global")
+
+from zhenxun.services.ai.sandbox.manager import sandbox_manager
+
+Inject.register_provider("sandbox", lambda ctx: sandbox_manager, scope="global")
 
 
 def _resolve_toolkit_state(ctx: RunContext):

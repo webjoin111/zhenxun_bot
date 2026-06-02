@@ -4,7 +4,7 @@ from typing import Any
 
 from nonebot.permission import SUPERUSER
 from nonebot.utils import is_coroutine_callable
-from zhenxun.services.cache.runtime_cache import LevelUserMemoryCache
+
 from zhenxun.services.ai.protocols.capabilities import (
     AbstractCapability,
     WrapToolExecuteHandler,
@@ -12,6 +12,7 @@ from zhenxun.services.ai.protocols.capabilities import (
 from zhenxun.services.ai.run import DependencyInjector, RunContext
 from zhenxun.services.ai.tools.models import ToolResult
 from zhenxun.services.cache.cache_containers import CacheDict
+from zhenxun.services.cache.runtime_cache import LevelUserMemoryCache
 from zhenxun.services.log import logger
 
 TOOL_RESULT_CACHE = CacheDict("TOOL_RESULT", expire=0)
@@ -101,6 +102,7 @@ class ApprovalCapability(AbstractCapability):
                 await hitl_lock.acquire()
                 try:
                     from zhenxun.services.ai.run.hitl import HITLController
+
                     hitl = HITLController(context)
                     await hitl.ask_confirm(
                         f"⚠️ **安全交互审批**\n\n{confirm_msg}", timeout=60.0
@@ -325,19 +327,30 @@ class InteractiveCapability(AbstractCapability):
 
                 if not bot or not event:
                     logger.warning(
-                        f"交互式工具 {getattr(tool, 'name', 'unknown')} 缺少参数，但处于非交互环境。"
+                        "交互式工具 "
+                        f"{getattr(tool, 'name', 'unknown')} "
+                        "缺少参数，但处于非交互环境。"
                     )
                     raise ToolRetryError(f"缺少必填参数: {e.missing_description}。")
 
-                prompt_msg = f"执行 {getattr(tool, 'name', '该操作')} 需要补充参数：\n[{e.missing_description}]\n请发送文本补充，或回复“取消”中止。"
+                prompt_msg = (
+                    f"执行 {getattr(tool, 'name', '该操作')} "
+                    f"需要补充参数：\n[{e.missing_description}]\n"
+                    "请发送文本补充，或回复“取消”中止。"
+                )
                 try:
                     from zhenxun.services.ai.run.hitl import HITLController
+
                     hitl = HITLController(context)
                     user_input = await hitl.ask_text(prompt_msg, timeout=60.0)
                 except ToolFatalError:
                     raise ToolFatalError(
                         "参数收集超时，用户已离开，任务已中止。",
-                        display_content=f"❌ 工具 '{getattr(tool, 'name', '')}' 等待参数输入超时被取消。",
+                        display_content=(
+                            "❌ 工具 "
+                            f"'{getattr(tool, 'name', '')}' "
+                            "等待参数输入超时被取消。"
+                        ),
                     )
                 if not isinstance(current_kwargs, dict):
                     current_kwargs = {}
@@ -365,21 +378,31 @@ class FallbackCapability(AbstractCapability):
             fallback_executable = available_tools.get(self.fallback_tool_name)
             if fallback_executable:
                 logger.info(
-                    f"🔄 [语义容错路由] 主工具 '{tool_name}' 故障，正在透明重定向至备用工具 '{self.fallback_tool_name}'..."
+                    f"🔄 [语义容错路由] 主工具 '{tool_name}' 故障，"
+                    "正在透明重定向至备用工具 "
+                    f"'{self.fallback_tool_name}'..."
                 )
                 try:
                     fallback_result = await fallback_executable.execute(
                         context=context, **arguments
                     )
-                    notice = f"[系统底座：由于主工具 '{tool_name}' 发生故障，系统已自动路由至备用工具 '{self.fallback_tool_name}' 并执行成功]\n"
+                    notice = (
+                        f"[系统底座：由于主工具 '{tool_name}' 发生故障，"
+                        "系统已自动路由至备用工具 "
+                        f"'{self.fallback_tool_name}' 并执行成功]\n"
+                    )
                     if isinstance(fallback_result.output, str):
                         fallback_result.output = notice + fallback_result.output
                     return fallback_result
                 except Exception as fallback_e:
                     logger.error(
-                        f"容错路由工具 '{self.fallback_tool_name}' 也执行失败: {fallback_e}"
+                        "容错路由工具 "
+                        f"'{self.fallback_tool_name}' "
+                        f"也执行失败: {fallback_e}"
                     )
                     context.run.add_system_prompt(
-                        f"🚨 [系统警告] 原工具和备用工具({self.fallback_tool_name})均执行失败，请停止尝试并告知用户。"
+                        "🚨 [系统警告] 原工具和备用工具"
+                        f"({self.fallback_tool_name})均执行失败，"
+                        "请停止尝试并告知用户。"
                     )
         return result

@@ -34,6 +34,7 @@ from zhenxun.services.ai.core.models import (
     ModelCapabilities,
     ModelDetail,
     ReasoningMode,
+    ToolDefinition,
 )
 from zhenxun.services.ai.llm.adapters.base import (
     RequestData,
@@ -50,15 +51,14 @@ from zhenxun.services.ai.llm.adapters.handlers.base import (
     ResponseParser,
     ToolSerializer,
 )
-from zhenxun.services.ai.tools.models import ToolDefinition
 from zhenxun.services.log import logger
 from zhenxun.utils.http_utils import AsyncHttpx
 
 if TYPE_CHECKING:
     from zhenxun.services.ai.core.messages import AudioResponse
+    from zhenxun.services.ai.core.models import ToolChoice
     from zhenxun.services.ai.llm.adapters.base import BaseAdapter
     from zhenxun.services.ai.llm.service import LLMModel
-    from zhenxun.services.ai.tools.models import ToolChoice
 
 
 class GeminiConfigMapper(ConfigMapper):
