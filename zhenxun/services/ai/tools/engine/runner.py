@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 from nonebot.adapters import Message as PlatformMessage
 
 from zhenxun.services.ai.core.exceptions import ToolFatalError
-from zhenxun.services.ai.run import DependencyInjector
+from zhenxun.services.ai.run.di import DependencyInjector
 from zhenxun.services.ai.tools.models import ToolResult
 from zhenxun.services.log import logger
 

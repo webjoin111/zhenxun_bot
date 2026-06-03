@@ -8,7 +8,8 @@ from nonebot.utils import is_coroutine_callable
 
 from zhenxun.services.ai.core.messages import LLMMessage
 from zhenxun.services.ai.flow.team.models import RouteDecision
-from zhenxun.services.ai.run import DependencyInjector, RunContext, Task
+from zhenxun.services.ai.run import RunContext, Task
+from zhenxun.services.ai.run.di import DependencyInjector
 from zhenxun.services.log import logger
 
 

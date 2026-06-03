@@ -215,7 +215,7 @@ class ToolExecutor:
         if event_streamer:
             await event_streamer.send(call_event)
 
-        from zhenxun.services.ai.run import set_run_context
+        from zhenxun.services.ai.run.context import set_run_context
 
         combined_cap = self._get_combined_capability(executable, safe_context)
 

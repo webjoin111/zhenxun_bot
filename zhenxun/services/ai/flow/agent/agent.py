@@ -38,16 +38,19 @@ from zhenxun.services.ai.memory.models import MemoryConfig, SessionMetadata
 from zhenxun.services.ai.protocols.capabilities import AbstractCapability
 from zhenxun.services.ai.protocols.tool import ToolExecutable
 from zhenxun.services.ai.run import (
-    AgentDepsT,
     AgentRunResult,
     ExecutionConfig,
-    OutputDataT,
     RunContext,
     Task,
     TemplateStr,
-    ToolsPrepareFunc,
 )
-from zhenxun.services.ai.run.models import AgentRunEnd, AgentRunError, AgentRunStart
+from zhenxun.services.ai.run.context import AgentDepsT, ToolsPrepareFunc
+from zhenxun.services.ai.run.models import (
+    AgentRunEnd,
+    AgentRunError,
+    AgentRunStart,
+    OutputDataT,
+)
 from zhenxun.services.ai.tools.engine.global_capabilities import ReflexionCapability
 from zhenxun.services.ai.tools.models import (
     GlobalToolFilter,

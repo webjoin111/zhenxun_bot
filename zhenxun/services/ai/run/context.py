@@ -17,7 +17,19 @@ from zhenxun.utils.pydantic_compat import model_dump
 from zhenxun.utils.utils import infer_plugin_namespace
 
 AgentDepsT = TypeVar("AgentDepsT", default=Any)
+"""泛型类型变量：外部环境依赖对象 (Agent Dependencies)。"""
 ProviderFunc = Callable[["RunContext"], Any | Awaitable[Any]]
+"""函数签名类型别名：依赖提供者函数 (Dependency Provider)。"""
+SystemPromptFunc = Callable[
+    ["RunContext[AgentDepsT]"], str | None | Awaitable[str | None]
+]
+"""动态系统提示词函数类型。接收 RunContext，返回字符串或 None。"""
+
+ToolsetFunc = Callable[["RunContext[AgentDepsT]"], Any | Awaitable[Any]]
+"""动态工具集工厂函数类型。接收 RunContext，返回 Toolkit, 工具列表或 None。"""
+
+ToolsPrepareFunc = Callable[["RunContext[AgentDepsT]", list[Any]], Any | Awaitable[Any]]
+"""全局/Agent 级动态工具干预函数类型"""
 
 
 class NoneBotDeps(BaseModel):
@@ -102,7 +114,8 @@ class AgentRunContext(Generic[AgentDepsT]):
     """底层的事件流发射器 (EventStreamer)，由执行引擎在运行时挂载。"""
 
     dynamic_prompts: dict[str, str] = dataclasses.field(default_factory=dict)
-    """动态提示词字典（保持插入顺序并去重）。仅在 HTTP 请求前 JIT 渲染，不会污染持久化的上下文对话历史。"""
+    """动态提示词字典（保持插入顺序并去重）。
+    仅在 HTTP 请求前 JIT 渲染，不会污染持久化的上下文对话历史。"""
 
     def add_system_prompt(self, prompt: str, key: str | None = None) -> None:
         """动态追加临时系统提示词到大模型上下文中（实时生效且不污染历史）。"""
@@ -315,18 +328,6 @@ class RunContext(Generic[AgentDepsT]):
         new_ctx.session_id = f"{base_sid}/sub_{member_name}_{uuid.uuid4().hex[:6]}"
         new_ctx.session.session_id = new_ctx.session_id
         return new_ctx
-
-
-SystemPromptFunc = Callable[
-    ["RunContext[AgentDepsT]"], str | None | Awaitable[str | None]
-]
-"""动态系统提示词函数类型。接收 RunContext，返回字符串或 None。"""
-
-ToolsetFunc = Callable[["RunContext[AgentDepsT]"], Any | Awaitable[Any]]
-"""动态工具集工厂函数类型。接收 RunContext，返回 Toolkit, 工具列表或 None。"""
-
-ToolsPrepareFunc = Callable[["RunContext[AgentDepsT]", list[Any]], Any | Awaitable[Any]]
-"""全局/Agent 级动态工具干预函数类型"""
 
 
 class TemplateStr(Generic[AgentDepsT]):

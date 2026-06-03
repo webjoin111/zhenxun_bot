@@ -85,7 +85,8 @@ class AgentSessionManager:
                 from zhenxun.services.log import logger
 
                 logger.info(
-                    f"⏳ [并发控制] 会话 {session_id} 正忙，新请求已进入后台等待队列 (QUEUE)..."
+                    f"⏳ [并发控制] 会话 {session_id} 正忙，"
+                    "新请求已进入后台等待队列 (QUEUE)..."
                 )
 
         async with exec_lock:

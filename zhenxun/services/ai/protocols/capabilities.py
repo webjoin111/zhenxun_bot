@@ -32,7 +32,6 @@ CapabilityRef = Union[type["AbstractCapability"], "AbstractCapability"]
 """对 Capability 的引用，可以是 Capability 实例或类类型"""
 
 
-
 @dataclass
 class CapabilityOrdering:
     """定义拦截器 (Capability) 的拓扑排序约束。
@@ -75,7 +74,8 @@ def sort_capabilities(caps: list["AbstractCapability"]) -> list["AbstractCapabil
             for req in o.requires:
                 if not any(issubclass(t, req) for t in all_types):
                     raise ValueError(
-                        f"Capability '{type(caps[i]).__name__}' 依赖 '{req.__name__}' 但未在管线中找到该组件。"
+                        f"Capability '{type(caps[i]).__name__}' 依赖 '{req.__name__}' "
+                        f"但未在管线中找到该组件。"
                     )
 
     outermost = {i for i, o in enumerate(orderings) if o and o.position == "outermost"}
@@ -107,7 +107,8 @@ def sort_capabilities(caps: list["AbstractCapability"]) -> list["AbstractCapabil
         order = list(ts.static_order())
     except graphlib.CycleError:
         raise ValueError(
-            "Capability 拓扑排序失败，存在循环依赖约束。请检查 wraps 或 wrapped_by 的配置。"
+            "Capability 拓扑排序失败，存在循环依赖约束。"
+            "请检查 wraps 或 wrapped_by 的配置。"
         )
 
     return [caps[i] for i in order]
@@ -199,8 +200,6 @@ class AbstractCapability:
     ) -> Any:
         """包裹单一工具的执行 (洋葱模型)。"""
         return await handler(arguments)
-
-
 
 
 class CapabilityRegistry:

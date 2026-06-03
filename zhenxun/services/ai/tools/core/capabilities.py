@@ -7,10 +7,11 @@ from nonebot.utils import is_coroutine_callable
 
 from zhenxun.services.ai.protocols.capabilities import (
     AbstractCapability,
-    WrapToolValidateHandler,
     WrapToolExecuteHandler,
+    WrapToolValidateHandler,
 )
-from zhenxun.services.ai.run import DependencyInjector, RunContext
+from zhenxun.services.ai.run import RunContext
+from zhenxun.services.ai.run.di import DependencyInjector
 from zhenxun.services.ai.tools.models import ToolResult
 from zhenxun.services.cache.cache_containers import CacheDict
 from zhenxun.services.cache.runtime_cache import LevelUserMemoryCache
@@ -85,7 +86,11 @@ class ApprovalCapability(AbstractCapability):
     """
 
     async def wrap_tool_execute(
-        self, context: RunContext, tool_name: str, arguments: dict[str, Any], handler: WrapToolExecuteHandler
+        self,
+        context: RunContext,
+        tool_name: str,
+        arguments: dict[str, Any],
+        handler: WrapToolExecuteHandler,
     ) -> Any:
         tool = context.call.current_tool
         if tool is None:
@@ -153,7 +158,11 @@ class LifecycleCapability(AbstractCapability):
         return new_defs
 
     async def wrap_tool_validate(
-        self, context: RunContext, tool_name: str, args: str | dict[str, Any], handler: WrapToolValidateHandler
+        self,
+        context: RunContext,
+        tool_name: str,
+        args: str | dict[str, Any],
+        handler: WrapToolValidateHandler,
     ) -> dict[str, Any]:
         if not self.validate_args_hook or not isinstance(args, dict):
             return await handler(args)
@@ -175,7 +184,11 @@ class LifecycleCapability(AbstractCapability):
         return await handler(args)
 
     async def wrap_tool_execute(
-        self, context: RunContext, tool_name: str, arguments: dict[str, Any], handler: WrapToolExecuteHandler
+        self,
+        context: RunContext,
+        tool_name: str,
+        arguments: dict[str, Any],
+        handler: WrapToolExecuteHandler,
     ) -> Any:
         if not self.before_execute_hook:
             pass

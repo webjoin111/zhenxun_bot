@@ -41,7 +41,7 @@ class TeamRoutingCapability(AbstractCapability):
             ]
 
         if callable(self.state_flow):
-            from zhenxun.services.ai.run import DependencyInjector
+            from zhenxun.services.ai.run.di import DependencyInjector
 
             sig = inspect.signature(self.state_flow)
             kwargs = await DependencyInjector.resolve_all(

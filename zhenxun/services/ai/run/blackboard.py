@@ -1,6 +1,6 @@
 import asyncio
 import json
-from typing import Any, Generic, Optional, TypeVar
+from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, Field, ValidationError, create_model
 
@@ -29,7 +29,8 @@ class BlackboardManager(Generic[T]):
                 self._state = schema()
             except ValidationError as e:
                 raise ValueError(
-                    f"初始化黑板状态失败，因为 Schema 存在无默认值的必填字段，请显式提供 initial_state: {e}"
+                    "初始化黑板状态失败，因为 Schema 存在无默认值的必填字段，"
+                    f"请显式提供 initial_state: {e}"
                 )
 
         self._lock = asyncio.Lock()
@@ -106,7 +107,7 @@ def create_blackboard_tools(manager: BlackboardManager) -> list[Any]:
             else None
         )
         optional_fields[field.name] = (
-            Optional[field.annotation],
+            field.annotation | None,
             Field(default=None, description=desc),
         )
 

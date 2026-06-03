@@ -23,7 +23,8 @@ from zhenxun.services.ai.flow.workflow.types import (
     StepOutput,
     StepType,
 )
-from zhenxun.services.ai.run import DependencyInjector, RunContext
+from zhenxun.services.ai.run import RunContext
+from zhenxun.services.ai.run.di import DependencyInjector
 from zhenxun.services.log import logger
 
 

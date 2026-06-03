@@ -10,7 +10,7 @@ from nonebot.permission import SUPERUSER
 from pydantic import BaseModel, Field, create_model
 from pydantic.fields import FieldInfo
 
-from zhenxun.services.ai.run import DependencyInjector
+from zhenxun.services.ai.run.di import DependencyInjector
 from zhenxun.services.ai.run.context import RunContext
 from zhenxun.services.cache.runtime_cache import LevelUserMemoryCache
 from zhenxun.utils.pydantic_compat import model_json_schema

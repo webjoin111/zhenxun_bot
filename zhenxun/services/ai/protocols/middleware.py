@@ -42,7 +42,9 @@ class LLMContext(BaseModel):
 
 
 NextCall = Callable[[LLMContext], Awaitable[LLMResponse]]
+"""中间件管道中下一个节点（或最终执行函数）的调用签名"""
 LLMMiddleware = Callable[[LLMContext, NextCall], Awaitable[LLMResponse]]
+"""LLM 中间件函数的调用签名，遵循洋葱模型嵌套包裹设计"""
 
 
 class BaseLLMMiddleware(ABC):
