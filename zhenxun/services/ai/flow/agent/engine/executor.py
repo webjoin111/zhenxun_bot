@@ -19,6 +19,7 @@ from zhenxun.services.ai.core.exceptions import (
 from zhenxun.services.ai.core.messages import (
     AssistantMessage,
     LLMMessage,
+    LLMResponse,
     TextPart,
     ToolCallPart,
     UsageInfo,
@@ -73,6 +74,28 @@ class AgentExecutor:
     def _can_retry_via_llm(self, result: ToolResult) -> bool:
         """通过新版的专属字段直接判断是否允许重试"""
         return result.is_retryable
+
+    async def _execute_model_request(
+        self,
+        model_instance: Any,
+        messages: list[LLMMessage],
+        config: GenerationConfig,
+        run_context: RunContext,
+        tools: list[Any] | None = None,
+        tool_choice: Any = None,
+        extra: dict[str, Any] | None = None,
+        cancellation_token: Any = None,
+    ) -> LLMResponse:
+        """不再在执行器层重复包裹中间件，直接透传给底层模型实例"""
+        return await model_instance.generate_response(
+            messages=messages,
+            config=config,
+            tools=tools,
+            tool_choice=tool_choice,
+            timeout=None,
+            extra=extra or {},
+            cancellation_token=cancellation_token,
+        )
 
     async def _execute_reflexion(
         self,
@@ -229,10 +252,13 @@ class AgentExecutor:
                             LLMMessage.system(f"### 🔄 [系统动态注入]\n{dynamic_text}"),
                         )
 
-                response = await model_instance.generate_response(
+                response = await self._execute_model_request(
+                    model_instance=model_instance,
                     messages=messages_to_send,
                     config=gen_config,
+                    run_context=run_context,
                     tools=list(self.tools) if self.tools else None,
+                    tool_choice=None,
                     extra=current_extra,
                     cancellation_token=cancellation_token,
                 )
@@ -452,9 +478,11 @@ class AgentExecutor:
             )
             current_extra["run_context"] = run_context
 
-            fallback_response = await model_instance.generate_response(
+            fallback_response = await self._execute_model_request(
+                model_instance=model_instance,
                 messages=execution_history,
                 config=gen_config,
+                run_context=run_context,
                 tools=[],
                 tool_choice="none",
                 extra=current_extra,

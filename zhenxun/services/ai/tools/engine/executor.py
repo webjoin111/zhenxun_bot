@@ -5,12 +5,6 @@ from typing import Any, cast
 
 import json_repair
 
-try:
-    import ujson as fast_json
-except ImportError:
-    fast_json = json
-
-
 from zhenxun.services.ai.core.exceptions import (
     ToolRetryError,
 )
@@ -19,6 +13,8 @@ from zhenxun.services.ai.core.stream_events import (
     ToolCallResultEvent,
     ToolCallStart,
 )
+from zhenxun.services.ai.protocols.capabilities import CombinedCapability
+from zhenxun.services.ai.run.context import RunContext
 from zhenxun.services.ai.tools.models import (
     ToolResult,
     ValidatedToolCall,
@@ -34,6 +30,19 @@ class ToolExecutor:
 
     def __init__(self):
         pass
+
+    def _get_combined_capability(
+        self, executable: Any, context: RunContext
+    ) -> CombinedCapability:
+        """合并 Agent 上下文 (已包含 Global) 与 Tool 私有的 Capability"""
+        tool_caps = getattr(getattr(executable, "settings", None), "capabilities", [])
+        agent_caps = getattr(context, "capabilities", [])
+
+        all_caps = list(agent_caps)
+        for c in tool_caps:
+            if c not in all_caps:
+                all_caps.append(c)
+        return CombinedCapability(all_caps)
 
     async def validate_tool_call(
         self,
@@ -125,12 +134,8 @@ class ToolExecutor:
             safe_context.call.tool_name = tool_name
 
         safe_context.call.current_tool = executable
-        from zhenxun.services.ai.protocols.capabilities import CombinedCapability
 
-        executable_settings = getattr(executable, "settings", None)
-        tool_caps = getattr(executable_settings, "capabilities", [])
-        agent_caps = getattr(safe_context, "capabilities", [])
-        combined_cap = CombinedCapability(agent_caps + tool_caps)
+        combined_cap = self._get_combined_capability(executable, safe_context)
 
         async def inner_validate(args_inner):
             if isinstance(args_inner, dict) and hasattr(executable, "validate_args"):
@@ -145,14 +150,8 @@ class ToolExecutor:
             return args_inner
 
         try:
-            args_tmp = await combined_cap.before_tool_validate(
-                safe_context, tool_name, arguments
-            )
             validated_args = await combined_cap.wrap_tool_validate(
-                safe_context, tool_name, args_tmp, inner_validate
-            )
-            validated_args = await combined_cap.after_tool_validate(
-                safe_context, tool_name, validated_args
+                safe_context, tool_name, arguments, inner_validate
             )
             return ValidatedToolCall(
                 call=tool_call,
@@ -161,23 +160,12 @@ class ToolExecutor:
                 validated_args=validated_args,
             )
         except Exception as e:
-            try:
-                recovered_args = await combined_cap.on_tool_validate_error(
-                    safe_context, tool_name, arguments, e
-                )
-                return ValidatedToolCall(
-                    call=tool_call,
-                    tool=executable,
-                    args_valid=True,
-                    validated_args=recovered_args,
-                )
-            except Exception as final_e:
-                return ValidatedToolCall(
-                    call=tool_call,
-                    tool=executable,
-                    args_valid=False,
-                    validation_error=final_e,
-                )
+            return ValidatedToolCall(
+                call=tool_call,
+                tool=executable,
+                args_valid=False,
+                validation_error=e,
+            )
 
     async def execute_tool_call(
         self,
@@ -227,39 +215,17 @@ class ToolExecutor:
         if event_streamer:
             await event_streamer.send(call_event)
 
-        from zhenxun.services.ai.protocols.capabilities import CombinedCapability
         from zhenxun.services.ai.run import set_run_context
-        from zhenxun.services.ai.tools.engine.global_capabilities import (
-            GLOBAL_CAPABILITIES,
-        )
 
-        ns = getattr(safe_context.session, "namespace", "global")
-        base_caps = GLOBAL_CAPABILITIES.get("global", []).copy()
-        if ns != "global" and ns in GLOBAL_CAPABILITIES:
-            base_caps.extend(GLOBAL_CAPABILITIES[ns])
-
-        tool_caps = getattr(getattr(executable, "settings", None), "capabilities", [])
-        agent_caps = getattr(safe_context, "capabilities", [])
-        all_caps = (
-            [c for c in base_caps if c not in agent_caps]
-            + agent_caps
-            + tool_caps
-        )
-        combined_cap = CombinedCapability(all_caps)
+        combined_cap = self._get_combined_capability(executable, safe_context)
 
         async def inner_handler(args_inner: dict) -> Any:
             return await executable.execute(context=safe_context, **args_inner)
 
         with set_run_context(safe_context):
             try:
-                args_tmp = await combined_cap.before_tool_execute(
-                    safe_context, tool_name, arguments
-                )
-                raw_result = await combined_cap.wrap_tool_execute(
-                    safe_context, tool_name, args_tmp, inner_handler
-                )
-                result = await combined_cap.after_tool_execute(
-                    safe_context, tool_name, args_tmp, raw_result
+                result = await combined_cap.wrap_tool_execute(
+                    safe_context, tool_name, arguments, inner_handler
                 )
 
                 if not isinstance(result, ToolResult):

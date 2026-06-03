@@ -85,6 +85,7 @@ class Agent(
         runtime_config: AgentRuntimeConfig | dict | None = None,
         prepare_tools: ToolsPrepareFunc | None = None,
         guardrails: list[Any] | None = None,
+        capabilities: list[Any] | None = None,
     ):
         """
         初始化 Agent。
@@ -165,6 +166,15 @@ class Agent(
         self.runtime_config.stateless = not self.memory_config.short_term.enable
 
         self.capabilities: list[AbstractCapability] = []
+
+        if capabilities:
+            from zhenxun.services.ai.protocols.capabilities import DynamicCapability
+
+            for cap in capabilities:
+                if isinstance(cap, AbstractCapability):
+                    self.capabilities.append(cap)
+                elif callable(cap):
+                    self.capabilities.append(DynamicCapability(cap))
 
         if self.runtime_config.enable_hitl:
             from zhenxun.services.ai.tools.providers.builtin.hitl import HITLToolkit
@@ -300,6 +310,7 @@ class Agent(
         config: ExecutionConfig | None = None,
         memory: bool | MemoryConfig | MemoryBuilder | None = None,
         generation_config: GenerationConfig | None = None,
+        capabilities: list[Any] | None = None,
         **kwargs: Any,
     ) -> AgentRunResult[OutputDataT]:
         """
@@ -328,6 +339,7 @@ class Agent(
             config=config,
             memory=memory,
             generation_config=generation_config,
+            capabilities=capabilities,
             **kwargs,
         )
 
@@ -344,6 +356,7 @@ class Agent(
         memory: bool | MemoryConfig | MemoryBuilder | None = None,
         generation_config: GenerationConfig | None = None,
         event_streamer: EventStreamer | None = None,
+        capabilities: list[Any] | None = None,
         **kwargs: Any,
     ) -> "AsyncIterator[StreamedRunResult[OutputDataT]]":
         """
@@ -396,6 +409,7 @@ class Agent(
                         memory=memory,
                         generation_config=generation_config,
                         event_streamer=streamer,
+                        capabilities=capabilities,
                         **kwargs,
                     )
                     await streamer.send(AgentRunEnd(result=result))
@@ -473,6 +487,7 @@ class Agent(
         generation_config: GenerationConfig | None = None,
         cancellation_token: Any = None,
         event_streamer: Any = None,
+        capabilities: list[Any] | None = None,
         **kwargs: Any,
     ) -> AgentRunResult[OutputDataT]:
         """执行原子步代理逻辑"""
@@ -576,6 +591,19 @@ class Agent(
 
             dynamic_caps.append(TaskTrackingCapability(task_obj, self.name))
 
+        run_level_caps = []
+        if capabilities:
+            from zhenxun.services.ai.protocols.capabilities import (
+                AbstractCapability,
+                DynamicCapability,
+            )
+
+            for cap in capabilities:
+                if isinstance(cap, AbstractCapability):
+                    run_level_caps.append(cap)
+                elif callable(cap):
+                    run_level_caps.append(DynamicCapability(cap))
+
         base_caps = GLOBAL_CAPABILITIES.get("global", []).copy()
         if self.namespace != "global" and self.namespace in GLOBAL_CAPABILITIES:
             base_caps.extend(GLOBAL_CAPABILITIES[self.namespace])
@@ -586,16 +614,15 @@ class Agent(
             base_caps
             + getattr(context, "capabilities", [])
             + self.capabilities
+            + run_level_caps
             + dynamic_caps
         )
         run_scoped_cap = cast(CombinedCapability, await combined_cap.for_run(context))
 
-        await run_scoped_cap.before_run(context)
-
         original_capabilities = getattr(context, "capabilities", [])
         context.capabilities = run_scoped_cap.capabilities
 
-        try:
+        async def inner_run_handler() -> AgentRunResult[OutputDataT]:
             if final_prompt_payload is not None:
                 if isinstance(final_prompt_payload, str):
                     context.run.user_input = final_prompt_payload
@@ -728,7 +755,7 @@ class Agent(
                 await writer.save_new_messages([normalized_user_msg])
 
             async with ToolBuilder.mount_toolkits(
-                tool_payload.toolkits, context.session_id, context
+                tool_payload.toolkits, context.session_id or "", context
             ):
                 for tk in tool_payload.toolkits:
                     if hasattr(tk, "before_llm_request"):
@@ -794,15 +821,14 @@ class Agent(
                     usage=usage,
                 ),
             )
-            return await run_scoped_cap.after_run(context, raw_result)
+            return raw_result
 
+        try:
+            return await run_scoped_cap.wrap_run(context, inner_run_handler)
         except ControlFlowException as e:
             raise e
         except Exception as e:
             logger.error(f"Agent '{self.name}' 运行失败: {e}", e=e)
-            try:
-                return await run_scoped_cap.on_run_error(context, e)
-            except Exception as final_e:
-                raise final_e
+            raise e
         finally:
             context.capabilities = original_capabilities

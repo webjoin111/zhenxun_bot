@@ -27,7 +27,6 @@ from zhenxun.services.ai.core.exceptions import (
     NeedsAuthException,
     SchemaParseError,
     ToolFatalError,
-    ToolRetryError,
 )
 from zhenxun.services.ai.core.messages import LLMResponse
 from zhenxun.services.ai.protocols.capabilities import (
@@ -72,9 +71,12 @@ class DummyCredentialManager:
 class StuckDetectionCapability(AbstractCapability):
     """死循环检测：替代原有的 Event Listener，使用前置请求拦截防止 LLM 陷入无限重试"""
 
-    async def before_model_request(
-        self, context: RunContext, llm_context: LLMContext
-    ) -> LLMContext:
+    async def wrap_model_request(
+        self,
+        context: RunContext,
+        llm_context: LLMContext,
+        handler: WrapModelRequestHandler,
+    ) -> LLMResponse:
         import hashlib
 
         from zhenxun.services.ai.core.exceptions import ToolFatalError
@@ -141,7 +143,7 @@ class StuckDetectionCapability(AbstractCapability):
                     "无效工具调用状态，已物理阻断以节省 Token。"
                 )
 
-        return llm_context
+        return await handler(llm_context)
 
 
 class RequireAuthCapability(AbstractCapability):
@@ -223,11 +225,12 @@ class RequireAuthCapability(AbstractCapability):
 class PermissionCapability(AbstractCapability):
     """权限校验中间件：在执行前根据确定参数进行动态鉴权"""
 
-    async def before_tool_execute(
+    async def wrap_tool_execute(
         self,
         context: RunContext,
         tool_name: str,
         arguments: dict[str, Any],
+        handler: WrapToolExecuteHandler,
     ) -> dict[str, Any]:
         tool = context.call.current_tool
         admin_level = getattr(tool, "metadata", {}).get("admin_level", 0)
@@ -238,7 +241,7 @@ class PermissionCapability(AbstractCapability):
             bot = context.get_bot()
             event = context.get_event()
             if bot and event and await SUPERUSER(bot, event):
-                return arguments
+                return await handler(arguments)
 
             if user_id:
                 global_user, group_users = await LevelUserMemoryCache.get_levels(
@@ -263,17 +266,18 @@ class PermissionCapability(AbstractCapability):
                     raise ToolFatalError(
                         msg, display_content=f"❌ 权限不足: 需要等级 {admin_level}"
                     )
-        return arguments
+        return await handler(arguments)
 
 
 class BillingCapability(AbstractCapability):
     """经济系统中间件：执行前扣除金币"""
 
-    async def before_tool_execute(
+    async def wrap_tool_execute(
         self,
         context: RunContext,
         tool_name: str,
         arguments: dict[str, Any],
+        handler: WrapToolExecuteHandler,
     ) -> dict[str, Any]:
         tool = context.call.current_tool
         settings = getattr(tool, "settings", None)
@@ -306,7 +310,7 @@ class BillingCapability(AbstractCapability):
                     raise ToolFatalError(
                         msg, display_content=f"❌ 余额不足: 需要 {cost_gold} 金币"
                     )
-        return arguments
+        return await handler(arguments)
 
 
 class EventDispatcherCapability(AbstractCapability):
@@ -443,13 +447,14 @@ class ToolSideEffectCapability(AbstractCapability):
     将 AgentExecutor 从杂项中解放出来。
     """
 
-    async def after_tool_execute(
+    async def wrap_tool_execute(
         self,
         context: RunContext,
         tool_name: str,
         arguments: dict[str, Any],
-        result: Any,
+        handler: WrapToolExecuteHandler,
     ) -> Any:
+        result = await handler(arguments)
         from zhenxun.services.ai.tools.models import StateSyncResult, ToolResult
 
         if isinstance(result, ToolResult):
@@ -525,19 +530,24 @@ class ReflexionCapability(AbstractCapability):
     """自愈反思与验证引擎 (Reflexion Engine)。
     统一处理结构化解析失败 and 语义护栏拦截。"""
 
-    async def on_tool_execute_error(self, context, tool_name, error):
-        from zhenxun.services.ai.core.engine.structured_parser import (
-            DEFAULT_IVR_TEMPLATE,
-        )
+    async def wrap_tool_execute(self, context, tool_name, arguments, handler):
+        try:
+            return await handler(arguments)
+        except Exception as error:
+            from zhenxun.services.ai.core.engine.structured_parser import (
+                DEFAULT_IVR_TEMPLATE,
+            )
+            from zhenxun.services.ai.core.exceptions import ModelRetry, ToolRetryError
+            from zhenxun.services.ai.tools.models import ToolResult
 
-        if isinstance(error, ToolRetryError | ModelRetry):
-            error_msg = getattr(error, "message", str(error))
-            feedback_prompt = DEFAULT_IVR_TEMPLATE.format(error_msg=error_msg)
-            context.run.add_system_prompt(feedback_prompt)
-            return ToolResult(
-                output=f"执行失败：{error_msg}",
-            ).as_error()
-        raise error
+            if isinstance(error, ToolRetryError | ModelRetry):
+                error_msg = getattr(error, "message", str(error))
+                feedback_prompt = DEFAULT_IVR_TEMPLATE.format(error_msg=error_msg)
+                context.run.add_system_prompt(feedback_prompt)
+                return ToolResult(
+                    output=f"执行失败：{error_msg}",
+                ).as_error()
+            raise error
 
     async def wrap_model_request(
         self,

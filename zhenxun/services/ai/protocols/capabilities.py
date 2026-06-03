@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
+import graphlib
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Union, cast
 
 if TYPE_CHECKING:
     from zhenxun.services.ai.core.configs import GenerationConfig
@@ -11,9 +13,104 @@ if TYPE_CHECKING:
     from zhenxun.services.ai.run import AgentRunResult, RunContext
 
 WrapRunHandler = Callable[[], Awaitable["AgentRunResult[Any]"]]
+"""整个 Agent 运行过程包裹的处理函数类型"""
+
 WrapModelRequestHandler = Callable[["LLMContext"], Awaitable["LLMResponse"]]
+"""单次大模型 API 请求包裹的处理函数类型"""
+
 WrapToolValidateHandler = Callable[[str | dict[str, Any]], Awaitable[dict[str, Any]]]
+"""工具参数校验过程包裹的处理函数类型"""
+
 WrapToolExecuteHandler = Callable[[dict[str, Any]], Awaitable[Any]]
+"""单一工具执行过程包裹的处理函数类型"""
+
+
+CapabilityPosition = Literal["outermost", "innermost"]
+"""Capability 在洋葱模型中的固定执行位置（最外层或最内层）"""
+
+CapabilityRef = Union[type["AbstractCapability"], "AbstractCapability"]
+"""对 Capability 的引用，可以是 Capability 实例或类类型"""
+
+
+
+@dataclass
+class CapabilityOrdering:
+    """定义拦截器 (Capability) 的拓扑排序约束。
+    采用洋葱模型语义：排在列表前面的拦截器在最外层执行。
+    """
+
+    position: CapabilityPosition | None = None
+    """固定位置：outermost (最外层) 或 innermost (最内层)"""
+    wraps: Sequence[CapabilityRef] = ()
+    """当前拦截器必须包裹（即在...之前执行）目标拦截器"""
+    wrapped_by: Sequence[CapabilityRef] = ()
+    """当前拦截器必须被包裹（即在...之后执行）目标拦截器"""
+    requires: Sequence[type["AbstractCapability"]] = ()
+    """当前拦截器依赖的其他拦截器类型，若缺失则报错"""
+
+
+def sort_capabilities(caps: list["AbstractCapability"]) -> list["AbstractCapability"]:
+    """使用标准库 graphlib.TopologicalSorter 实现拦截器拓扑排序，解决执行顺序冲突"""
+    if len(caps) <= 1:
+        return caps
+
+    ts = graphlib.TopologicalSorter()
+    n = len(caps)
+    for i in range(n):
+        ts.add(i)
+
+    orderings = [c.get_ordering() for c in caps]
+    leaf_types = [{type(c)} for c in caps]
+
+    def _ref_matches(
+        ref: CapabilityRef, types: set[type], inst: AbstractCapability
+    ) -> bool:
+        if isinstance(ref, type):
+            return any(issubclass(t, ref) for t in types)
+        return inst is ref
+
+    all_types = set().union(*leaf_types)
+    for i, o in enumerate(orderings):
+        if o and o.requires:
+            for req in o.requires:
+                if not any(issubclass(t, req) for t in all_types):
+                    raise ValueError(
+                        f"Capability '{type(caps[i]).__name__}' 依赖 '{req.__name__}' 但未在管线中找到该组件。"
+                    )
+
+    outermost = {i for i, o in enumerate(orderings) if o and o.position == "outermost"}
+    innermost = {i for i, o in enumerate(orderings) if o and o.position == "innermost"}
+
+    for oi in outermost:
+        for j in range(n):
+            if j != oi and j not in outermost:
+                ts.add(j, oi)
+
+    for ii in innermost:
+        for j in range(n):
+            if j != ii and j not in innermost:
+                ts.add(ii, j)
+
+    for i, o in enumerate(orderings):
+        if not o:
+            continue
+        for ref in o.wraps:
+            for j in range(n):
+                if i != j and _ref_matches(ref, leaf_types[j], caps[j]):
+                    ts.add(j, i)
+        for ref in o.wrapped_by:
+            for j in range(n):
+                if i != j and _ref_matches(ref, leaf_types[j], caps[j]):
+                    ts.add(i, j)
+
+    try:
+        order = list(ts.static_order())
+    except graphlib.CycleError:
+        raise ValueError(
+            "Capability 拓扑排序失败，存在循环依赖约束。请检查 wraps 或 wrapped_by 的配置。"
+        )
+
+    return [caps[i] for i in order]
 
 
 class AbstractCapability:
@@ -37,6 +134,10 @@ class AbstractCapability:
         """自动将继承此类的所有拦截器注册到中心表"""
         super().__init_subclass__(**kwargs)
         CapabilityRegistry.register(cls)
+
+    def get_ordering(self) -> CapabilityOrdering | None:
+        """获取该拦截器的拓扑排序约束。子类可重写此方法以锁定执行顺序。"""
+        return None
 
     async def for_run(self, context: RunContext) -> "AbstractCapability":
         """获取专用于单次运行的实例。
@@ -64,43 +165,11 @@ class AbstractCapability:
         默认实现：无操作，直接返回传入的工具列表。"""
         return tool_defs
 
-    async def before_run(self, context: RunContext) -> None:
-        """运行开始前触发。仅用于观察或初始化状态。"""
-        pass
-
-    async def after_run(
-        self, context: RunContext, result: "AgentRunResult[Any]"
-    ) -> "AgentRunResult[Any]":
-        """运行成功结束后触发。可修改最终的运行结果。"""
-        return result
-
     async def wrap_run(
         self, context: RunContext, handler: WrapRunHandler
     ) -> "AgentRunResult[Any]":
         """包裹整个 Agent 运行过程 (洋葱模型)。"""
         return await handler()
-
-    async def on_run_error(
-        self, context: RunContext, error: BaseException
-    ) -> "AgentRunResult[Any]":
-        """运行发生致命异常时触发。若不处理，必须重新抛出 error。
-        可返回 AgentRunResult实现自愈。"""
-        raise error
-
-    async def before_model_request(
-        self, context: RunContext, llm_context: LLMContext
-    ) -> LLMContext:
-        """大模型发起请求前触发。可动态修改 Prompt、工具列表或生成配置。"""
-        return llm_context
-
-    async def after_model_request(
-        self,
-        context: RunContext,
-        llm_context: LLMContext,
-        response: LLMResponse,
-    ) -> LLMResponse:
-        """大模型成功返回后触发。可修改或验证大模型的原始返回对象。"""
-        return response
 
     async def wrap_model_request(
         self,
@@ -110,25 +179,6 @@ class AbstractCapability:
     ) -> LLMResponse:
         """包裹单次大模型 API 请求 (洋葱模型)。"""
         return await handler(llm_context)
-
-    async def on_model_request_error(
-        self, context: RunContext, llm_context: LLMContext, error: Exception
-    ) -> LLMResponse:
-        """大模型请求失败（如网络超时）时触发。
-        可调用备用模型实现故障转移，若不处理需抛出 error。"""
-        raise error
-
-    async def before_tool_validate(
-        self, context: RunContext, tool_name: str, args: str | dict[str, Any]
-    ) -> str | dict[str, Any]:
-        """工具参数校验前触发。可清洗、修改原始参数字符串或字典。"""
-        return args
-
-    async def after_tool_validate(
-        self, context: RunContext, tool_name: str, args: dict[str, Any]
-    ) -> dict[str, Any]:
-        """工具参数校验通过后触发。接收的是反序列化后的标准字典。"""
-        return args
 
     async def wrap_tool_validate(
         self,
@@ -140,32 +190,6 @@ class AbstractCapability:
         """包裹工具的参数校验过程 (洋葱模型)。"""
         return await handler(args)
 
-    async def on_tool_validate_error(
-        self,
-        context: RunContext,
-        tool_name: str,
-        args: str | dict[str, Any],
-        error: Exception,
-    ) -> dict[str, Any]:
-        """参数校验失败（如 Schema 不匹配）时触发。可用于交互式参数补全或自愈。"""
-        raise error
-
-    async def before_tool_execute(
-        self, context: RunContext, tool_name: str, arguments: dict[str, Any]
-    ) -> dict[str, Any]:
-        """工具实际执行前触发。可校验或篡改传入参数。"""
-        return arguments
-
-    async def after_tool_execute(
-        self,
-        context: RunContext,
-        tool_name: str,
-        arguments: dict[str, Any],
-        result: Any,
-    ) -> Any:
-        """工具成功执行后触发。可加工或过滤工具的输出结果。"""
-        return result
-
     async def wrap_tool_execute(
         self,
         context: RunContext,
@@ -176,12 +200,7 @@ class AbstractCapability:
         """包裹单一工具的执行 (洋葱模型)。"""
         return await handler(arguments)
 
-    async def on_tool_execute_error(
-        self, context: RunContext, tool_name: str, error: Exception
-    ) -> Any:
-        """工具执行发生异常时触发。
-        可返回特定提示信息引导大模型自我反思 (Reflexion)，若不处理需抛出 error。"""
-        raise error
+
 
 
 class CapabilityRegistry:
@@ -216,13 +235,20 @@ class CombinedCapability(AbstractCapability):
     """
 
     def __init__(self, capabilities: list[AbstractCapability]):
+        flat = []
+        for c in capabilities:
+            if isinstance(c, CombinedCapability):
+                flat.extend(c.capabilities)
+            else:
+                flat.append(c)
+
         deduped = []
         seen = set()
-        for c in capabilities:
+        for c in flat:
             if id(c) not in seen:
                 seen.add(id(c))
                 deduped.append(c)
-        self.capabilities = deduped
+        self.capabilities = sort_capabilities(deduped)
 
     async def for_run(self, context: RunContext) -> "AbstractCapability":
         new_caps = []
@@ -272,58 +298,13 @@ class CombinedCapability(AbstractCapability):
                 current_defs = res
         return current_defs
 
-    async def before_run(self, context: RunContext) -> None:
-        for cap in self.capabilities:
-            await cap.before_run(context)
-
-    async def after_run(
-        self, context: RunContext, result: "AgentRunResult[Any]"
-    ) -> "AgentRunResult[Any]":
-        for cap in reversed(self.capabilities):
-            result = await cap.after_run(context, result)
-        return result
-
     async def wrap_run(
         self, context: RunContext, handler: WrapRunHandler
     ) -> "AgentRunResult[Any]":
         chain = handler
         for cap in reversed(self.capabilities):
-
-            def _wrap(c, h):
-                async def _wrapped():
-                    return await c.wrap_run(context, h)
-
-                return _wrapped
-
-            chain = _wrap(cap, chain)
+            chain = _make_wrap_link(cap, "wrap_run", context, {}, chain, None)
         return await chain()
-
-    async def on_run_error(
-        self, context: RunContext, error: BaseException
-    ) -> "AgentRunResult[Any]":
-        for cap in reversed(self.capabilities):
-            try:
-                return await cap.on_run_error(context, error)
-            except BaseException as new_error:
-                error = new_error
-        raise error
-
-    async def before_model_request(
-        self, context: RunContext, llm_context: LLMContext
-    ) -> LLMContext:
-        for cap in self.capabilities:
-            llm_context = await cap.before_model_request(context, llm_context)
-        return llm_context
-
-    async def after_model_request(
-        self,
-        context: RunContext,
-        llm_context: LLMContext,
-        response: LLMResponse,
-    ) -> LLMResponse:
-        for cap in reversed(self.capabilities):
-            response = await cap.after_model_request(context, llm_context, response)
-        return response
 
     async def wrap_model_request(
         self,
@@ -333,39 +314,10 @@ class CombinedCapability(AbstractCapability):
     ) -> LLMResponse:
         chain = handler
         for cap in reversed(self.capabilities):
-
-            def _wrap(c, h):
-                async def _wrapped(ctx_inner):
-                    return await c.wrap_model_request(context, ctx_inner, h)
-
-                return _wrapped
-
-            chain = _wrap(cap, chain)
+            chain = _make_wrap_link(
+                cap, "wrap_model_request", context, {}, chain, "llm_context"
+            )
         return await chain(llm_context)
-
-    async def on_model_request_error(
-        self, context: RunContext, llm_context: LLMContext, error: Exception
-    ) -> LLMResponse:
-        for cap in reversed(self.capabilities):
-            try:
-                return await cap.on_model_request_error(context, llm_context, error)
-            except Exception as new_error:
-                error = new_error
-        raise error
-
-    async def before_tool_validate(
-        self, context: RunContext, tool_name: str, args: str | dict[str, Any]
-    ) -> str | dict[str, Any]:
-        for cap in self.capabilities:
-            args = await cap.before_tool_validate(context, tool_name, args)
-        return args
-
-    async def after_tool_validate(
-        self, context: RunContext, tool_name: str, args: dict[str, Any]
-    ) -> dict[str, Any]:
-        for cap in reversed(self.capabilities):
-            args = await cap.after_tool_validate(context, tool_name, args)
-        return args
 
     async def wrap_tool_validate(
         self,
@@ -376,47 +328,15 @@ class CombinedCapability(AbstractCapability):
     ) -> dict[str, Any]:
         chain = handler
         for cap in reversed(self.capabilities):
-
-            def _wrap(c, h):
-                async def _wrapped(args_inner):
-                    return await c.wrap_tool_validate(context, tool_name, args_inner, h)
-
-                return _wrapped
-
-            chain = _wrap(cap, chain)
+            chain = _make_wrap_link(
+                cap,
+                "wrap_tool_validate",
+                context,
+                {"tool_name": tool_name},
+                chain,
+                "args",
+            )
         return await chain(args)
-
-    async def on_tool_validate_error(
-        self,
-        context: RunContext,
-        tool_name: str,
-        args: str | dict[str, Any],
-        error: Exception,
-    ) -> dict[str, Any]:
-        for cap in reversed(self.capabilities):
-            try:
-                return await cap.on_tool_validate_error(context, tool_name, args, error)
-            except Exception as new_error:
-                error = new_error
-        raise error
-
-    async def before_tool_execute(
-        self, context: RunContext, tool_name: str, arguments: dict[str, Any]
-    ) -> dict[str, Any]:
-        for cap in self.capabilities:
-            arguments = await cap.before_tool_execute(context, tool_name, arguments)
-        return arguments
-
-    async def after_tool_execute(
-        self,
-        context: RunContext,
-        tool_name: str,
-        arguments: dict[str, Any],
-        result: Any,
-    ) -> Any:
-        for cap in reversed(self.capabilities):
-            result = await cap.after_tool_execute(context, tool_name, arguments, result)
-        return result
 
     async def wrap_tool_execute(
         self,
@@ -427,23 +347,135 @@ class CombinedCapability(AbstractCapability):
     ) -> Any:
         chain = handler
         for cap in reversed(self.capabilities):
-
-            def _wrap(c, h):
-                async def _wrapped(args_inner):
-                    return await c.wrap_tool_execute(context, tool_name, args_inner, h)
-
-                return _wrapped
-
-            chain = _wrap(cap, chain)
+            chain = _make_wrap_link(
+                cap,
+                "wrap_tool_execute",
+                context,
+                {"tool_name": tool_name},
+                chain,
+                "arguments",
+            )
         return await chain(arguments)
 
-    async def on_tool_execute_error(
-        self, context: RunContext, tool_name: str, error: Exception
-    ) -> Any:
-        for cap in reversed(self.capabilities):
-            try:
-                return await cap.on_tool_execute_error(context, tool_name, error)
-            except Exception as new_error:
-                error = new_error
-        raise error
 
+def _make_wrap_link(
+    cap: AbstractCapability,
+    hook_name: str,
+    ctx: RunContext,
+    static_kwargs: dict[str, Any],
+    inner_handler: Callable[..., Any],
+    handler_arg: str | None,
+) -> Callable[..., Any]:
+    """构建洋葱模型中间件链的单一闭包节点。"""
+    frozen_kwargs = dict(static_kwargs)
+
+    if handler_arg:
+
+        async def wrapper(value: Any) -> Any:
+            kw = dict(frozen_kwargs)
+            kw[handler_arg] = value
+            hook_method = getattr(cap, hook_name)
+            return await hook_method(ctx, handler=inner_handler, **kw)
+
+        return wrapper
+
+    async def wrapper_no_arg() -> Any:
+        hook_method = getattr(cap, hook_name)
+        return await hook_method(ctx, handler=inner_handler, **frozen_kwargs)
+
+    return wrapper_no_arg
+
+
+class DynamicCapability(AbstractCapability):
+    """动态能力注入：允许在运行时基于上下文生成真正的 Capability"""
+
+    def __init__(self, capability_func: Callable):
+        self.capability_func = capability_func
+
+    @classmethod
+    def get_serialization_name(cls) -> str | None:
+        return None
+
+    async def for_run(self, context: RunContext) -> "AbstractCapability":
+        from nonebot.utils import is_coroutine_callable
+
+        if is_coroutine_callable(self.capability_func):
+            cap = await self.capability_func(context)
+        else:
+            cap = self.capability_func(context)
+        if cap is None:
+            return self
+        return await cap.for_run(context)
+
+
+class WrapperCapability(AbstractCapability):
+    """
+    代理包装能力基类 (Decorator Pattern)。
+    默认将所有生命周期钩子透明透传给内部包裹的 (wrapped) 实例。
+    """
+
+    def __init__(self, wrapped: AbstractCapability):
+        self.wrapped = wrapped
+
+    @classmethod
+    def get_serialization_name(cls) -> str | None:
+        return None
+
+    async def for_run(self, context: RunContext) -> "AbstractCapability":
+        new_wrapped = await self.wrapped.for_run(context)
+        if new_wrapped is self.wrapped:
+            return self
+        import copy
+
+        new_self = copy.copy(self)
+        new_self.wrapped = new_wrapped
+        return new_self
+
+    async def get_generation_config(
+        self, context: RunContext
+    ) -> "GenerationConfig | None":
+        return await self.wrapped.get_generation_config(context)
+
+    async def get_system_prompts(self, context: RunContext) -> list[str]:
+        return await self.wrapped.get_system_prompts(context)
+
+    async def get_tools(self, context: RunContext) -> list[Any]:
+        return await self.wrapped.get_tools(context)
+
+    async def prepare_tools(
+        self, context: RunContext, tool_defs: list[Any]
+    ) -> list[Any]:
+        return await self.wrapped.prepare_tools(context, tool_defs)
+
+    async def wrap_run(
+        self, context: RunContext, handler: WrapRunHandler
+    ) -> "AgentRunResult[Any]":
+        return await self.wrapped.wrap_run(context, handler)
+
+    async def wrap_model_request(
+        self,
+        context: RunContext,
+        llm_context: LLMContext,
+        handler: WrapModelRequestHandler,
+    ) -> LLMResponse:
+        return await self.wrapped.wrap_model_request(context, llm_context, handler)
+
+    async def wrap_tool_validate(
+        self,
+        context: RunContext,
+        tool_name: str,
+        args: str | dict[str, Any],
+        handler: WrapToolValidateHandler,
+    ) -> dict[str, Any]:
+        return await self.wrapped.wrap_tool_validate(context, tool_name, args, handler)
+
+    async def wrap_tool_execute(
+        self,
+        context: RunContext,
+        tool_name: str,
+        arguments: dict[str, Any],
+        handler: WrapToolExecuteHandler,
+    ) -> Any:
+        return await self.wrapped.wrap_tool_execute(
+            context, tool_name, arguments, handler
+        )

@@ -74,16 +74,17 @@ class OutputValidationCapability(AbstractCapability):
             return [self.submit_tool]
         return []
 
-    async def before_model_request(self, context, llm_context):
+    async def wrap_model_request(self, context, llm_context, handler):
         """将 Processor 和 Guardrails 传给底层的 IvrCapability"""
         llm_context.extra["output_processor"] = self.processor
         llm_context.extra["guardrails"] = self.guardrails
-        return llm_context
+        return await handler(llm_context)
 
-    async def after_run(
-        self, context: RunContext, result: AgentRunResult[Any]
+    async def wrap_run(
+        self, context: RunContext, handler: Any
     ) -> AgentRunResult[Any]:
         """运行结束后，校验是否成功提取了结构化数据"""
+        result = await handler()
         if self.output_type is not None:
             if result.structured_data is not None:
                 result.output = result.structured_data
@@ -106,8 +107,8 @@ class TaskTrackingCapability(AbstractCapability):
         self.task = task
         self.agent_name = agent_name
 
-    async def before_run(self, context: RunContext) -> None:
-        """任务开始时发布 Start 事件"""
+    async def wrap_run(self, context: RunContext, handler: Any) -> AgentRunResult[Any]:
+        """任务生命周期追踪"""
         task_name = self.task.name or self.task.id[:8]
         await EventCenter.publish(
             TaskRunStartEvent(
@@ -117,33 +118,24 @@ class TaskTrackingCapability(AbstractCapability):
                 agent_name=self.agent_name,
             )
         )
-
-    async def after_run(
-        self, context: RunContext, result: AgentRunResult[Any]
-    ) -> AgentRunResult[Any]:
-        """任务成功结束时发布 End 事件"""
-        task_name = self.task.name or self.task.id[:8]
-        await EventCenter.publish(
-            TaskRunEndEvent(
-                session_id=context.session_id or "unknown",
-                task_id=self.task.id,
-                task_name=task_name,
+        try:
+            result = await handler()
+            await EventCenter.publish(
+                TaskRunEndEvent(
+                    session_id=context.session_id or "unknown",
+                    task_id=self.task.id,
+                    task_name=task_name,
+                )
             )
-        )
-        return result
-
-    async def on_run_error(
-        self, context: RunContext, error: BaseException
-    ) -> AgentRunResult[Any]:
-        """任务发生异常时发布 Error 事件"""
-        task_name = self.task.name or self.task.id[:8]
-        event_error = error if isinstance(error, Exception) else Exception(str(error))
-        await EventCenter.publish(
-            TaskRunErrorEvent(
-                session_id=context.session_id or "unknown",
-                task_id=self.task.id,
-                task_name=task_name,
-                error=event_error,
+            return result
+        except BaseException as error:
+            event_error = error if isinstance(error, Exception) else Exception(str(error))
+            await EventCenter.publish(
+                TaskRunErrorEvent(
+                    session_id=context.session_id or "unknown",
+                    task_id=self.task.id,
+                    task_name=task_name,
+                    error=event_error,
+                )
             )
-        )
-        raise error
+            raise error

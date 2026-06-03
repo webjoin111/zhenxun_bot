@@ -146,7 +146,8 @@ def silent():
     """静默执行。工具执行过程与结果不会作为界面流渲染给用户，仅作大模型内部参考。"""
 
     class SilentCapability(AbstractCapability):
-        async def after_tool_execute(self, context, tool_name, arguments, result):
+        async def wrap_tool_execute(self, context, tool_name, arguments, handler):
+            result = await handler(arguments)
             from zhenxun.services.ai.tools.models import ToolResult
 
             if isinstance(result, ToolResult):
@@ -163,7 +164,8 @@ def direct_reply():
     """直出模式。工具执行完毕后强制中断大模型的思考循环，将工具输出作为最终回答返回。"""
 
     class DirectReplyCapability(AbstractCapability):
-        async def after_tool_execute(self, context, tool_name, arguments, result):
+        async def wrap_tool_execute(self, context, tool_name, arguments, handler):
+            result = await handler(arguments)
             from zhenxun.services.ai.tools.models import ToolResult
 
             if isinstance(result, ToolResult):

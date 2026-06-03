@@ -7,6 +7,7 @@ from nonebot.utils import is_coroutine_callable
 
 from zhenxun.services.ai.protocols.capabilities import (
     AbstractCapability,
+    WrapToolValidateHandler,
     WrapToolExecuteHandler,
 )
 from zhenxun.services.ai.run import DependencyInjector, RunContext
@@ -83,12 +84,12 @@ class ApprovalCapability(AbstractCapability):
     执行高危操作前在群聊中发起授权确认，拒绝则抛出取消异常。
     """
 
-    async def before_tool_execute(
-        self, context: RunContext, tool_name: str, arguments: dict[str, Any]
-    ) -> dict[str, Any]:
+    async def wrap_tool_execute(
+        self, context: RunContext, tool_name: str, arguments: dict[str, Any], handler: WrapToolExecuteHandler
+    ) -> Any:
         tool = context.call.current_tool
         if tool is None:
-            return arguments
+            return await handler(arguments)
 
         if hasattr(tool, "should_confirm"):
             confirm_msg = await tool.should_confirm(context=context, **arguments)
@@ -111,7 +112,7 @@ class ApprovalCapability(AbstractCapability):
                 finally:
                     hitl_lock.release()
 
-        return arguments
+        return await handler(arguments)
 
 
 class LifecycleCapability(AbstractCapability):
@@ -151,11 +152,11 @@ class LifecycleCapability(AbstractCapability):
                 new_defs.append(res)
         return new_defs
 
-    async def before_tool_validate(
-        self, context: RunContext, tool_name: str, args: str | dict[str, Any]
-    ) -> str | dict[str, Any]:
+    async def wrap_tool_validate(
+        self, context: RunContext, tool_name: str, args: str | dict[str, Any], handler: WrapToolValidateHandler
+    ) -> dict[str, Any]:
         if not self.validate_args_hook or not isinstance(args, dict):
-            return args
+            return await handler(args)
         sig = inspect.signature(self.validate_args_hook)
         call_kwargs = dict(args)
         call_kwargs["args"] = args
@@ -171,37 +172,32 @@ class LifecycleCapability(AbstractCapability):
             await self.validate_args_hook(**filtered_kwargs)
         else:
             self.validate_args_hook(**filtered_kwargs)
-        return args
+        return await handler(args)
 
-    async def before_tool_execute(
-        self, context: RunContext, tool_name: str, arguments: dict[str, Any]
-    ) -> dict[str, Any]:
-        if not self.before_execute_hook:
-            return arguments
-        sig = inspect.signature(self.before_execute_hook)
-        call_kwargs = dict(arguments)
-        call_kwargs["args"] = arguments
-        call_kwargs["tool_args"] = arguments
-        call_kwargs["tool_name"] = tool_name
-        resolved_kwargs = await DependencyInjector.resolve_all(
-            sig, call_kwargs, context
-        )
-        filtered_kwargs = {
-            k: v for k, v in resolved_kwargs.items() if k in sig.parameters
-        }
-        if is_coroutine_callable(self.before_execute_hook):
-            await self.before_execute_hook(**filtered_kwargs)
-        else:
-            self.before_execute_hook(**filtered_kwargs)
-        return arguments
-
-    async def after_tool_execute(
-        self,
-        context: RunContext,
-        tool_name: str,
-        arguments: dict[str, Any],
-        result: Any,
+    async def wrap_tool_execute(
+        self, context: RunContext, tool_name: str, arguments: dict[str, Any], handler: WrapToolExecuteHandler
     ) -> Any:
+        if not self.before_execute_hook:
+            pass
+        else:
+            sig = inspect.signature(self.before_execute_hook)
+            call_kwargs = dict(arguments)
+            call_kwargs["args"] = arguments
+            call_kwargs["tool_args"] = arguments
+            call_kwargs["tool_name"] = tool_name
+            resolved_kwargs = await DependencyInjector.resolve_all(
+                sig, call_kwargs, context
+            )
+            filtered_kwargs = {
+                k: v for k, v in resolved_kwargs.items() if k in sig.parameters
+            }
+            if is_coroutine_callable(self.before_execute_hook):
+                await self.before_execute_hook(**filtered_kwargs)
+            else:
+                self.before_execute_hook(**filtered_kwargs)
+
+        result = await handler(arguments)
+
         if not self.after_execute_hook:
             return result
         sig = inspect.signature(self.after_execute_hook)
@@ -366,13 +362,14 @@ class FallbackCapability(AbstractCapability):
     def __init__(self, fallback_tool_name: str):
         self.fallback_tool_name = fallback_tool_name
 
-    async def after_tool_execute(
+    async def wrap_tool_execute(
         self,
         context: RunContext,
         tool_name: str,
         arguments: dict[str, Any],
-        result: Any,
+        handler: WrapToolExecuteHandler,
     ) -> Any:
+        result = await handler(arguments)
         if result and getattr(result, "is_error", False):
             available_tools = context.state.get("__available_tools", {})
             fallback_executable = available_tools.get(self.fallback_tool_name)

@@ -311,21 +311,10 @@ class LLMModel(LLMModelBase):
 
         combined_cap = CombinedCapability(capabilities)
 
-        context = await combined_cap.before_model_request(run_ctx, context)
-
         async def inner_handler(ctx: LLMContext) -> LLMResponse:
             return await self._execute_core_generation(ctx)
 
-        try:
-            response = await combined_cap.wrap_model_request(
-                run_ctx, context, inner_handler
-            )
-            response = await combined_cap.after_model_request(
-                run_ctx, context, response
-            )
-            return response
-        except Exception as e:
-            return await combined_cap.on_model_request_error(run_ctx, context, e)
+        return await combined_cap.wrap_model_request(run_ctx, context, inner_handler)
 
     async def generate_embeddings(
         self,

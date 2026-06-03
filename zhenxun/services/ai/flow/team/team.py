@@ -1,15 +1,12 @@
-from collections.abc import Awaitable, Callable
-from typing import Any, cast
+from typing import Any
 
-from pydantic import BaseModel
-
+from zhenxun.services.ai.core.messages import PromptInput
 from zhenxun.services.ai.flow.base import BaseRunnable
 from zhenxun.services.ai.flow.team.models import TeamRuntimeConfig
 from zhenxun.services.ai.flow.team.strategy import (
     BaseTeamStrategy,
 )
 from zhenxun.services.ai.run import AgentRunResult, RunContext, Task
-from zhenxun.services.ai.core.messages import PromptInput
 
 
 class Team(BaseRunnable[AgentRunResult[Any]]):
@@ -26,6 +23,7 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         description: str | None = None,
         persona: Any | None = None,
         runtime_config: TeamRuntimeConfig | dict | None = None,
+        capabilities: list[Any] | None = None,
     ):
         """
         多智能体协作团队初始化。
@@ -47,18 +45,31 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         )
         self.persona = persona
 
+        self.capabilities: list[Any] = []
+        if capabilities:
+            from zhenxun.services.ai.protocols.capabilities import (
+                AbstractCapability,
+                DynamicCapability,
+            )
+
+            for cap in capabilities:
+                if isinstance(cap, AbstractCapability):
+                    self.capabilities.append(cap)
+                elif callable(cap):
+                    self.capabilities.append(DynamicCapability(cap))
+
         if isinstance(runtime_config, dict):
             runtime_config = TeamRuntimeConfig(**runtime_config)
         self.runtime_config = runtime_config or TeamRuntimeConfig(stateless=True)
 
         self.selector_func = getattr(strategy, "selector_func", None)
 
-
     async def run(
         self,
         prompt: PromptInput | Task | None = None,
         *,
         context: RunContext | None = None,
+        capabilities: list[Any] | None = None,
         **kwargs: Any,
     ) -> AgentRunResult[Any]:
         """
@@ -67,12 +78,15 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         参数:
             prompt: 派发给多智能体团队的任务描述 or 契约对象 (Task)。
             context: 显式传入的会话与运行上下文。
+            capabilities: 仅针对本次团队执行动态注入的临时拦截器列表。
             kwargs: 透传的其他附加参数。
 
         返回:
             AgentRunResult[Any]: 包含最终融合输出、消息历史和用量统计的运行结果对象。
         """
-        return await super().run(prompt=prompt, context=context, **kwargs)
+        return await super().run(
+            prompt=prompt, context=context, capabilities=capabilities, **kwargs
+        )
 
     import contextlib
 
@@ -82,6 +96,7 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         prompt: PromptInput | Task | None = None,
         *,
         context: RunContext | None = None,
+        capabilities: list[Any] | None = None,
         **kwargs: Any,
     ):
         import asyncio
@@ -89,6 +104,23 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         if context is None:
             context = RunContext()
 
+        if not hasattr(context, "capabilities"):
+            context.capabilities = []
+
+        if hasattr(self, "capabilities") and self.capabilities:
+            context.capabilities.extend(self.capabilities)
+
+        if capabilities:
+            from zhenxun.services.ai.protocols.capabilities import (
+                AbstractCapability,
+                DynamicCapability,
+            )
+
+            for cap in capabilities:
+                if isinstance(cap, AbstractCapability):
+                    context.capabilities.append(cap)
+                elif callable(cap):
+                    context.capabilities.append(DynamicCapability(cap))
 
         from zhenxun.services.ai.core.stream_events import EventStreamer
         from zhenxun.services.ai.flow.team.runner import TeamRunner
@@ -135,7 +167,6 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
                 await streamer.send(AgentRunError(error=e))
             finally:
                 await streamer.end()
-
 
         task = asyncio.create_task(_execution_task())
         result_obj = StreamedRunResult[Any](streamer)
