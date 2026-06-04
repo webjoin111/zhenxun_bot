@@ -33,8 +33,6 @@ class BaseRuntimeConfig(BaseModel):
 
     stateless: bool = Field(default=True)
     """是否使用临时会话，不持久化历史记录"""
-    ui_streamer: str | None = Field(default=None)
-    """自动绑定的前端UI渲染器标识符（如 'markdown'）"""
     concurrency_policy: ConcurrencyPolicy | None = Field(default=None)
     """并发执行策略。如果未显式指定，无状态(stateless=True)默认为ALLOW，有状态(stateless=False)默认为QUEUE。"""
 

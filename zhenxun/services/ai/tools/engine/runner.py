@@ -63,10 +63,7 @@ class NativeToolRunner(ToolRunner):
                 if isinstance(chunk, ToolResult):
                     res = chunk
                 else:
-                    from zhenxun.services.ai.core.events import (
-                        EventCenter,
-                        ToolStreamEvent,
-                    )
+                    from zhenxun.services.ai.core.stream_events import ToolStreamChunk
                     from zhenxun.services.ai.tools.models import ToolResultChunk
 
                     chunk_obj = (
@@ -74,14 +71,14 @@ class NativeToolRunner(ToolRunner):
                         if isinstance(chunk, ToolResultChunk)
                         else ToolResultChunk(content=str(chunk))
                     )
-                    await EventCenter.publish(
-                        ToolStreamEvent(
-                            tool_call_id="unknown",
-                            tool_name=tool.name,
-                            chunk=chunk_obj,
-                            session_id=context.session_id,
+                    if context.run.streamer:
+                        await context.run.streamer.send(
+                            ToolStreamChunk(
+                                tool_name=tool.name,
+                                content=chunk_obj.content,
+                                metadata=chunk_obj.metadata,
+                            )
                         )
-                    )
             if res is None:
                 res = ToolResult(output="Stream finished successfully.")
         else:

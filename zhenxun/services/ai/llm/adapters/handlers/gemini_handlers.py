@@ -436,12 +436,12 @@ class GeminiToolSerializer(ToolSerializer):
     def sanitize_schema(self, schema: Any) -> Any:
         from zhenxun.services.ai.llm.schema_transformer import (
             GeminiCyclicRefTransformer,
+            GeminiDeepRefInlineTransformer,
             GeminiEnumTransformer,
             GeminiFormatTransformer,
             GeminiNullableUnionTransformer,
             RefComplianceTransformer,
             RemoveUnsupportedKeysTransformer,
-            RootRefInlineTransformer,
             SchemaPipeline,
         )
 
@@ -451,14 +451,16 @@ class GeminiToolSerializer(ToolSerializer):
             "default",
             "title",
             "additionalProperties",
-            "$schema",
-            "$id",
+            "schema",
+            "id",
             "propertyNames",
             "patternProperties",
+            "$defs",
+            "definitions",
         ]
         pipeline = SchemaPipeline(
             [
-                RootRefInlineTransformer(),
+                GeminiDeepRefInlineTransformer(),
                 GeminiCyclicRefTransformer(schema),
                 GeminiEnumTransformer(),
                 GeminiNullableUnionTransformer(),

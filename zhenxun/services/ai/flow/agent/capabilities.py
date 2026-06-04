@@ -5,12 +5,6 @@ from zhenxun.services.ai.core.engine.structured_parser import (
     BaseOutputProcessor,
     SubmitFinalResultExecutable,
 )
-from zhenxun.services.ai.core.events import EventCenter
-from zhenxun.services.ai.core.events.event_types import (
-    TaskRunEndEvent,
-    TaskRunErrorEvent,
-    TaskRunStartEvent,
-)
 from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
 from zhenxun.services.ai.protocols.capabilities import AbstractCapability
 from zhenxun.services.ai.run import AgentRunResult, RunContext, Task
@@ -81,9 +75,7 @@ class OutputValidationCapability(AbstractCapability):
         llm_context.extra["guardrails"] = self.guardrails
         return await handler(llm_context)
 
-    async def wrap_run(
-        self, context: RunContext, handler: Any
-    ) -> AgentRunResult[Any]:
+    async def wrap_run(self, context: RunContext, handler: Any) -> AgentRunResult[Any]:
         """运行结束后，校验是否成功提取了结构化数据"""
         result = await handler()
         if self.output_type is not None:
@@ -111,34 +103,14 @@ class TaskTrackingCapability(AbstractCapability):
     async def wrap_run(self, context: RunContext, handler: Any) -> AgentRunResult[Any]:
         """任务生命周期追踪"""
         task_name = self.task.name or self.task.id[:8]
-        await EventCenter.publish(
-            TaskRunStartEvent(
-                session_id=context.session_id or "unknown",
-                task_id=self.task.id,
-                task_name=task_name,
-                agent_name=self.agent_name,
-            )
-        )
+        logger.debug(f"📋 **开始任务**: `{task_name}` (由 {self.agent_name} 执行)")
         try:
             result = await handler()
-            await EventCenter.publish(
-                TaskRunEndEvent(
-                    session_id=context.session_id or "unknown",
-                    task_id=self.task.id,
-                    task_name=task_name,
-                )
-            )
+            logger.debug(f"✅ **任务完成**: `{task_name}`")
             return result
         except BaseException as error:
             event_error = (
                 error if isinstance(error, Exception) else Exception(str(error))
             )
-            await EventCenter.publish(
-                TaskRunErrorEvent(
-                    session_id=context.session_id or "unknown",
-                    task_id=self.task.id,
-                    task_name=task_name,
-                    error=event_error,
-                )
-            )
+            logger.error(f"❌ **任务失败**: `{task_name}` - {event_error}")
             raise error

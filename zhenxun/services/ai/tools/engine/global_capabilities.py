@@ -8,16 +8,6 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from nonebot.permission import SUPERUSER
 
 from zhenxun.models.user_console import UserConsole
-from zhenxun.services.ai.core.events import EventCenter
-from zhenxun.services.ai.core.events.event_types import (
-    AgentEndEvent,
-    AgentStartEvent,
-    ModelEndEvent,
-    ModelStartEvent,
-    ToolCallEvent,
-    ToolErrorEvent,
-    ToolResultEvent,
-)
 from zhenxun.services.ai.core.exceptions import (
     AbortException,
     GuardrailViolationError,
@@ -36,6 +26,7 @@ from zhenxun.services.ai.protocols.capabilities import (
     WrapToolExecuteHandler,
 )
 from zhenxun.services.ai.run import AgentRunResult, RunContext
+from zhenxun.services.ai.run.models import AgentRunSummary
 from zhenxun.services.ai.tools.models import ToolResult
 
 if TYPE_CHECKING:
@@ -313,38 +304,43 @@ class BillingCapability(AbstractCapability):
         return await handler(arguments)
 
 
-class EventDispatcherCapability(AbstractCapability):
+class TelemetryCapability(AbstractCapability):
+    """
+    核心可观测性与遥测 拦截器。
+    利用洋葱模型接管完整的 Agent 生命周期，计算瀑布流耗时，并聚合生成全局运行摘要
+    """
+
+    def __init__(self):
+        self.summary = AgentRunSummary()
+        self.start_t = 0.0
+
+    async def for_run(self, context: RunContext) -> "AbstractCapability":
+        return TelemetryCapability()
+
     async def wrap_run(
         self, context: RunContext, handler: WrapRunHandler
     ) -> "AgentRunResult[Any]":
         agent_name = context.run.agent_name or "unknown"
-        prompt = context.run.user_input or ""
-        ns = getattr(context.session, "namespace", "global")
 
-        await EventCenter.publish(
-            AgentStartEvent(
-                session_id=context.session_id,
-                agent_name=agent_name,
-                prompt=prompt,
-                namespace=ns,
-            )
-        )
-        start_t = time.monotonic()
+        logger.debug(f"🚀 [Telemetry] 智能体 {agent_name} 开始运行")
+        self.start_t = time.monotonic()
         try:
             res = await handler()
-            dur = (time.monotonic() - start_t) * 1000
-            await EventCenter.publish(
-                AgentEndEvent(
-                    session_id=context.session_id,
-                    agent_name=agent_name,
-                    result=res,
-                    duration_ms=dur,
-                    namespace=ns,
-                )
-            )
-            return res
         except Exception as e:
+            self.summary.total_latency_ms = (time.monotonic() - self.start_t) * 1000
+            logger.error(
+                f"❌ [Telemetry] 智能体 {agent_name} 崩溃，终止遥测 (耗时: {self.summary.total_latency_ms:.2f}ms)"
+            )
             raise e
+
+        self.summary.total_latency_ms = (time.monotonic() - self.start_t) * 1000
+        self.summary.usage = res.usage
+        res.telemetry = self.summary
+
+        logger.debug(
+            f"🏁 [Telemetry] 智能体 {agent_name} 运行结束 (总耗时: {self.summary.total_latency_ms:.2f}ms)"
+        )
+        return res
 
     async def wrap_model_request(
         self,
@@ -352,29 +348,31 @@ class EventDispatcherCapability(AbstractCapability):
         llm_context: LLMContext,
         handler: WrapModelRequestHandler,
     ) -> LLMResponse:
-        ns = getattr(context.session, "namespace", "global")
-        await EventCenter.publish(
-            ModelStartEvent(
-                session_id=context.session_id,
-                model_name=context.run.current_model or "model_instance",
-                messages=list(llm_context.messages),
-                namespace=ns,
-            )
-        )
+        model_name = context.run.current_model or "model_instance"
         start_t = time.monotonic()
         try:
             response = await handler(llm_context)
             dur = (time.monotonic() - start_t) * 1000
-            await EventCenter.publish(
-                ModelEndEvent(
-                    session_id=context.session_id,
-                    response=response,
-                    duration_ms=dur,
-                    namespace=ns,
-                )
+
+            self.summary.chats.total += 1
+            self.summary.chats.total_latency_ms += dur
+
+            stop_reason = "tool_calls" if response.tool_calls else "stop"
+            self.summary.chats.by_stop_reason[stop_reason] = (
+                self.summary.chats.by_stop_reason.get(stop_reason, 0) + 1
+            )
+
+            logger.debug(
+                f"🧠 [Telemetry] 模型 {model_name} 调用完成 (耗时: {dur:.2f}ms)"
             )
             return response
         except Exception as e:
+            dur = (time.monotonic() - start_t) * 1000
+            self.summary.chats.total += 1
+            self.summary.chats.total_latency_ms += dur
+            self.summary.chats.by_stop_reason["error"] = (
+                self.summary.chats.by_stop_reason.get("error", 0) + 1
+            )
             raise e
 
     async def wrap_tool_execute(
@@ -384,59 +382,41 @@ class EventDispatcherCapability(AbstractCapability):
         arguments: dict[str, Any],
         handler: WrapToolExecuteHandler,
     ) -> Any:
-        ns = getattr(context.session, "namespace", "global")
-        await EventCenter.publish(
-            ToolCallEvent(
-                session_id=context.session_id,
-                tool_call_id="dynamic",
-                tool_name=tool_name,
-                arguments=arguments.copy(),
-                namespace=ns,
-            )
-        )
         start_t = time.monotonic()
         try:
             result = await handler(arguments)
             dur = (time.monotonic() - start_t) * 1000
-            await EventCenter.publish(
-                ToolResultEvent(
-                    session_id=context.session_id,
-                    tool_call_id="dynamic",
-                    tool_name=tool_name,
-                    result=result,
-                    error=None,
-                    duration_ms=dur,
-                    namespace=ns,
-                )
+
+            self.summary.tools.total += 1
+            self.summary.tools.total_latency_ms += dur
+
+            tool_stat = self.summary.tools.by_name.setdefault(
+                tool_name, {"total": 0, "ok": 0, "error": 0, "latency_ms": 0.0}
             )
+            tool_stat["total"] += 1
+            tool_stat["latency_ms"] += dur
+
+            if getattr(result, "is_error", False):
+                self.summary.tools.error += 1
+                tool_stat["error"] += 1
+            else:
+                self.summary.tools.ok += 1
+                tool_stat["ok"] += 1
+
+            logger.debug(f"🛠️ [Telemetry] 工具 {tool_name} 执行完毕 (耗时: {dur:.2f}ms)")
             return result
         except Exception as e:
-            from zhenxun.services.ai.core.exceptions import ControlFlowException
-
-            if isinstance(e, ControlFlowException):
-                raise e
-
             dur = (time.monotonic() - start_t) * 1000
-            await EventCenter.publish(
-                ToolErrorEvent(
-                    session_id=context.session_id,
-                    tool_call_id="dynamic",
-                    tool_name=tool_name,
-                    error=e,
-                    namespace=ns,
-                )
+            self.summary.tools.total += 1
+            self.summary.tools.total_latency_ms += dur
+            self.summary.tools.error += 1
+
+            tool_stat = self.summary.tools.by_name.setdefault(
+                tool_name, {"total": 0, "ok": 0, "error": 0, "latency_ms": 0.0}
             )
-            await EventCenter.publish(
-                ToolResultEvent(
-                    session_id=context.session_id,
-                    tool_call_id="dynamic",
-                    tool_name=tool_name,
-                    result=None,
-                    error=e,
-                    duration_ms=dur,
-                    namespace=ns,
-                )
-            )
+            tool_stat["total"] += 1
+            tool_stat["latency_ms"] += dur
+            tool_stat["error"] += 1
             raise e
 
 
@@ -706,7 +686,7 @@ for _cap in [
     PermissionCapability(),
     BillingCapability(),
     RequireAuthCapability(),
-    EventDispatcherCapability(),
+    TelemetryCapability(),
     ToolSideEffectCapability(),
     ToolRetryAndReflectionCapability(),
     ReflexionCapability(),

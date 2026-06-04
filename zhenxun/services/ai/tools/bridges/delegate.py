@@ -110,7 +110,8 @@ class DelegateTool(BaseTool):
                             await streamer.send(
                                 ToolStreamChunk(
                                     tool_name=self.name,
-                                    content=f"🔁 正在调用工具: {event.tool_name}...",
+                                    content=f"🔁 正在调用工具: {event.tool_name}..." 
+                                            + (f" (意图: {event.intent})" if getattr(event, "intent", None) else ""),
                                 )
                             )
 

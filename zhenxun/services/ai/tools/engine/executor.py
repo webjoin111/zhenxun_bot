@@ -66,6 +66,7 @@ class ToolExecutor:
             else json.dumps(tool_call.args, ensure_ascii=False)
         )
         arguments: dict[str, Any] = {}
+        intent_str: str | None = None
 
         if arguments_str:
             parsed_successfully = False
@@ -104,7 +105,10 @@ class ToolExecutor:
             if parsed_successfully and isinstance(arguments, dict):
                 _intent = arguments.pop("_intent", None)
                 if _intent:
-                    logger.info(f"🧠 [Agent Intent] 调用工具 {tool_name} 的意图: {_intent}")
+                    logger.info(
+                        f"🧠 [Agent Intent] 调用工具 {tool_name} 的意图: {_intent}"
+                    )
+                    intent_str = str(_intent)
 
             if not parsed_successfully:
                 if context:
@@ -163,6 +167,7 @@ class ToolExecutor:
                 tool=executable,
                 args_valid=True,
                 validated_args=validated_args,
+                intent=intent_str,
             )
         except Exception as e:
             return ValidatedToolCall(
@@ -216,7 +221,9 @@ class ToolExecutor:
         safe_context.call.current_tool = executable
         safe_context.state["__available_tools"] = available_tools
 
-        call_event = ToolCallStart(tool_name=tool_name, arguments=arguments)
+        call_event = ToolCallStart(
+            tool_name=tool_name, arguments=arguments, intent=validated.intent
+        )
         if event_streamer:
             await event_streamer.send(call_event)
 
@@ -278,9 +285,9 @@ class ToolExecutor:
         ]
         validated_calls = await asyncio.gather(*val_tasks)
 
-        results = [None] * len(validated_calls)
+        results: list[Any] = [None] * len(validated_calls)
         shared_tasks = []
-        
+
         loop = asyncio.get_running_loop()
         last_exclusive_task = loop.create_future()
         last_exclusive_task.set_result(None)
@@ -302,21 +309,26 @@ class ToolExecutor:
         try:
             for i, val_call in enumerate(validated_calls):
                 executable = getattr(val_call, "tool", None)
-                concurrency_mode = getattr(getattr(executable, "settings", None), "concurrency", "shared")
-                
+                concurrency_mode = getattr(
+                    getattr(executable, "settings", None), "concurrency", "shared"
+                )
+
                 if concurrency_mode == "exclusive":
                     await last_exclusive_task
                     if shared_tasks:
                         await asyncio.gather(*shared_tasks, return_exceptions=True)
                         shared_tasks.clear()
-                    
+
                     task = asyncio.create_task(_run_tool(i, val_call))
                     last_exclusive_task = task
                 else:
-                    async def _run_shared(idx=i, vc=val_call, barrier=last_exclusive_task):
+
+                    async def _run_shared(
+                        idx=i, vc=val_call, barrier=last_exclusive_task
+                    ):
                         await barrier
                         await _run_tool(idx, vc)
-                    
+
                     task = asyncio.create_task(_run_shared())
                     shared_tasks.append(task)
 

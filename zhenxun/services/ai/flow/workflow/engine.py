@@ -5,12 +5,7 @@ import uuid
 if TYPE_CHECKING:
     from zhenxun.services.ai.run import StreamedRunResult
 
-from zhenxun.services.ai.core.events import EventCenter
-from zhenxun.services.ai.core.events.event_types import (
-    WorkflowCompletedEvent,
-    WorkflowErrorEvent,
-    WorkflowStartedEvent,
-)
+
 from zhenxun.services.ai.core.messages import PromptInput
 from zhenxun.services.ai.flow.base import BaseRunnable, BaseRuntimeConfig
 from zhenxun.services.ai.flow.workflow.nodes import Steps
@@ -164,9 +159,7 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
         )
         safe_context = context or RunContext(session_id=session_id)
 
-        await EventCenter.publish(
-            WorkflowStartedEvent(session_id=session_id, workflow_name=self.name)
-        )
+        logger.info(f"🏭 **工作流 [{self.name}] 启动**")
 
         initial_input = StepInput(input=prompt)
         if kwargs:
@@ -175,11 +168,7 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
         try:
             final_output = await self.root_steps.aexecute(initial_input, safe_context)
 
-            await EventCenter.publish(
-                WorkflowCompletedEvent(
-                    session_id=session_id, workflow_name=self.name, result=final_output
-                )
-            )
+            logger.info(f"🏭 **工作流 [{self.name}] 运行结束**")
 
             return self._build_result(initial_input, safe_context, final_output)
 
@@ -192,11 +181,7 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
                 return self._build_result(initial_input, safe_context, dummy_output)
 
             logger.error(f"Workflow '{self.name}' 执行崩溃: {e}", e=e)
-            await EventCenter.publish(
-                WorkflowErrorEvent(
-                    session_id=session_id, workflow_name=self.name, error=e
-                )
-            )
+
             raise e
 
     import contextlib
@@ -248,11 +233,7 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
         )
         safe_context = context or RunContext(session_id=session_id)
 
-        start_event = WorkflowStartedEvent(
-            session_id=session_id, workflow_name=self.name
-        )
-        await EventCenter.publish(start_event)
-        yield start_event
+        logger.info(f"🏭 **工作流 [{self.name}] 启动**")
 
         initial_input = StepInput(input=prompt)
         if kwargs:
@@ -269,11 +250,7 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
                     yield event
 
             if final_output:
-                comp_event = WorkflowCompletedEvent(
-                    session_id=session_id, workflow_name=self.name, result=final_output
-                )
-                await EventCenter.publish(comp_event)
-                yield comp_event
+                logger.info(f"🏭 **工作流 [{self.name}] 运行结束**")
 
                 from zhenxun.services.ai.core.messages import UsageInfo
                 from zhenxun.services.ai.run import AgentRunResult
@@ -290,9 +267,7 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
                 yield AgentRunEnd(result=agent_res)
         except Exception as e:
             logger.error(f"Workflow '{self.name}' 流式执行崩溃: {e}", e=e)
-            yield WorkflowErrorEvent(
-                session_id=session_id, workflow_name=self.name, error=e
-            )
+
 
     async def acontinue_run(
         self,

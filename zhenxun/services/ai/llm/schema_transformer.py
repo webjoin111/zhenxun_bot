@@ -303,3 +303,51 @@ class RefComplianceTransformer(BaseSchemaTransformer):
             for k in keys_to_remove:
                 node.pop(k)
         return node
+
+
+class GeminiDeepRefInlineTransformer(BaseSchemaTransformer):
+    """
+    深度展开所有 $ref，并清理 $defs (Gemini Function Calling 专用)。
+    大模型 API 网关层面严格拒绝 $defs 与 $ref，所以进行全量物理替换。
+    如果遇到循环引用，将安全退化为 string 类型防止栈溢出死循环。
+    """
+
+    def process_node(
+        self, node: dict[str, Any], is_root: bool = False
+    ) -> dict[str, Any]:
+        if not is_root:
+            return node
+
+        defs = {}
+        if "$defs" in node:
+            defs.update(node["$defs"])
+        if "definitions" in node:
+            defs.update(node["definitions"])
+
+        def _resolve_refs(current: Any, visited: set) -> Any:
+            if isinstance(current, list):
+                return [_resolve_refs(item, visited) for item in current]
+            elif isinstance(current, dict):
+                if "$ref" in current:
+                    ref_path = current["$ref"]
+                    ref_name = ref_path.split("/")[-1]
+                    if ref_name in defs:
+                        if ref_name in visited:
+                            return {"type": "string", "description": "Cyclic reference omitted"}
+
+                        new_visited = visited | {ref_name}
+                        resolved = _resolve_refs(defs[ref_name], new_visited)
+
+                        result = current.copy()
+                        result.pop("$ref")
+                        for k, v in resolved.items():
+                            if k not in result:
+                                result[k] = v
+                        return result
+                return {k: _resolve_refs(v, visited) for k, v in current.items()}
+            return current
+
+        node = _resolve_refs(node, set())
+        node.pop("$defs", None)
+        node.pop("definitions", None)
+        return node

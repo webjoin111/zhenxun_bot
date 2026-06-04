@@ -17,6 +17,8 @@ class ToolCallStart(AgentStreamEvent):
 
     tool_name: str
     arguments: dict[str, Any]
+    intent: str | None = None
+    """从大模型调用参数中剥离出的意图 (_intent)"""
 
 
 class ToolStreamChunk(AgentStreamEvent):

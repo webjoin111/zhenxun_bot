@@ -1,4 +1,3 @@
-import asyncio
 from typing import Annotated, Any
 
 from pydantic import Field
@@ -9,6 +8,7 @@ from zhenxun.services.ai.run.context import RunContext
 from zhenxun.services.ai.tools.core.decorators import tool
 from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
 from zhenxun.services.ai.tools.models import ToolResult
+from zhenxun.services.log import logger
 
 from .models import TaskBoardState, TaskNodeStatus
 
@@ -34,7 +34,6 @@ class TaskPlanningToolkit(BaseToolkit):
     def __init__(self, members: list[BaseRunnable], **kwargs):
         super().__init__(**kwargs)
         self.members = members
-        self._background_tasks: set[asyncio.Task] = set()
 
     def _get_board(self, context: RunContext) -> TaskBoardState:
         """从运行上下文中安全的获取或初始化任务看板状态"""
@@ -63,8 +62,7 @@ class TaskPlanningToolkit(BaseToolkit):
             list[str] | None,
             Field(
                 description=(
-                    "该任务依赖的前置任务 ID 列表。如果该任务可独立执行，"
-                    "请留空数组 []"
+                    "该任务依赖的前置任务 ID 列表。如果该任务可独立执行，请留空数组 []"
                 ),
             ),
         ] = None,
@@ -94,22 +92,7 @@ class TaskPlanningToolkit(BaseToolkit):
             metadata=metadata,
         )
 
-        from zhenxun.services.ai.core.events import EventCenter
-        from zhenxun.services.ai.core.events.event_types import TeamTaskCreatedEvent
-
-        _task = asyncio.create_task(
-            EventCenter.publish(
-                TeamTaskCreatedEvent(
-                    session_id=context.session_id,
-                    team_name=getattr(context.run, "agent_name", "Team"),
-                    task_id=task.id,
-                    title=task.title,
-                    assignee=task.assignee,
-                )
-            )
-        )
-        self._background_tasks.add(_task)
-        _task.add_done_callback(self._background_tasks.discard)
+        logger.debug(f"  ┣ 🆕 [新建任务] `{task.title}` -> 👨💼{task.assignee}")
 
         board_str = board.render_board_to_string()
         return ToolResult(
@@ -151,26 +134,9 @@ class TaskPlanningToolkit(BaseToolkit):
         if not updated:
             return ToolResult(output=f"❌ 找不到 ID 为 '{task_id}' 的任务。").as_error()
 
-        from zhenxun.services.ai.core.events import EventCenter
-        from zhenxun.services.ai.core.events.event_types import TeamTaskUpdatedEvent
-
         task_obj = board.get_task(task_id)
         task_title = task_obj.title if task_obj else "Unknown"
-
-        _task = asyncio.create_task(
-            EventCenter.publish(
-                TeamTaskUpdatedEvent(
-                    session_id=context.session_id,
-                    team_name=getattr(context.run, "agent_name", "Team"),
-                    task_id=task_id,
-                    title=task_title,
-                    status=status.value,
-                    result=result,
-                )
-            )
-        )
-        self._background_tasks.add(_task)
-        _task.add_done_callback(self._background_tasks.discard)
+        logger.debug(f"  ┣ 🔄 [任务状态变更] `{task_title}` -> {status.value}")
 
         board_str = board.render_board_to_string()
         return ToolResult(

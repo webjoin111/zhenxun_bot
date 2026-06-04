@@ -60,22 +60,6 @@ class AgentRunner(Generic[T_Out]):
         self, prompt: Any = None, reply_to: bool = False, **kwargs: Any
     ) -> AgentRunResult[T_Out]:
         """交互式执行：将 Agent 运行过程中的工具调用状态和最终结果自动发送给用户。"""
-        ui_ctx = None
-        ui_streamer = (
-            getattr(self.runnable.runtime_config, "ui_streamer", None)
-            if hasattr(self.runnable, "runtime_config")
-            else None
-        )
-
-        if ui_streamer:
-            from zhenxun.services.ai.core.ui.context import UIStreamerContext
-
-            ui_ctx = UIStreamerContext(
-                self.context.session_id or "default_session",
-                streamer_type=ui_streamer,
-            )
-            await ui_ctx.__aenter__()
-
         final_result = None
 
         try:
@@ -156,23 +140,16 @@ class AgentRunner(Generic[T_Out]):
                 await MessageUtils.build_message(f"❌ 运行发生错误: {e}").send()
             raise e
 
-        finally:
-            if ui_ctx:
-                await ui_ctx.__aexit__(None, None, None)
+
 
         if final_result and final_result.output and self._bot and self._event:
-            ui_report = ui_ctx.render() if ui_ctx else ""
             if isinstance(final_result.output, UniMessage):
-                if ui_report:
-                    await MessageUtils.build_message(ui_report).send()
                 await final_result.output.send(
                     self._event, bot=self._bot, reply_to=reply_to
                 )
                 final_result.output = final_result.output.extract_plain_text()
             else:
                 final_msg = str(final_result.output)
-                if ui_report:
-                    final_msg = f"{ui_report}\n\n🤖 最终总结:\n{final_msg}"
                 await MessageUtils.build_message(final_msg).send()
 
         if final_result is None:

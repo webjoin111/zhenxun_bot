@@ -15,6 +15,40 @@ from zhenxun.services.ai.core.stream_events import AgentStreamEvent
 from zhenxun.utils.pydantic_compat import model_dump
 
 
+class ChatSummary(BaseModel):
+    total: int = 0
+    """大模型调用总次数"""
+    total_latency_ms: float = 0.0
+    """大模型调用总耗时（毫秒）"""
+    by_stop_reason: dict[str, int] = Field(default_factory=dict)
+    """按停止原因分类的大模型调用计数"""
+
+
+class ToolSummary(BaseModel):
+    total: int = 0
+    """工具执行总次数"""
+    ok: int = 0
+    """工具成功执行次数"""
+    error: int = 0
+    """工具执行失败次数"""
+    total_latency_ms: float = 0.0
+    """工具执行总耗时（毫秒）"""
+    by_name: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    """按工具名称细分的执行状态统计"""
+
+
+class AgentRunSummary(BaseModel):
+    """Agent 单次运行的全局可观测性遥测摘要"""
+    chats: ChatSummary = Field(default_factory=ChatSummary)
+    """大模型调用遥测摘要"""
+    tools: ToolSummary = Field(default_factory=ToolSummary)
+    """工具执行遥测摘要"""
+    usage: UsageInfo = Field(default_factory=UsageInfo)
+    """Token 消耗总计"""
+    total_latency_ms: float = 0.0
+    """智能体运行总耗时（毫秒）"""
+
+
 class CancellationToken:
     """全局取消令牌，用于在异步链路中传递中止信号"""
 
@@ -58,6 +92,8 @@ class AgentRunResult(BaseModel, Generic[OutputDataT]):
     """本次运行的Token消耗总计"""
     structured_data: Any | None = None
     """拦截到的结构化结果字典"""
+    telemetry: AgentRunSummary | None = None
+    """单次运行的完整可观测性遥测摘要"""
 
     class Config:
         arbitrary_types_allowed = True

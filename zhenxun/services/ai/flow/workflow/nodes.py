@@ -6,15 +6,6 @@ from typing import Any, cast
 from nonebot.utils import is_coroutine_callable
 from pydantic import BaseModel, Field
 
-from zhenxun.services.ai.core.events import EventCenter
-from zhenxun.services.ai.core.events.event_types import (
-    LoopExecutionCompletedEvent,
-    LoopExecutionStartedEvent,
-    LoopIterationCompletedEvent,
-    LoopIterationStartedEvent,
-    ParallelExecutionCompletedEvent,
-    ParallelExecutionStartedEvent,
-)
 from zhenxun.services.ai.flow.base import BaseRunnable
 from zhenxun.services.ai.flow.workflow.base import BaseNode
 from zhenxun.services.ai.flow.workflow.types import (
@@ -378,13 +369,9 @@ class Loop(BaseNode):
     async def run_stream(
         self, step_input: StepInput, context: RunContext
     ) -> AsyncIterator[Any]:
-        start_event = LoopExecutionStartedEvent(
-            session_id=context.session_id,
-            step_name=self.name,
-            max_iterations=self.max_iterations,
+        logger.debug(
+            f"  ┣ 🔁 开始循环: [Loop] `{self.name}` (最大 {self.max_iterations} 次)"
         )
-        await EventCenter.publish(start_event)
-        yield start_event
 
         iteration = 0
         all_results: list[StepOutput] = []
@@ -395,13 +382,7 @@ class Loop(BaseNode):
         )
 
         while iteration < self.max_iterations:
-            iter_start_event = LoopIterationStartedEvent(
-                session_id=context.session_id,
-                step_name=self.name,
-                iteration=iteration + 1,
-            )
-            await EventCenter.publish(iter_start_event)
-            yield iter_start_event
+            logger.debug(f"  ┃  ┣ 🔄 第 {iteration + 1} 次迭代...")
 
             steps_container = Steps(
                 steps=self.steps, name=f"{self.name}_iter_{iteration + 1}"
@@ -442,14 +423,6 @@ class Loop(BaseNode):
                     else:
                         should_stop = bool(self.end_condition)
 
-                iter_comp_event = LoopIterationCompletedEvent(
-                    session_id=context.session_id,
-                    step_name=self.name,
-                    iteration=iteration + 1,
-                )
-                await EventCenter.publish(iter_comp_event)
-                yield iter_comp_event
-
                 iteration += 1
                 if should_stop or iter_output.stop:
                     break
@@ -465,13 +438,7 @@ class Loop(BaseNode):
             steps=all_results,
         )
 
-        comp_event = LoopExecutionCompletedEvent(
-            session_id=context.session_id,
-            step_name=self.name,
-            total_iterations=iteration,
-        )
-        await EventCenter.publish(comp_event)
-        yield comp_event
+        logger.debug(f"  ┣ ✅ 循环结束: [Loop] `{self.name}` (共执行 {iteration} 次)")
 
 
 class Parallel(BaseNode):
@@ -493,13 +460,7 @@ class Parallel(BaseNode):
     async def run_stream(
         self, step_input: StepInput, context: RunContext
     ) -> AsyncIterator[Any]:
-        start_event = ParallelExecutionStartedEvent(
-            session_id=context.session_id,
-            step_name=self.name,
-            parallel_step_count=len(self.steps),
-        )
-        await EventCenter.publish(start_event)
-        yield start_event
+        logger.debug(f"  ┣ 🔀 [并发] `{self.name}` 开启了 {len(self.steps)} 个并发任务")
 
         queue = asyncio.Queue()
         bg_tasks = []
@@ -583,14 +544,7 @@ class Parallel(BaseNode):
             stop=any(getattr(o, "stop", False) for o in all_outputs),
         )
 
-        comp_event = ParallelExecutionCompletedEvent(
-            session_id=context.session_id,
-            step_name=self.name,
-            parallel_step_count=len(self.steps),
-            step_results=all_outputs,
-        )
-        await EventCenter.publish(comp_event)
-        yield comp_event
+        logger.debug(f"  ┣ ✅ [并发] `{self.name}` 执行完毕")
 
 
 class NodeFactory:

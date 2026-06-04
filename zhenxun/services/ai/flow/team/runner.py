@@ -2,14 +2,6 @@ import asyncio
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from zhenxun.services.ai.core.events import EventCenter
-from zhenxun.services.ai.core.events.event_types import (
-    TeamMemberEndEvent,
-    TeamMemberStartEvent,
-    TeamRouteDecisionEvent,
-    TeamRunEndEvent,
-    TeamRunStartEvent,
-)
 from zhenxun.services.ai.core.exceptions import (
     ControlFlowException,
     HandoffException,
@@ -83,14 +75,7 @@ class TeamRunner:
             )
             sub_context.capabilities.append(routing_cap)
 
-        await EventCenter.publish(
-            TeamMemberStartEvent(
-                session_id=session_id,
-                team_name=self.team.name,
-                member_name=target_agent.name,
-                task=str(action.task),
-            )
-        )
+        logger.debug(f"🚀 **专员 👨💼`{target_agent.name}`** 开始执行子任务...")
 
         agent_res = None
         handoff_exc = None
@@ -129,8 +114,7 @@ class TeamRunner:
             if isinstance(e, LLMException):
                 abort_msg = getattr(e, "user_friendly_message", str(e))
                 display_msg = (
-                    f"❌ 智能体 {target_agent.name} 执行发生致命故障: "
-                    f"{abort_msg}"
+                    f"❌ 智能体 {target_agent.name} 执行发生致命故障: {abort_msg}"
                 )
                 abort_err = AbortException(
                     reason=str(e),
@@ -152,13 +136,8 @@ class TeamRunner:
                 else ""
             )
 
-            await EventCenter.publish(
-                TeamRouteDecisionEvent(
-                    session_id=session_id,
-                    team_name=self.team.name,
-                    selected_member=target_name,
-                    reason=reason,
-                )
+            logger.info(
+                f"🛣️ **路由决策**: 委派给专员 👨💼`{target_name}` (理由: {reason})"
             )
             agent_res = AgentRunResult(
                 output=f"__HANDOFF__:{target_name}|{reason}|{ctx_data}",
@@ -170,14 +149,7 @@ class TeamRunner:
                 output="Error: No result returned", usage=UsageInfo()
             )
 
-        await EventCenter.publish(
-            TeamMemberEndEvent(
-                session_id=session_id,
-                team_name=self.team.name,
-                member_name=target_agent.name,
-                result=agent_res.output,
-            )
-        )
+        logger.debug(f"✅ **专员 👨💼`{target_agent.name}`** 完成任务！")
 
         await queue.put(("result", index, target_agent.name, agent_res))
 
@@ -187,11 +159,7 @@ class TeamRunner:
         session_id = context.session_id or "default_team_session"
         task_desc = getattr(prompt, "description", str(prompt))
 
-        await EventCenter.publish(
-            TeamRunStartEvent(
-                session_id=session_id, team_name=self.team.name, task=task_desc
-            )
-        )
+        logger.info(f"🤝 **团队 [{self.team.name}] 开始协作**: `{task_desc}`")
 
         plan_gen = self.strategy.generate_plan(self.team, prompt, context, **kwargs)
 
@@ -273,11 +241,7 @@ class TeamRunner:
             logger.error(f"TeamRunner 执行崩溃: {e}", e=e)
             raise e
 
-        await EventCenter.publish(
-            TeamRunEndEvent(
-                session_id=session_id, team_name=self.team.name, result=final_result
-            )
-        )
+        logger.info(f"🏁 **团队 [{self.team.name}]** 协作圆满结束！")
 
         if not isinstance(final_result, AgentRunResult):
             final_result = AgentRunResult(output=final_result, usage=cumulative_usage)

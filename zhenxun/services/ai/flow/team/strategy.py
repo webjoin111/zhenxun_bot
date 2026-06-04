@@ -64,7 +64,6 @@ class BaseTeamStrategy(ABC):
         leader_config = AgentRuntimeConfig(
             stateless=team.runtime_config.stateless if team.runtime_config else True,
             enable_hitl=getattr(team.runtime_config, "leader_enable_hitl", False),
-            ui_streamer=None,
         )
         return Agent(
             name=name,
@@ -250,19 +249,7 @@ class RouteStrategy(BaseTeamStrategy):
                             pass
 
             if fast_routed:
-                from zhenxun.services.ai.core.events import (
-                    EventCenter,
-                    TeamRouteDecisionEvent,
-                )
-
-                await EventCenter.publish(
-                    TeamRouteDecisionEvent(
-                        session_id=context.session_id or "default_team_session",
-                        team_name=team.name,
-                        selected_member=current_target,
-                        reason="[系统拦截：正则/函数状态流发生转移]",
-                    )
-                )
+                logger.info(f"🛣️ **路由决策**: 委派给专员 👨💼`{current_target}` (系统拦截：正则/函数状态流发生转移)")
                 continue
 
             yield FinishAction(result=run_result.output)
@@ -325,12 +312,7 @@ class CoordinateStrategy(BaseTeamStrategy):
 
 
         session_id = context.session_id or "default_team_session"
-        from zhenxun.services.ai.core.events import EventCenter
-        from zhenxun.services.ai.core.events.event_types import TeamSynthesizeStartEvent
-
-        await EventCenter.publish(
-            TeamSynthesizeStartEvent(session_id=session_id, team_name=team.name)
-        )
+        logger.info(f"✨ **团队 [{team.name}] Leader** 正在汇总各方报告...")
 
         if context.run.streamer:
             from zhenxun.services.ai.core.stream_events import ToolStreamChunk
@@ -406,12 +388,7 @@ class BroadcastStrategy(BaseTeamStrategy):
                 )
             )
 
-        from zhenxun.services.ai.core.events import EventCenter
-        from zhenxun.services.ai.core.events.event_types import TeamSynthesizeStartEvent
-
-        await EventCenter.publish(
-            TeamSynthesizeStartEvent(session_id=session_id, team_name=team.name)
-        )
+        logger.info(f"✨ **团队 [{team.name}] Leader** 正在汇总各方报告...")
 
         summary_text = "\n\n".join(
             [f"### 【{name} 的意见】:\n{res.output}" for name, res in results]
@@ -493,8 +470,7 @@ class TaskStrategy(BaseTeamStrategy):
     async def generate_plan(
         self, team: Any, prompt: str | Task | None, context: RunContext, **kwargs
     ) -> AsyncGenerator[TeamAction, Any]:
-        from zhenxun.services.ai.core.events import EventCenter
-        from zhenxun.services.ai.core.events.event_types import TeamTaskUpdatedEvent
+        # EventCenter and Event types removed
         from zhenxun.services.ai.flow.team.models import TaskBoardState, TaskNodeStatus
         from zhenxun.services.ai.flow.team.task_tools import TaskPlanningToolkit
 
@@ -594,15 +570,7 @@ class TaskStrategy(BaseTeamStrategy):
                     continue
 
                 board.update_task_status(task.id, TaskNodeStatus.in_progress)
-                await EventCenter.publish(
-                    TeamTaskUpdatedEvent(
-                        session_id=context.session_id,
-                        team_name=team.name,
-                        task_id=task.id,
-                        title=task.title,
-                        status="in_progress",
-                    )
-                )
+                logger.debug(f"  ┣ 🔄 [任务状态变更] `{task.title}` -> in_progress")
 
                 task_prompt = f"### 🎯 你被指派的任务目标：\n{task.description}"
 
@@ -657,16 +625,7 @@ class TaskStrategy(BaseTeamStrategy):
                         )
                         final_status = "completed"
 
-                await EventCenter.publish(
-                    TeamTaskUpdatedEvent(
-                        session_id=context.session_id,
-                        team_name=team.name,
-                        task_id=task.id,
-                        title=task.title,
-                        status=final_status,
-                        result=output_str,
-                    )
-                )
+                logger.debug(f"  ┣ 🔄 [任务状态变更] `{task.title}` -> {final_status}")
 
         yield FinishAction(
             result=f"达到最大迭代次数 ({max_iterations})，任务未能在限定步数内完成。"

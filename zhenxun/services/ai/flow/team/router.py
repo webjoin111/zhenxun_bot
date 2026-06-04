@@ -173,7 +173,6 @@ class LLMRouter(BaseRouter):
         leader_config = AgentRuntimeConfig(
             stateless=self.runtime_config.stateless if self.runtime_config else True,
             enable_hitl=getattr(self.runtime_config, "leader_enable_hitl", False),
-            ui_streamer=None
         )
 
         router_agent = Agent(

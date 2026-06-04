@@ -2,15 +2,6 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from typing import Any
 
-from zhenxun.services.ai.core.events import EventCenter
-from zhenxun.services.ai.core.events.event_types import (
-    StepCompletedEvent,
-    StepFallbackEvent,
-    StepHealingEvent,
-    StepPausedEvent,
-    StepRetryEvent,
-    StepStartedEvent,
-)
 from zhenxun.services.ai.core.exceptions import (
     AbortException,
     ControlFlowException,
@@ -78,13 +69,7 @@ class BaseNode(ABC):
         self, step_input: StepInput, context: RunContext
     ) -> AsyncIterator[Any]:
         """标准化模板方法：处理缓存快进、授权挂起、异常熔断与生命周期事件分发"""
-        start_event = StepStartedEvent(
-            session_id=context.session_id,
-            step_name=self.name,
-            step_type=self.node_type.value,
-        )
-        await EventCenter.publish(start_event)
-        yield start_event
+        logger.debug(f"  ┣ ⚙️ [节点] `{self.name}` 开始执行...")
 
         cached_out = context.state.get("__completed_steps__", {}).get(self.name)
         if (
@@ -93,14 +78,7 @@ class BaseNode(ABC):
             and not getattr(cached_out, "is_paused", False)
         ):
             logger.debug(f"⏭️ 快进跳过已完成节点: {self.name}")
-            comp_event = StepCompletedEvent(
-                session_id=context.session_id,
-                step_name=self.name,
-                step_type=self.node_type.value,
-                result=cached_out,
-            )
-            await EventCenter.publish(comp_event)
-            yield comp_event
+
             yield cached_out
             return
 
@@ -110,14 +88,7 @@ class BaseNode(ABC):
                     self.confirmation_message
                     or f"⚠️ 工作流即将执行高危步骤：[{self.name}]，等待授权..."
                 )
-                pause_event = StepPausedEvent(
-                    session_id=context.session_id,
-                    step_name=self.name,
-                    step_type=self.node_type.value,
-                    reason=msg,
-                )
-                await EventCenter.publish(pause_event)
-                yield pause_event
+                logger.debug(f"  ┣ ⏸️ **[节点挂起]** `{self.name}`: {msg}")
 
                 output = StepOutput(
                     step_name=self.name,
@@ -128,14 +99,7 @@ class BaseNode(ABC):
                     is_paused=True,
                     pause_reason=msg,
                 )
-                comp_event = StepCompletedEvent(
-                    session_id=context.session_id,
-                    step_name=self.name,
-                    step_type=self.node_type.value,
-                    result=output,
-                )
-                await EventCenter.publish(comp_event)
-                yield comp_event
+
                 yield output
                 return
 
@@ -188,7 +152,9 @@ class BaseNode(ABC):
                         step_name=self.name,
                         step_type=self.node_type,
                         content=content,
-                        success=isinstance(e, (EndRunException, SubmitStructuredException)),
+                        success=isinstance(
+                            e, (EndRunException, SubmitStructuredException)
+                        ),
                         stop=True,
                         error=str(e)
                         if isinstance(e, (AbortException, ToolFatalError))
@@ -210,26 +176,13 @@ class BaseNode(ABC):
 
                         if policy_result.new_input:
                             current_input = policy_result.new_input
-                            heal_event = StepHealingEvent(
-                                session_id=context.session_id,
-                                step_name=self.name,
-                                original_error=str(e),
-                                healer_agent_name=getattr(
-                                    policy_result, "healer_agent_name", "系统策略"
-                                ),
+                            logger.debug(
+                                f"  ┣ 🩹 [自愈介入] 系统策略正在尝试修复 `{self.name}` 的参数输入错误..."
                             )
-                            await EventCenter.publish(heal_event)
-                            yield heal_event
 
-                        retry_event = StepRetryEvent(
-                            session_id=context.session_id,
-                            step_name=self.name,
-                            attempt=attempt,
-                            reason=str(e),
-                            delay=policy_result.delay,
+                        logger.debug(
+                            f"  ┣ 🔄 [节点重试] `{self.name}` 进行第 {attempt} 次重试..."
                         )
-                        await EventCenter.publish(retry_event)
-                        yield retry_event
 
                         attempt += 1
                         continue
@@ -237,18 +190,14 @@ class BaseNode(ABC):
                     elif policy_result.action == PolicyAction.FALLBACK:
                         fallback_node = policy_result.fallback_node
                         fallback_name = getattr(fallback_node, "name", "FallbackNode")
-                        logger.info(f"🔀 节点 {self.name} 执行失败，触发降级路由至: {fallback_name}")
-
-                        fallback_event = StepFallbackEvent(
-                            session_id=context.session_id,
-                            step_name=self.name,
-                            fallback_node_name=fallback_name
+                        logger.info(
+                            f"🔀 节点 {self.name} 执行失败，触发降级路由至: {fallback_name}"
                         )
-                        await EventCenter.publish(fallback_event)
-                        yield fallback_event
 
                         if fallback_node:
-                            async for evt in fallback_node.aexecute_stream(current_input, context):
+                            async for evt in fallback_node.aexecute_stream(
+                                current_input, context
+                            ):
                                 if isinstance(evt, StepOutput):
                                     output = evt
                                 else:
@@ -256,7 +205,9 @@ class BaseNode(ABC):
                         break
 
                     elif policy_result.action == PolicyAction.CONTINUE:
-                        logger.warning(f"Node '{self.name}' 执行异常，已被策略自动跳过: {e}")
+                        logger.warning(
+                            f"Node '{self.name}' 执行异常，已被策略自动跳过: {e}"
+                        )
                         output = StepOutput(
                             step_name=self.name,
                             step_type=self.node_type,
@@ -268,7 +219,9 @@ class BaseNode(ABC):
                         break
 
                     else:
-                        logger.error(f"Node '{self.name}' 执行崩溃，已被策略中断执行流: {e}")
+                        logger.error(
+                            f"Node '{self.name}' 执行崩溃，已被策略中断执行流: {e}"
+                        )
                         output = StepOutput(
                             step_name=self.name,
                             step_type=self.node_type,
@@ -279,13 +232,4 @@ class BaseNode(ABC):
                         )
                         break
 
-        comp_event = StepCompletedEvent(
-            session_id=context.session_id,
-            step_name=self.name,
-            step_type=self.node_type.value,
-            result=output,
-        )
-        await EventCenter.publish(comp_event)
-        yield comp_event
         yield output
-

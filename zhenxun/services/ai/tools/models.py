@@ -285,6 +285,8 @@ class ValidatedToolCall(BaseModel):
     """通过验证并反序列化后的参数字典"""
     validation_error: Exception | None = Field(default=None)
     """验证失败时的异常信息"""
+    intent: str | None = Field(default=None)
+    """从参数中剥离出的大模型调用意图 (_intent)"""
 
 
 class Query(BaseModel):
