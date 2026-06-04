@@ -6,7 +6,11 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from zhenxun.services.ai.core.configs import GenerationConfig
+from zhenxun.services.ai.core.messages import LLMMessage
 from zhenxun.services.ai.flow.base import BaseRuntimeConfig
+from zhenxun.services.ai.run import RunContext
+from zhenxun.services.ai.tools.engine.registry import ToolCollection
 
 
 class Persona(BaseModel):
@@ -30,6 +34,9 @@ class AgentRuntimeConfig(BaseRuntimeConfig):
     enable_hitl: bool = Field(default=True)
     """是否允许智能体主动挂起任务，向用户求助 (Human-in-the-Loop)。"""
 
+    custom_executor: Any | None = Field(default=None)
+    """自定义的 AgentLoop 执行器类。用于替换底层的 AgentExecutor。"""
+
 
 class CapabilitySpec(BaseModel):
     """插件/拦截器声明契约，用于 YAML/JSON 配置序列化"""
@@ -40,31 +47,39 @@ class CapabilitySpec(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
-class AgentSpec(BaseModel):
-    """智能体声明契约，支持从字典完全实例化一个 Agent"""
+class AgentLoopContext(BaseModel):
+    """传递给执行循环的静态上下文快照 (Data Contract)"""
 
-    name: str | None = Field(default=None)
-    """智能体名称"""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    model: str | None = Field(default=None)
-    """绑定的默认大模型名称"""
+    static_system_prompt: str = ""
+    """绝对不变的系统提示词（用于前缀缓存）"""
+    dynamic_system_prompt: str = ""
+    """包含变量与实时状态的动态提示词（用于尾部注入）"""
+    messages: list[LLMMessage]
+    """大模型将看到的完整历史消息列表"""
+    tools: ToolCollection | None
+    """当前轮次生效的、已完成鉴权和过滤的工具集合"""
+    run_context: RunContext
+    """保留依赖注入(DI)与黑板引用的全局运行时上下文"""
 
-    persona: Persona | None = Field(default=None)
-    """智能体人设配置"""
 
-    description: str | None = Field(default=None)
-    """智能体职能描述"""
+class AgentLoopConfig(BaseModel):
+    """传递给执行循环的运行时配置 (Data Contract)"""
 
-    instructions: str | list[str] | None = Field(default=None)
-    """系统提示词指令"""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    tools: list[str] = Field(default_factory=list)
-    """需要挂载的工具标识符列表 (字符串名称)"""
-
-    model_settings: dict[str, Any] | None = Field(default=None)
-    """模型生成配置覆盖 (温度/MaxToken等)"""
-
-    capabilities: list[CapabilitySpec] = Field(default_factory=list)
-    """需要挂载的拦截器列表"""
-
-    model_config = ConfigDict(extra="ignore")
+    model_name: str
+    """底层大模型标识 (Provider/Model)"""
+    generation_config: GenerationConfig
+    """大模型最终生成参数 (Temperature/Schema等)"""
+    max_cycles: int = Field(default=10)
+    """最大反思/工具调用循环次数"""
+    reflexion_retries: int = Field(default=1)
+    """错误自愈重试上限"""
+    enable_fallback_summary: bool = Field(default=True)
+    """达到最大循环后是否兜底总结"""
+    cancellation_token: Any | None = None
+    """异步控制流取消令牌"""
+    event_streamer: Any | None = None
+    """UI 事件流发射器"""

@@ -5,7 +5,7 @@
 from dataclasses import dataclass, field
 from enum import Enum, auto
 import sys
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -176,6 +176,10 @@ class ToolOptions(BaseModel):
     """工具级别的局部重试上限。优先级高于全局配置。"""
     args_schema: type[BaseModel] | None = Field(default=None)
     """工具的 Pydantic 数据模型约束。大模型将以此 Schema 输出 JSON。"""
+    require_intent: bool = Field(default=False)
+    """是否强制要求大模型在调用此工具时提供意图 (_intent)。有助于减少幻觉和提高调用准确率。"""
+    concurrency: Literal["shared", "exclusive"] = Field(default="shared")
+    """工具在批量调用时的并发策略。shared 可与其他 shared 并行，exclusive 会阻塞前后工具的执行。"""
 
     def merge(self, other: "ToolOptions | None") -> "ToolOptions":
         """组合模式底层：合并另一个 ToolOptions，other 中的非默认值将覆盖当前值"""

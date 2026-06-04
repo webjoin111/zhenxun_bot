@@ -5,13 +5,12 @@ import json
 import re
 from typing import Annotated, Any, get_args, get_origin, get_type_hints
 
-from nonebot.adapters import Bot, Event
 from nonebot.permission import SUPERUSER
 from pydantic import BaseModel, Field, create_model
 from pydantic.fields import FieldInfo
 
-from zhenxun.services.ai.run.di import DependencyInjector
 from zhenxun.services.ai.run.context import RunContext
+from zhenxun.services.ai.run.di import DependencyInjector
 from zhenxun.services.cache.runtime_cache import LevelUserMemoryCache
 from zhenxun.utils.pydantic_compat import model_json_schema
 
@@ -164,8 +163,11 @@ def build_tool_model(
         error_msg = str(e)
         raise ValueError(
             f"无法为工具 '{func.__name__}' 生成合法的 JSON Schema。\n"
-            f"原因：函数的参数中包含了大模型无法解析的复杂类型（如 Bot, Event, 自定义类等）。\n"
-            f"💡 修复建议：如果该参数是底层框架依赖（如需要用到 nonebot 的 Bot），请务必使用 `Inject.XXX` 进行注解声明（例如 `bot: Inject.Bot`），这样系统会自动将其隐藏，不会发给大模型。\n"
+            "原因：函数的参数中包含了大模型无法解析的复杂类型"
+            "（如 Bot, Event, 自定义类等）。\n"
+            "💡 修复建议：如果该参数是底层框架依赖（如需要用到 nonebot 的 Bot），"
+            "请务必使用 `Inject.XXX` 进行注解声明（例如 `bot: Inject.Bot`），"
+            "这样系统会自动将其隐藏，不会发给大模型。\n"
             f"底层报错：{error_msg}"
         ) from e
 
@@ -205,7 +207,9 @@ async def prune_schema_by_permissions(
     required = schema.get("required", [])
     fields_to_remove = []
 
-    fields = getattr(model_class, "model_fields", getattr(model_class, "__fields__", {}))
+    fields = getattr(
+        model_class, "model_fields", getattr(model_class, "__fields__", {})
+    )
 
     for field_name, field_info in fields.items():
         for meta in field_info.metadata:
@@ -229,7 +233,9 @@ async def check_field_permissions(
     model_class: type[BaseModel], kwargs: dict[str, Any], context: RunContext
 ) -> None:
     """验证传入的参数是否绕过了权限限制"""
-    fields = getattr(model_class, "model_fields", getattr(model_class, "__fields__", {}))
+    fields = getattr(
+        model_class, "model_fields", getattr(model_class, "__fields__", {})
+    )
     for field_name, field_info in fields.items():
         if field_name in kwargs:
             for meta in field_info.metadata:
@@ -238,6 +244,7 @@ async def check_field_permissions(
                         from zhenxun.services.ai.core.exceptions import ToolRetryError
 
                         raise ToolRetryError(
-                            f"权限拒绝：您当前的用户身份无权使用参数 '{field_name}'。请移除该参数后重新规划并调用此工具。"
+                            f"权限拒绝：您当前的用户身份无权使用参数 '{field_name}'。"
+                            "请移除该参数后重新规划并调用此工具。"
                         )
                     break

@@ -101,6 +101,11 @@ class ToolExecutor:
                 except Exception:
                     pass
 
+            if parsed_successfully and isinstance(arguments, dict):
+                _intent = arguments.pop("_intent", None)
+                if _intent:
+                    logger.info(f"🧠 [Agent Intent] 调用工具 {tool_name} 的意图: {_intent}")
+
             if not parsed_successfully:
                 if context:
                     context.run.tool_retries[tool_name] = (
@@ -273,18 +278,57 @@ class ToolExecutor:
         ]
         validated_calls = await asyncio.gather(*val_tasks)
 
-        exec_tasks = [
-            self.execute_tool_call(
-                val_call,
-                available_tools,
-                context,
-                model_name=model_name,
-                max_retries=max_retries,
-                event_streamer=event_streamer,
-            )
-            for val_call in validated_calls
-        ]
-        results = await asyncio.gather(*exec_tasks, return_exceptions=True)
+        results = [None] * len(validated_calls)
+        shared_tasks = []
+        
+        loop = asyncio.get_running_loop()
+        last_exclusive_task = loop.create_future()
+        last_exclusive_task.set_result(None)
+
+        async def _run_tool(index: int, val_call: ValidatedToolCall):
+            try:
+                res = await self.execute_tool_call(
+                    val_call,
+                    available_tools,
+                    context,
+                    model_name=model_name,
+                    max_retries=max_retries,
+                    event_streamer=event_streamer,
+                )
+                results[index] = res
+            except Exception as e:
+                results[index] = e
+
+        try:
+            for i, val_call in enumerate(validated_calls):
+                executable = getattr(val_call, "tool", None)
+                concurrency_mode = getattr(getattr(executable, "settings", None), "concurrency", "shared")
+                
+                if concurrency_mode == "exclusive":
+                    await last_exclusive_task
+                    if shared_tasks:
+                        await asyncio.gather(*shared_tasks, return_exceptions=True)
+                        shared_tasks.clear()
+                    
+                    task = asyncio.create_task(_run_tool(i, val_call))
+                    last_exclusive_task = task
+                else:
+                    async def _run_shared(idx=i, vc=val_call, barrier=last_exclusive_task):
+                        await barrier
+                        await _run_tool(idx, vc)
+                    
+                    task = asyncio.create_task(_run_shared())
+                    shared_tasks.append(task)
+
+            await last_exclusive_task
+            if shared_tasks:
+                await asyncio.gather(*shared_tasks, return_exceptions=True)
+        finally:
+            if not last_exclusive_task.done():
+                last_exclusive_task.cancel()
+            for t in shared_tasks:
+                if not t.done():
+                    t.cancel()
 
         tool_messages: list[AnyLLMMessage] = []
         for index, result_pair in enumerate(results):

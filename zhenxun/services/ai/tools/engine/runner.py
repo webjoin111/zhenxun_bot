@@ -63,7 +63,10 @@ class NativeToolRunner(ToolRunner):
                 if isinstance(chunk, ToolResult):
                     res = chunk
                 else:
-                    from zhenxun.services.ai.core.events import EventCenter, ToolStreamEvent
+                    from zhenxun.services.ai.core.events import (
+                        EventCenter,
+                        ToolStreamEvent,
+                    )
                     from zhenxun.services.ai.tools.models import ToolResultChunk
 
                     chunk_obj = (

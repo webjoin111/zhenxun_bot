@@ -172,40 +172,53 @@ class MarkdownUIStreamer(BaseUIStreamer):
             else:
                 if "🗣️" in event.tool_name:
                     self.lines.append(
-                        f"✅ 执行完毕: {event.tool_name} ({event.duration_ms:.0f}ms)"
+                        f"✅ 执行完毕: {event.tool_name} "
+                        f"({event.duration_ms:.0f}ms)"
                     )
                 else:
                     self.lines.append(
-                        f"✅ 调用成功: `{event.tool_name}` ({event.duration_ms:.0f}ms)"
+                        f"✅ 调用成功: `{event.tool_name}` "
+                        f"({event.duration_ms:.0f}ms)"
                     )
 
     def on_tool_stream(self, event: ToolStreamEvent) -> None:
         self.lines.append(f"  └ ⏳ {event.chunk.content}")
 
     def on_team_run_start(self, event: TeamRunStartEvent) -> None:
-        self.lines.append(f"🤝 **团队 [{event.team_name}] 开始协作**: `{event.task}`")
+        self.lines.append(
+            f"🤝 **团队 [{event.team_name}] 开始协作**: `{event.task}`"
+        )
 
     def on_team_route_decision(self, event: TeamRouteDecisionEvent) -> None:
         reason_str = f" (理由: {event.reason})" if event.reason else ""
         self.lines.append(
-            f"🛣️ **路由决策**: 委派给专员 👨‍💼`{event.selected_member}`{reason_str}"
+            f"🛣️ **路由决策**: 委派给专员 👨‍💼"
+            f"`{event.selected_member}`{reason_str}"
         )
 
     def on_team_member_start(self, event: TeamMemberStartEvent) -> None:
-        self.lines.append(f"🚀 **专员 👨‍💼`{event.member_name}`** 开始执行子任务...")
+        self.lines.append(
+            f"🚀 **专员 👨‍💼`{event.member_name}`** 开始执行子任务..."
+        )
 
     def on_team_member_end(self, event: TeamMemberEndEvent) -> None:
-        self.lines.append(f"✅ **专员 👨‍💼`{event.member_name}`** 完成任务！")
+        self.lines.append(
+            f"✅ **专员 👨‍💼`{event.member_name}`** 完成任务！"
+        )
 
     def on_team_synthesize_start(self, event: TeamSynthesizeStartEvent) -> None:
-        self.lines.append(f"✨ **团队 [{event.team_name}] Leader** 正在汇总各方报告...")
+        self.lines.append(
+            f"✨ **团队 [{event.team_name}] Leader** "
+            "正在汇总各方报告..."
+        )
 
     def on_team_run_end(self, event: TeamRunEndEvent) -> None:
         self.lines.append(f"🏁 **团队 [{event.team_name}]** 协作圆满结束！")
 
     def on_task_run_start(self, event: TaskRunStartEvent) -> None:
         self.lines.append(
-            f"📋 **开始任务**: `{event.task_name}` (由 {event.agent_name} 执行)"
+            f"📋 **开始任务**: `{event.task_name}` "
+            f"(由 {event.agent_name} 执行)"
         )
 
     def on_task_run_end(self, event: TaskRunEndEvent) -> None:
@@ -225,9 +238,14 @@ class MarkdownUIStreamer(BaseUIStreamer):
             self.lines.append(f"  ┣ ✅ [任务完成] `{event.title}`")
         elif event.status == "failed":
             err_msg = str(event.result)[:50] + "..." if event.result else "未知错误"
-            self.lines.append(f"  ┣ ❌ [任务失败] `{event.title}` (原因: {err_msg})")
+            self.lines.append(
+                f"  ┣ ❌ [任务失败] `{event.title}` (原因: {err_msg})"
+            )
         elif event.status == "pending":
-            self.lines.append(f"  ┣ 🔄 [任务重置] `{event.title}` 被打回队列等待重试")
+            self.lines.append(
+                f"  ┣ 🔄 [任务重置] `{event.title}` "
+                "被打回队列等待重试"
+            )
 
     def on_workflow_started(self, event: WorkflowStartedEvent) -> None:
         self.lines.append(f"🏭 **工作流 [{event.workflow_name}] 启动**")
@@ -238,30 +256,39 @@ class MarkdownUIStreamer(BaseUIStreamer):
     def on_step_completed(self, event: StepCompletedEvent) -> None:
         res = event.result
         if res and not res.success:
-            self.lines.append(f"  ┣ ❌ [节点] `{event.step_name}` 执行异常/中断")
+            self.lines.append(
+                f"  ┣ ❌ [节点] `{event.step_name}` 执行异常/中断"
+            )
         elif res and res.stop:
-            self.lines.append(f"  ┣ 🛑 [节点] `{event.step_name}` 主动终止了后续流程")
+            self.lines.append(
+                f"  ┣ 🛑 [节点] `{event.step_name}` 主动终止了后续流程"
+            )
         else:
             self.lines.append(f"  ┣ ✅ [节点] `{event.step_name}` 成功完成")
 
     def on_step_paused(self, event: StepPausedEvent) -> None:
-        self.lines.append(f"  ┣ ⏸️ **[节点挂起]** `{event.step_name}`: {event.reason}")
+        self.lines.append(
+            f"  ┣ ⏸️ **[节点挂起]** `{event.step_name}`: {event.reason}"
+        )
 
     def on_step_retry(self, event: StepRetryEvent) -> None:
         delay_str = f"，等待 {event.delay}s 后" if event.delay > 0 else ""
         self.lines.append(
-            f"  ┣ 🔄 [节点重试] `{event.step_name}` 遇到异常{delay_str}将进行第 {event.attempt} 次重试..."
+            f"  ┣ 🔄 [节点重试] `{event.step_name}` "
+            f"遇到异常{delay_str}将进行第 {event.attempt} 次重试..."
         )
 
     def on_step_healing(self, event: StepHealingEvent) -> None:
         healer = event.healer_agent_name or "智能体"
         self.lines.append(
-            f"  ┣ 🩹 [自愈介入] {healer} 正在尝试修复 `{event.step_name}` 的参数输入错误..."
+            f"  ┣ 🩹 [自愈介入] {healer} "
+            f"正在尝试修复 `{event.step_name}` 的参数输入错误..."
         )
 
     def on_step_fallback(self, event: StepFallbackEvent) -> None:
         self.lines.append(
-            f"  ┣ 🔀 [降级路由] `{event.step_name}` 发生严重故障，正在安全切换至备用节点 `{event.fallback_node_name}`..."
+            f"  ┣ 🔀 [降级路由] `{event.step_name}` 发生严重故障，"
+            f"正在安全切换至备用节点 `{event.fallback_node_name}`..."
         )
 
     def on_workflow_completed(self, event: WorkflowCompletedEvent) -> None:
@@ -274,17 +301,22 @@ class MarkdownUIStreamer(BaseUIStreamer):
         self.lines.append(f"  ┣ 🔀 [条件分流] 开始评估 `{event.step_name}`")
 
     def on_condition_completed(self, event: ConditionExecutionCompletedEvent) -> None:
-        self.lines.append(f"  ┣ ⤵️ [条件分流] 评估完毕，进入 `{event.branch}` 分支")
+        self.lines.append(
+            f"  ┣ ⤵️ [条件分流] 评估完毕，进入 `{event.branch}` 分支"
+        )
 
     def on_router_started(self, event: RouterExecutionStartedEvent) -> None:
         self.lines.append("  ┣ 🧭 [智能路由] 分析意图中...")
 
     def on_router_completed(self, event: RouterExecutionCompletedEvent) -> None:
-        self.lines.append(f"  ┣ 🎯 [智能路由] 决定分发至节点: `{event.selected_steps}`")
+        self.lines.append(
+            f"  ┣ 🎯 [智能路由] 决定分发至节点: `{event.selected_steps}`"
+        )
 
     def on_loop_started(self, event: LoopExecutionStartedEvent) -> None:
         self.lines.append(
-            f"  ┣ 🔁 开始循环: [Loop] `{event.step_name}` (最大 {event.max_iterations} 次)"
+            f"  ┣ 🔁 开始循环: [Loop] `{event.step_name}` "
+            f"(最大 {event.max_iterations} 次)"
         )
 
     def on_loop_iteration_started(self, event: LoopIterationStartedEvent) -> None:
@@ -292,7 +324,8 @@ class MarkdownUIStreamer(BaseUIStreamer):
 
     def on_loop_completed(self, event: LoopExecutionCompletedEvent) -> None:
         self.lines.append(
-            f"  ┣ ✅ 循环结束: [Loop] `{event.step_name}` (共执行 {event.total_iterations} 次)"
+            f"  ┣ ✅ 循环结束: [Loop] `{event.step_name}` "
+            f"(共执行 {event.total_iterations} 次)"
         )
 
     def render(self, duration: float) -> str:

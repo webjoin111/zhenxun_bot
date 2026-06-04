@@ -81,6 +81,8 @@ class SessionContext(Generic[AgentDepsT]):
     """结构化黑板管理器，作为共享状态的高级替代方案，提供并发锁和强类型校验。"""
     namespace: str = "global"
     """触发事件的插件命名空间"""
+    append_only_manager: Any = dataclasses.field(default=None)
+    """用于大模型前缀缓存命中优化的追加写入管理器。"""
 
 
 @dataclasses.dataclass
@@ -264,6 +266,11 @@ class RunContext(Generic[AgentDepsT]):
             shared_state=self.shared_state,
             namespace=ns,
         )
+        from zhenxun.services.ai.core.engine.append_only import (
+            AppendOnlyContextManager,
+        )
+        self.session.append_only_manager = AppendOnlyContextManager()
+
         self.run = AgentRunContext(session=self.session, state=self.state)
         self.call = ToolCallContext(run=self.run)
 

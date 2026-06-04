@@ -21,14 +21,15 @@ class ContextBuilder:
     """系统提示词与上下文记忆构建器"""
 
     @staticmethod
-    async def build_system_prompt(
+    async def build_prompts(
         instruction: str | TemplateStr,
         system_prompts: list[Any],
         run_context: RunContext,
         run_scoped_cap: CombinedCapability,
         persona: Persona | None = None,
-    ) -> str:
-        """解析系统提示词，结合动态函数、Jinja2模板与资源管理器"""
+    ) -> tuple[str, str]:
+        """解析提示词，返回 (静态系统提示词, 动态状态提示词) 元组"""
+        static_instructions = []
         dynamic_instructions = []
         sp_results = []
 
@@ -57,16 +58,16 @@ class ContextBuilder:
             ]
             if persona.backstory:
                 persona_parts.append(f"## 角色背景 (Backstory)\n{persona.backstory}")
-            dynamic_instructions.append("\n\n".join(persona_parts))
+            static_instructions.append("\n\n".join(persona_parts))
 
             if instruction:
-                dynamic_instructions.append("## 本次任务指令 (Task)")
+                static_instructions.append("## 本次任务指令 (Task)")
 
         if instruction:
             if isinstance(instruction, TemplateStr):
-                dynamic_instructions.append(instruction.render(run_context))
+                static_instructions.append(instruction.render(run_context))
             else:
-                dynamic_instructions.append(str(instruction))
+                static_instructions.append(str(instruction))
 
         dynamic_instructions.extend(sp_results)
 
@@ -79,7 +80,8 @@ class ContextBuilder:
             cap_prompts = await cap.get_system_prompts(run_context)
             dynamic_instructions.extend(cap_prompts)
 
-        final_instruction_text = "\n\n".join(dynamic_instructions)
+        static_text = "\n\n".join(static_instructions)
+        dynamic_text = "\n\n".join(dynamic_instructions)
 
         render_context = {
             "deps": run_context.deps,
@@ -90,11 +92,10 @@ class ContextBuilder:
         if run_context.state:
             render_context.update(run_context.state)
 
-        final_instruction = PromptTemplate(final_instruction_text).render(
-            **render_context
+        return (
+            PromptTemplate(static_text).render(**render_context),
+            PromptTemplate(dynamic_text).render(**render_context)
         )
-
-        return final_instruction
 
 
 class ToolBuilder:

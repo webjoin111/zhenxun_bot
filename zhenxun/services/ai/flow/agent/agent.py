@@ -17,14 +17,9 @@ from zhenxun.services.ai.core.exceptions import (
 from zhenxun.services.ai.core.messages import (
     LLMMessage,
     PromptInput,
-    UsageInfo,
 )
 from zhenxun.services.ai.core.stream_events import EventStreamer
-from zhenxun.services.ai.flow.agent.engine.builders import ContextBuilder, ToolBuilder
-from zhenxun.services.ai.flow.agent.engine.executor import (
-    AgentExecutor,
-    AgentExecutorConfig,
-)
+from zhenxun.services.ai.flow.agent.engine.builders import ToolBuilder
 from zhenxun.services.ai.flow.agent.models import (
     AgentRuntimeConfig,
     Persona,
@@ -32,9 +27,8 @@ from zhenxun.services.ai.flow.agent.models import (
 from zhenxun.services.ai.flow.base import BaseRunnable
 from zhenxun.services.ai.knowledge.base import BaseKnowledge
 from zhenxun.services.ai.llm.config.generation import IntentBuilder
-from zhenxun.services.ai.llm.manager import get_model_instance
 from zhenxun.services.ai.memory.builder import MemoryBuilder
-from zhenxun.services.ai.memory.models import MemoryConfig, SessionMetadata
+from zhenxun.services.ai.memory.models import MemoryConfig
 from zhenxun.services.ai.protocols.capabilities import AbstractCapability
 from zhenxun.services.ai.protocols.tool import ToolExecutable
 from zhenxun.services.ai.run import (
@@ -57,7 +51,7 @@ from zhenxun.services.ai.tools.models import (
 )
 from zhenxun.services.ai.tools.providers.skills.capabilities import SkillCapability
 from zhenxun.services.log import logger
-from zhenxun.utils.pydantic_compat import model_construct, model_copy
+from zhenxun.utils.pydantic_compat import model_copy
 from zhenxun.utils.utils import infer_plugin_namespace
 
 if TYPE_CHECKING:
@@ -494,337 +488,65 @@ class Agent(
         **kwargs: Any,
     ) -> AgentRunResult[OutputDataT]:
         """执行原子步代理逻辑"""
-        import uuid
+        from zhenxun.services.ai.flow.agent.engine.harness import AgentHarness
 
-        if not context.session_id:
-            context.session_id = f"ag-run-{uuid.uuid4()}"
-            context.session.session_id = context.session_id
-
-        is_stateless = getattr(self.runtime_config, "stateless", True)
-        if not is_stateless and getattr(context, "_is_auto_session_id", False):
-            bot = context.get_bot()
-            event = context.get_event()
-            if bot and event:
-                from zhenxun.services.ai.memory.utils import generate_session_meta
-
-                isolation_level = getattr(self.runtime_config, "isolation_level", None)
-                if isolation_level is None:
-                    if self.memory_config:
-                        isolation_level = self.memory_config.short_term.isolation_level
-                    else:
-                        from zhenxun.services.ai.memory.models import (
-                            MemoryIsolationLevel,
-                        )
-
-                        isolation_level = MemoryIsolationLevel.GROUP_USER
-
-                _meta = generate_session_meta(
-                    bot,
-                    event,
-                    isolation_level=isolation_level,
-                    namespace=self.namespace,
-                    agent_name=self.name,
-                )
-                context.session_id = _meta.session_id
-                context.session.session_id = _meta.session_id
-
-        from zhenxun.services.ai.tools.engine.global_capabilities import (
-            GLOBAL_CAPABILITIES,
-        )
-
+        harness = AgentHarness(self)
         (
-            task_obj,
-            final_prompt_payload,
-            extra_tools,
-            run_output_type,
-            task_guardrails,
-        ) = self._parse_task_prompt(prompt)
-
-        dynamic_caps = []
-        combined_guardrails = self._guardrails + task_guardrails
-
-        if run_output_type is not None and run_output_type is not str:
-            from zhenxun.services.ai.flow.agent.capabilities import (
-                OutputValidationCapability,
-            )
-
-            dynamic_caps.append(
-                OutputValidationCapability(run_output_type, combined_guardrails)
-            )
-        elif combined_guardrails:
-            from zhenxun.services.ai.flow.agent.capabilities import (
-                OutputValidationCapability,
-            )
-
-            dynamic_caps.append(OutputValidationCapability(None, combined_guardrails))
-
-        from zhenxun.utils.pydantic_compat import model_copy
-
-        effective_memory = model_copy(self.memory_config, deep=True)
-        if memory is not None:
-            if isinstance(memory, bool):
-                effective_memory.short_term.enable = memory
-            elif isinstance(memory, MemoryBuilder):
-                effective_memory = memory.build()
-            else:
-                effective_memory = memory
-
-        session_metadata = SessionMetadata(
-            session_id=context.session_id,
-            user_id=context.get_user_id(),
-            group_id=context.get_group_id(),
-            platform=context.get_platform(),
-            namespace=self.namespace,
-            agent_name=self.name,
+            loop_ctx,
+            loop_config,
+            writer,
+            toolkits,
+            run_scoped_cap,
+            origin_msg_len,
+        ) = await harness.prepare_loop(
+            prompt=prompt,
+            context=context,
+            message_history=message_history,
+            tool_filter=tool_filter,
+            config=config,
+            memory=memory,
+            generation_config=generation_config,
+            cancellation_token=cancellation_token,
+            event_streamer=event_streamer,
+            capabilities=capabilities,
         )
-
-        from zhenxun.services.ai.memory.engine import MemoryReader, MemoryWriter
-
-        reader = MemoryReader(
-            session_meta=session_metadata, memory_config=effective_memory
-        )
-        writer = MemoryWriter(
-            session_meta=session_metadata, memory_config=effective_memory
-        )
-
-        if task_obj:
-            from zhenxun.services.ai.flow.agent.capabilities import (
-                TaskTrackingCapability,
-            )
-
-            dynamic_caps.append(TaskTrackingCapability(task_obj, self.name))
-
-        run_level_caps = []
-        if capabilities:
-            from zhenxun.services.ai.protocols.capabilities import (
-                AbstractCapability,
-                DynamicCapability,
-            )
-
-            for cap in capabilities:
-                if isinstance(cap, AbstractCapability):
-                    run_level_caps.append(cap)
-                elif callable(cap):
-                    run_level_caps.append(DynamicCapability(cap))
-
-        base_caps = GLOBAL_CAPABILITIES.get("global", []).copy()
-        if self.namespace != "global" and self.namespace in GLOBAL_CAPABILITIES:
-            base_caps.extend(GLOBAL_CAPABILITIES[self.namespace])
-
-        from zhenxun.services.ai.protocols.capabilities import CombinedCapability
-
-        combined_cap = CombinedCapability(
-            base_caps
-            + getattr(context, "capabilities", [])
-            + self.capabilities
-            + run_level_caps
-            + dynamic_caps
-        )
-        run_scoped_cap = cast(CombinedCapability, await combined_cap.for_run(context))
 
         original_capabilities = getattr(context, "capabilities", [])
         context.capabilities = run_scoped_cap.capabilities
 
         async def inner_run_handler() -> AgentRunResult[OutputDataT]:
-            if final_prompt_payload is not None:
-                if isinstance(final_prompt_payload, str):
-                    context.run.user_input = final_prompt_payload
-                elif hasattr(final_prompt_payload, "extract_plain_text"):
-                    context.run.user_input = final_prompt_payload.extract_plain_text()
-                else:
-                    context.run.user_input = str(final_prompt_payload)
-            context.run.agent_name = self.name
-
-            long_term_fact = ""
-            if context.run.user_input:
-                long_term_fact = await reader.get_long_term_context(
-                    context.run.user_input
-                )
-
-            slots_fact = await reader.get_slots_context()
-
-            system_prompt = await ContextBuilder.build_system_prompt(
-                instruction=self.instruction,
-                system_prompts=self.dynamic_prompts,
-                run_context=context,
-                run_scoped_cap=run_scoped_cap,
-                persona=self.persona,
-            )
-
-            if long_term_fact:
-                system_prompt += f"\n\n{long_term_fact}"
-            if slots_fact:
-                system_prompt += f"\n\n{slots_fact}"
-
-            tool_payload = await ToolBuilder.resolve_tools(
-                tool_definitions=self.tool_definitions,
-                toolset_funcs=getattr(self, "toolset_funcs", []),
-                system_tools=(
-                    getattr(self.default_config, "system_tools", [])
-                    if self.default_config
-                    else []
-                ),
-                namespace=self.namespace or "unknown",
-                tool_filter=tool_filter,
-                run_context=context,
-                run_scoped_cap=run_scoped_cap,
-            )
-            effective_tools = tool_payload.tools
-            if extra_tools:
-                effective_tools.extend(extra_tools)
-
-            if effective_memory and effective_memory.long_term.enable:
-                from zhenxun.services.ai.memory.manager import memory_manager
-
-                ltm_scope = memory_manager.get_long_term_memory(effective_memory)
-                if ltm_scope:
-                    from zhenxun.services.ai.tools.providers.builtin.memory import (
-                        MemoryManagementToolkit,
-                    )
-
-                    mem_tk_payload = await MemoryManagementToolkit(
-                        memory_scope=ltm_scope, session_meta=session_metadata
-                    ).resolve(context)
-                    effective_tools.extend(mem_tk_payload.tools)
-                    tool_payload.injected_prompts.extend(
-                        mem_tk_payload.injected_prompts
-                    )
-                    tool_payload.toolkits.extend(mem_tk_payload.toolkits)
-
-            if effective_memory and effective_memory.slots.enable:
-                from zhenxun.services.ai.tools.providers.builtin.slots import (
-                    MemorySlotToolkit,
-                )
-
-                slot_tk_payload = await MemorySlotToolkit(
-                    session_meta=session_metadata, memory_config=effective_memory
-                ).resolve(context)
-                effective_tools.extend(slot_tk_payload.tools)
-                tool_payload.injected_prompts.extend(slot_tk_payload.injected_prompts)
-                tool_payload.toolkits.extend(slot_tk_payload.toolkits)
-
-            final_gen_config = model_copy(self.default_config, deep=True)
-
-            cap_dynamic_config = await run_scoped_cap.get_generation_config(context)
-            if cap_dynamic_config:
-                final_gen_config = final_gen_config.merge_with(cap_dynamic_config)
-
-            if generation_config:
-                final_gen_config = final_gen_config.merge_with(generation_config)
-            exec_config = config or ExecutionConfig()
-            model_name_resolved = (
-                self.model_name() if callable(self.model_name) else self.model_name
-            )
-
-            if not model_name_resolved and context and context.run.current_model:
-                model_name_resolved = context.run.current_model
-
-            if not model_name_resolved:
-                from zhenxun.services.ai.llm.manager import get_default_model
-
-                model_name_resolved = get_default_model("chat")
-
-            context.run.current_model = (
-                str(model_name_resolved) if model_name_resolved else ""
-            )
-            context.run.cancellation_token = cancellation_token
-            context.run.streamer = event_streamer
-
-            if tool_payload.injected_prompts:
-                system_prompt += "\n\n--- 工具箱专属使用说明 ---\n\n"
-                system_prompt += "\n\n".join(tool_payload.injected_prompts)
-
-            normalized_user_msg = None
-            if final_prompt_payload is not None:
-                from zhenxun.services.ai.message_builder import MessageBuilder
-
-                bot_inst = context.get_bot()
-                event_inst = context.get_event()
-                msgs = await MessageBuilder.normalize_to_llm_messages(
-                    final_prompt_payload, bot=bot_inst, event=event_inst
-                )
-                if msgs:
-                    normalized_user_msg = msgs[-1]
-
-            messages_for_run = await reader.get_short_term_context(
-                model_name=str(model_name_resolved) if model_name_resolved else "",
-                override_history=message_history,
-            )
-
-            if system_prompt:
-                messages_for_run.insert(0, LLMMessage.system(system_prompt))
-            if normalized_user_msg:
-                messages_for_run.append(normalized_user_msg)
-                await writer.save_new_messages([normalized_user_msg])
+            for tk in toolkits:
+                if hasattr(tk, "before_llm_request"):
+                    if is_coroutine_callable(tk.before_llm_request):
+                        await tk.before_llm_request(context, loop_ctx.messages)
+                    else:
+                        tk.before_llm_request(context, loop_ctx.messages)
 
             async with ToolBuilder.mount_toolkits(
-                tool_payload.toolkits, context.session_id or "", context
+                toolkits, context.session_id or "", context
             ):
-                for tk in tool_payload.toolkits:
-                    if hasattr(tk, "before_llm_request"):
-                        if is_coroutine_callable(tk.before_llm_request):
-                            await tk.before_llm_request(context, messages_for_run)
-                        else:
-                            tk.before_llm_request(context, messages_for_run)
+                # 支持扩展：如果配置了 custom_executor，使用自定义引擎，否则使用默认引擎
+                executor_cls = getattr(self.runtime_config, "custom_executor", None)
+                if executor_cls is None:
+                    from zhenxun.services.ai.flow.agent.engine.executor import (
+                        AgentExecutor,
+                    )
 
-                final_tools = await ToolBuilder.prepare_effective_tools(
-                    effective_tools, context, self.prepare_tools, run_scoped_cap
-                )
+                    executor_cls = AgentExecutor
+                executor = executor_cls()
 
-                executor = AgentExecutor(
-                    tools=final_tools,
-                    config=AgentExecutorConfig(
-                        max_cycles=exec_config.max_cycles,
-                        reflexion_retries=exec_config.reflexion_retries,
-                        enable_fallback_summary=exec_config.enable_fallback_summary,
-                    ),
-                )
+                from zhenxun.services.ai.llm.manager import get_model_instance
 
                 async with await get_model_instance(
-                    str(model_name_resolved) if model_name_resolved else None,
-                    override_config=None,
+                    loop_config.model_name, override_config=None
                 ) as instance:
-                    _run_result: Any = await executor.run(
-                        messages=messages_for_run,
+                    raw_result: Any = await executor.run(
+                        loop_ctx=loop_ctx,
+                        loop_config=loop_config,
                         model_instance=instance,
-                        run_context=context,
-                        generation_config=final_gen_config,
-                        cancellation_token=cancellation_token,
-                        event_streamer=event_streamer,
                     )
-                    final_messages = _run_result.messages
-                    structured_data = _run_result.structured_data
-                    final_usage = getattr(_run_result, "usage", None)
-                    early_output = getattr(_run_result, "output", None)
 
-            new_msgs = final_messages[len(messages_for_run) :]
-
-            await writer.save_new_messages(new_msgs)
-
-            last_msg = final_messages[-1]
-            final_text = (
-                last_msg.content
-                if isinstance(last_msg.content, str)
-                else " ".join(
-                    p.text for p in last_msg.content if p.type == "text" and p.text
-                )
-            )
-
-            usage = final_usage or UsageInfo()
-
-            final_output = early_output if early_output is not None else final_text
-
-            raw_result = cast(
-                AgentRunResult[OutputDataT],
-                model_construct(
-                    AgentRunResult,
-                    output=final_output,
-                    messages=new_msgs,
-                    structured_data=structured_data,
-                    usage=usage,
-                ),
-            )
-            return raw_result
+            return await harness.post_loop(loop_ctx, raw_result, writer, origin_msg_len)
 
         try:
             return await run_scoped_cap.wrap_run(context, inner_run_handler)

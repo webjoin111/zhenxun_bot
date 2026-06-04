@@ -196,6 +196,24 @@ class BaseTool:
         else:
             schema = {"type": "object", "properties": {}}
 
+        if getattr(self.settings, "require_intent", False):
+            if "properties" not in schema:
+                schema["properties"] = {}
+            if "_intent" not in schema["properties"]:
+                new_props = {
+                    "_intent": {
+                        "type": "string",
+                        "description": "调用此工具前，必须在此字段简述你的意图、目的或思考过程"
+                    }
+                }
+                new_props.update(schema["properties"])
+                schema["properties"] = new_props
+
+                if "required" not in schema:
+                    schema["required"] = []
+                if "_intent" not in schema["required"]:
+                    schema["required"].insert(0, "_intent")
+
         tool_def = ToolDefinition(
             name=self.name,
             description=self.description,

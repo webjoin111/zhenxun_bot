@@ -24,14 +24,17 @@ DEFAULT_IVR_TEMPLATE = (
     "你的上一次输出未能通过系统的校验与规则检查。请立即启动修正流程：\n\n"
     "**错误反馈报告：**\n"
     "> {error_msg}\n\n"
-    "**修正要求：** 请结合反馈报告，仔细反思你的输出内容或格式，并重新生成正确的数据以满足所有的规则与规范。"
+    "**修正要求：** 请结合反馈报告，"
+    "仔细反思你的输出内容或格式，\n"
+    "并重新生成正确的数据以满足所有的规则与规范。"
 )
 
 
 class BaseOutputProcessor(Generic[OutputDataT]):
     """
     统一的结构化输出处理器。
-    负责管理 Schema 生成、Prompt 约束注入以及最终的 JSON 反序列化和业务校验。
+    负责管理 Schema 生成、Prompt 约束注入以及最终的
+    JSON 反序列化和业务校验。
     """
 
     def __init__(
@@ -48,7 +51,8 @@ class BaseOutputProcessor(Generic[OutputDataT]):
 
     @staticmethod
     def _create_union_wrapper(union_type: Any) -> tuple[type[BaseModel], bool]:
-        """[私有方法] 如果是 Union 类型，动态构建带 kind 区分字段的模型"""
+        """[私有方法] 如果是 Union 类型，
+        动态构建带 kind 区分字段的模型"""
         origin = get_origin(union_type)
         union_types = [Union]
         if hasattr(types, "UnionType"):
@@ -94,15 +98,19 @@ class BaseOutputProcessor(Generic[OutputDataT]):
             return type_validate_json(self.target_model, text)
         except (ValidationError, ValueError) as e:
             try:
-                logger.warning(f"标准JSON解析失败，尝试使用json_repair修复: {e}")
+                logger.warning(
+                    f"标准JSON解析失败，尝试使用json_repair修复: {e}"
+                )
                 repaired_obj = json_repair.loads(text, skip_json_loads=True)
                 return model_validate(self.target_model, repaired_obj)
             except Exception as repair_error:
                 logger.error(
-                    f"LLM结构化输出校验最终失败: {repair_error}", e=repair_error
+                    f"LLM结构化输出校验最终失败: {repair_error}",
+                    e=repair_error,
                 )
                 raise SchemaParseError(
-                    f"JSON格式损坏或字段不匹配，未能通过Schema验证: {repair_error}"
+                    "JSON格式损坏或字段不匹配，"
+                    f"未能通过Schema验证: {repair_error}"
                 )
         except Exception as e:
             logger.error(f"解析LLM结构化输出时发生未知错误: {e}", e=e)
@@ -151,7 +159,11 @@ class SubmitFinalResultExecutable(ToolExecutable):
         schema = self.output_processor.get_json_schema()
         return ToolDefinition(
             name=self.tool_name,
-            description="当你完成所有必要的调查 and 思考后，必须且只能调用此工具来提交最终的结构化结果。提交后任务将立刻结束。",
+            description=(
+                "当你完成所有必要的调查 and 思考后，"
+                "必须且只能调用此工具来提交最终的结构化结果。"
+                "提交后任务将立刻结束。"
+            ),
             parameters=schema,
         )
 

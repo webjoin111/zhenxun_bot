@@ -2,8 +2,6 @@ import asyncio
 import json
 from typing import Any, cast
 
-from pydantic import BaseModel, Field
-
 from zhenxun.services.ai.core.configs import GenerationConfig
 from zhenxun.services.ai.core.engine.token_estimator import (
     global_estimator,
@@ -24,6 +22,10 @@ from zhenxun.services.ai.core.messages import (
     ToolCallPart,
     UsageInfo,
 )
+from zhenxun.services.ai.flow.agent.models import (
+    AgentLoopConfig,
+    AgentLoopContext,
+)
 from zhenxun.services.ai.run import AgentRunResult, RunContext
 from zhenxun.services.ai.tools.engine.executor import ToolExecutor
 from zhenxun.services.ai.tools.models import ToolResult
@@ -31,41 +33,17 @@ from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_construct
 
 
-class AgentExecutorConfig(BaseModel):
-    """
-    核心执行引擎配置。
-    用于在单次运行中精细控制多步推理与工具调用的行为。
-    """
-
-    max_cycles: int = Field(
-        default=10, description="工具调用循环的最大次数，防止无限循环。"
-    )
-    enable_parallel_calls: bool = Field(
-        default=True, description="是否允许LLM在一次思考中请求调用多个工具。"
-    )
-    reflexion_retries: int = Field(
-        default=1,
-        description="当工具执行出错时，允许进行自我反思和修正的最大重试次数。",
-    )
-    enable_fallback_summary: bool = Field(
-        default=True,
-        description="达到最大循环次数时，是否触发大模型兜底总结（而不是直接报错）。",
-    )
-
-
 class AgentExecutor:
     """
     LLM 任务执行器（核心推理引擎）。
-    负责：生命周期回调触发、工具循环调用、错误反思(Reflexion)、Token消耗追踪。
+    负责：生命周期回调触发、工具循环调用、
+    错误反思(Reflexion)、Token消耗追踪。
+    此层已重构为纯净无状态结构，
+    隔离了所有与 Agent 装配相关的逻辑。
     """
 
-    def __init__(
-        self,
-        tools: Any,
-        config: AgentExecutorConfig | None = None,
-    ):
-        self.tools = tools
-        self.config = config or AgentExecutorConfig()
+    def __init__(self):
+        pass
 
     def _is_tool_error(self, result: ToolResult) -> bool:
         """通过新版的专属字段直接判断"""
@@ -86,7 +64,10 @@ class AgentExecutor:
         extra: dict[str, Any] | None = None,
         cancellation_token: Any = None,
     ) -> LLMResponse:
-        """不再在执行器层重复包裹中间件，直接透传给底层模型实例"""
+        """
+        不再在执行器层重复包裹中间件，
+        直接透传给底层模型实例
+        """
         return await model_instance.generate_response(
             messages=messages,
             config=config,
@@ -106,8 +87,12 @@ class AgentExecutor:
         generation_config: GenerationConfig,
         run_context: RunContext,
         tool_executor: ToolExecutor,
+        tools: Any,
     ) -> list[LLMMessage]:
-        """构造影子上下文，让 LLM 自我分析错误并尝试修复工具调用。"""
+        """
+        构造影子上下文，
+        让 LLM 自我分析错误并尝试修复工具调用。
+        """
         shadow_history = list(history)
         shadow_history.append(AssistantMessage(content=[original_call]))
 
@@ -133,11 +118,14 @@ class AgentExecutor:
             )
         )
         reflexion_prompt = (
-            f"### 🔄 [工具执行异常自愈]\n"
-            f"检测到工具调用返回了错误结果。请启动自我诊断流程：\n"
+            "### 🔄 [工具执行异常自愈]\n"
+            "检测到工具调用返回了错误结果。"
+            "请启动自我诊断流程：\n"
             f"- **错误详情**：> {error_hint}\n"
-            f"- **分析要求**：对比工具定义，检查参数格式、逻辑约束或前置条件是否满足。\n"
-            f"- **操作指令**：请输出一个修正后的工具调用指令。**禁止进行任何文字解释，直接调用工具。**"
+            "- **分析要求**：对比工具定义，"
+            "检查参数格式、逻辑约束或前置条件是否满足。\n"
+            "- **操作指令**：请输出一个修正后的工具调用指令。"
+            "**禁止进行任何文字解释，直接调用工具。**"
         )
         shadow_history.append(LLMMessage.user(reflexion_prompt))
         logger.info(f"🔄 [Reflexion] 触发反思循环，错误: {error_hint[:50]}...")
@@ -151,13 +139,13 @@ class AgentExecutor:
             response = await model_instance.generate_response(
                 messages=shadow_history,
                 config=generation_config,
-                tools=list(self.tools) if self.tools else None,
+                tools=list(tools) if tools else None,
                 extra=extra,
             )
             if response.tool_calls:
                 new_results = await tool_executor.execute_batch(
                     response.tool_calls,
-                    self.tools,
+                    tools,
                     run_context,
                     model_name=model_instance.model_name,
                     max_retries=1,
@@ -188,28 +176,28 @@ class AgentExecutor:
 
     async def run(
         self,
-        messages: list[LLMMessage],
+        loop_ctx: AgentLoopContext,
+        loop_config: AgentLoopConfig,
         model_instance: Any,
-        run_context: RunContext,
-        generation_config: GenerationConfig | None = None,
-        extra: dict[str, Any] | None = None,
-        cancellation_token: Any = None,
-        event_streamer: Any | None = None,
     ) -> AgentRunResult[Any]:
         """
         执行推理管线，包含工具循环与生命周期回调管理。
         返回: 包含运行状态、历史消息和控制流信号的 AgentRunResult 对象
         """
         tool_executor = ToolExecutor()
-        gen_config = generation_config or GenerationConfig()
+        gen_config = loop_config.generation_config
+        run_context = loop_ctx.run_context
+        tools = loop_ctx.tools
+        cancellation_token = loop_config.cancellation_token
+        event_streamer = loop_config.event_streamer
 
-        execution_history = list(messages)
+        execution_history = list(loop_ctx.messages)
         run_context.run.messages = execution_history
 
         cumulative_usage = UsageInfo()
 
         try:
-            for cycle_index in range(self.config.max_cycles):
+            for cycle_index in range(loop_config.max_cycles):
                 if cancellation_token:
                     cancellation_token.raise_if_cancelled()
 
@@ -225,39 +213,42 @@ class AgentExecutor:
                     pass
 
                 current_extra = run_context.state.copy()
-                if extra:
-                    current_extra.update(extra)
                 current_extra["__sys_capabilities"] = getattr(
                     run_context, "capabilities", []
                 )
                 current_extra["run_context"] = run_context
 
-                messages_to_send = list(execution_history)
+                messages_to_send = []
+                if loop_ctx.static_system_prompt:
+                    messages_to_send.append(
+                        LLMMessage.system(loop_ctx.static_system_prompt)
+                    )
+
+                messages_to_send.extend(execution_history)
+
+                dynamic_parts = []
+                if loop_ctx.dynamic_system_prompt:
+                    dynamic_parts.append(loop_ctx.dynamic_system_prompt)
                 if (
                     hasattr(run_context.run, "dynamic_prompts")
                     and run_context.run.dynamic_prompts
                 ):
-                    dynamic_text = "\n\n".join(run_context.run.dynamic_prompts.values())
-                    injected = False
-                    for i, msg in enumerate(messages_to_send):
-                        if msg.role == "system":
-                            messages_to_send[i] = (
-                                msg + f"\n\n### 🔄 [系统动态注入]\n{dynamic_text}"
-                            )
-                            injected = True
-                            break
-                    if not injected:
-                        messages_to_send.insert(
-                            0,
-                            LLMMessage.system(f"### 🔄 [系统动态注入]\n{dynamic_text}"),
-                        )
+                    dynamic_parts.append(
+                        "### 🔄 [系统实时状态注入]\n"
+                        + "\n\n".join(run_context.run.dynamic_prompts.values())
+                    )
+
+                if dynamic_parts:
+                    messages_to_send.append(
+                        LLMMessage.system("\n\n".join(dynamic_parts))
+                    )
 
                 response = await self._execute_model_request(
                     model_instance=model_instance,
                     messages=messages_to_send,
                     config=gen_config,
                     run_context=run_context,
-                    tools=list(self.tools) if self.tools else None,
+                    tools=list(tools) if tools else None,
                     tool_choice=None,
                     extra=current_extra,
                     cancellation_token=cancellation_token,
@@ -298,6 +289,7 @@ class AgentExecutor:
                     assistant_message.token_cost = usage_obj.completion_tokens
 
                 execution_history.append(assistant_message)
+                run_context.session.append_only_manager.sync_messages(execution_history)
 
                 if not response.tool_calls:
                     logger.info("✅ AgentExecutor：模型未请求工具调用，推理循环结束。")
@@ -311,7 +303,7 @@ class AgentExecutor:
                 val_tasks = [
                     tool_executor.validate_tool_call(
                         call,
-                        self.tools,
+                        tools,
                         run_context,
                         event_streamer=event_streamer,
                     )
@@ -322,7 +314,7 @@ class AgentExecutor:
                 exec_tasks = [
                     tool_executor.execute_tool_call(
                         val_call,
-                        self.tools,
+                        tools,
                         run_context,
                         event_streamer=event_streamer,
                     )
@@ -355,7 +347,8 @@ class AgentExecutor:
                                 )
                                 final_content = "✅ 已获取最终结果，结束当前任务。"
                                 logger.info(
-                                    f"🛑 [中断执行] 工具 {original_call.tool_name} 触发了直接返回结果信号。"
+                                    f"🛑 [中断执行] 工具 {original_call.tool_name} "
+                                    "触发了直接返回结果信号。"
                                 )
                             else:
                                 raise res_or_exc
@@ -364,7 +357,8 @@ class AgentExecutor:
                                 ui = UIController(run_context)
                                 await ui.send_display(display_msg)
                                 logger.info(
-                                    f"📤 已通过 UIController 将控制流 '{original_call.tool_name}' 的展示数据发往前端。"
+                                    "📤 已通过 UIController 将控制流 "
+                                    f"'{original_call.tool_name}' 的展示数据发往前端。"
                                 )
 
                             tool_res = None
@@ -422,6 +416,8 @@ class AgentExecutor:
 
                     execution_history.append(msg)
 
+                run_context.session.append_only_manager.sync_messages(execution_history)
+
                 if structured_result is not None:
                     logger.info("✅ AgentExecutor：拦截到结构化结果提交，结束循环。")
                     return model_construct(
@@ -443,14 +439,15 @@ class AgentExecutor:
                         usage=cumulative_usage,
                     )
 
-            if not self.config.enable_fallback_summary:
+            if not loop_config.enable_fallback_summary:
                 raise LLMException(
-                    f"超过最大工具调用循环次数 ({self.config.max_cycles})。",
+                    f"超过最大工具调用循环次数 ({loop_config.max_cycles})。",
                     code=LLMErrorCode.GENERATION_FAILED,
                 )
 
             logger.warning(
-                f"AgentExecutor 达到最大循环次数 ({self.config.max_cycles})，触发兜底总结机制。"
+                f"AgentExecutor 达到最大循环次数 ({loop_config.max_cycles})，"
+                "触发兜底总结机制。"
             )
 
             if event_streamer:
@@ -471,8 +468,6 @@ class AgentExecutor:
             execution_history.append(fallback_msg)
 
             current_extra = run_context.state.copy()
-            if extra:
-                current_extra.update(extra)
             current_extra["__sys_capabilities"] = getattr(
                 run_context, "capabilities", []
             )

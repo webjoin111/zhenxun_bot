@@ -62,7 +62,8 @@ class OutputValidationCapability(AbstractCapability):
                 "当你完成所有调查和思考后，必须且只能调用 "
                 f"`{self.submit_tool.tool_name}` 工具来提交最终结果，"
                 "禁止用纯文本直接作答。\n"
-                "（📌 提示：最终需要返回的数据结构要求，请严格查阅并遵循 "
+                "（📌 提示：最终需要返回的数据结构要求，"
+                "请严格查阅并遵循 "
                 f"`{self.submit_tool.tool_name}` 工具的参数 Schema 定义，"
                 "将其视为唯一的数据约束）"
             ]
@@ -129,7 +130,9 @@ class TaskTrackingCapability(AbstractCapability):
             )
             return result
         except BaseException as error:
-            event_error = error if isinstance(error, Exception) else Exception(str(error))
+            event_error = (
+                error if isinstance(error, Exception) else Exception(str(error))
+            )
             await EventCenter.publish(
                 TaskRunErrorEvent(
                     session_id=context.session_id or "unknown",

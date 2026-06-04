@@ -103,11 +103,17 @@ class RunnableNode(Step):
             prompt_data = copy.copy(prompt_data)
             if step_input.previous_step_content:
                 prev_content = str(step_input.previous_step_content)
-                prompt_data.description = f"### 🔙 [上游节点执行输出]\n{prev_content}\n\n### 🎯 [当前需执行的任务]\n{prompt_data.description}"
+                prompt_data.description = (
+                    f"### 🔙 [上游节点执行输出]\n{prev_content}\n\n"
+                    f"### 🎯 [当前需执行的任务]\n{prompt_data.description}"
+                )
             context.run.user_input = prompt_data.description
         else:
             if step_input.previous_step_content:
-                prompt_data = f"[上游节点执行输出]:\n{step_input.previous_step_content}\n\n[当前需执行的任务]:\n{prompt_data or ''}"
+                prompt_data = (
+                    f"[上游节点执行输出]:\n{step_input.previous_step_content}\n\n"
+                    f"[当前需执行的任务]:\n{prompt_data or ''}"
+                )
             context.run.user_input = str(prompt_data) if prompt_data else ""
 
         final_result = None
@@ -537,7 +543,8 @@ class Parallel(BaseNode):
                     if out.stop and not early_stopped:
                         early_stopped = True
                         logger.info(
-                            f"并行分支 '{out.step_name}' 请求终止，正在取消其他并发任务..."
+                            f"并行分支 '{out.step_name}' 请求终止，"
+                            "正在取消其他并发任务..."
                         )
                         for t in bg_tasks:
                             if not t.done():
@@ -637,5 +644,6 @@ class NodeFactory:
             return Step(executor=item, name=name)
 
         raise ValueError(
-            f"无法将类型 {type(item)} 装配为工作流节点。支持的类型：BaseRunnable, Callable 或 BaseNode。"
+            f"无法将类型 {type(item)} 装配为工作流节点。"
+            "支持的类型：BaseRunnable, Callable 或 BaseNode。"
         )
