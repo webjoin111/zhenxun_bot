@@ -1,4 +1,4 @@
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from zhenxun.services.ai.rag.backends import StorageBackend
 from zhenxun.services.ai.rag.engine import ScopedRAGClient
@@ -27,6 +27,9 @@ from zhenxun.services.ai.rag.retrieval import (
     VectorDBRetriever,
 )
 from zhenxun.services.log import logger
+
+if TYPE_CHECKING:
+    from zhenxun.services.ai.rag.consolidation import Consolidator
 
 
 class RAGBuilder:
@@ -74,7 +77,7 @@ class RAGBuilder:
         return self
 
     def enable_consolidation(
-        self, consolidator: Any, threshold: float = 0.85
+        self, consolidator: "Consolidator", threshold: float = 0.85
     ) -> "RAGBuilder":
         """开启大模型记忆融合与反思"""
         self._config.consolidation.consolidator = consolidator

@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from zhenxun.services.ai.protocols.capabilities import AbstractCapability
+from zhenxun.services.ai.run import RunContext
 from zhenxun.services.ai.tools.models import ToolOptions
-
-if TYPE_CHECKING:
-    from zhenxun.services.ai.run import RunContext
 
 
 def _update_settings(func: Callable, **kwargs) -> Callable:

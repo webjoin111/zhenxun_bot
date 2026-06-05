@@ -5,9 +5,10 @@ from dataclasses import dataclass
 import graphlib
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Union, cast
 
+from zhenxun.services.ai.core.configs import GenerationConfig
+from zhenxun.services.ai.core.messages import LLMResponse
+
 if TYPE_CHECKING:
-    from zhenxun.services.ai.core.configs import GenerationConfig
-    from zhenxun.services.ai.core.messages import LLMResponse
     from zhenxun.services.ai.flow.agent.models import CapabilitySpec
     from zhenxun.services.ai.protocols.middleware import LLMContext
     from zhenxun.services.ai.run import AgentRunResult, RunContext
@@ -15,7 +16,7 @@ if TYPE_CHECKING:
 WrapRunHandler = Callable[[], Awaitable["AgentRunResult[Any]"]]
 """整个 Agent 运行过程包裹的处理函数类型"""
 
-WrapModelRequestHandler = Callable[["LLMContext"], Awaitable["LLMResponse"]]
+WrapModelRequestHandler = Callable[["LLMContext"], Awaitable[LLMResponse]]
 """单次大模型 API 请求包裹的处理函数类型"""
 
 WrapToolValidateHandler = Callable[[str | dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -149,7 +150,7 @@ class AbstractCapability:
 
     async def get_generation_config(
         self, context: RunContext
-    ) -> "GenerationConfig | None":
+    ) -> GenerationConfig | None:
         """运行开始前触发。允许动态下发大模型配置（覆盖或合并 Agent 的默认配置）。"""
         return None
 
@@ -264,7 +265,7 @@ class CombinedCapability(AbstractCapability):
 
     async def get_generation_config(
         self, context: RunContext
-    ) -> "GenerationConfig | None":
+    ) -> GenerationConfig | None:
         final_config = None
         for cap in self.capabilities:
             cap_config = await cap.get_generation_config(context)
@@ -432,7 +433,7 @@ class WrapperCapability(AbstractCapability):
 
     async def get_generation_config(
         self, context: RunContext
-    ) -> "GenerationConfig | None":
+    ) -> GenerationConfig | None:
         return await self.wrapped.get_generation_config(context)
 
     async def get_system_prompts(self, context: RunContext) -> list[str]:

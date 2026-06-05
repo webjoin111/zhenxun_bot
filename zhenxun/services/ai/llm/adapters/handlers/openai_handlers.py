@@ -3,24 +3,24 @@ import base64
 import binascii
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    from zhenxun.services.ai.core.configs import TTSConfig
-    from zhenxun.services.ai.core.messages import AudioResponse
-    from zhenxun.services.ai.llm.adapters.base import BaseAdapter
-    from zhenxun.services.ai.llm.service import LLMModel
-
+import httpx
 import json_repair
 
 from zhenxun.services.ai.core.configs import (
+    NATIVE_TOOL_REGISTRY,
     GenerationConfig,
     LLMEmbeddingConfig,
+    ReasoningEffort,
     StructuredOutputStrategy,
+    TTSConfig,
 )
 from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
 from zhenxun.services.ai.core.messages import (
     AssistantMessage,
+    AudioResponse,
+    EmbedBatch,
     ImagePart,
     LLMMessage,
     RerankDocument,
@@ -36,10 +36,11 @@ from zhenxun.services.ai.core.messages import (
 from zhenxun.services.ai.core.models import (
     ModelCapabilities,
     ModelDetail,
+    ToolChoice,
     ToolDefinition,
-    ToolChoice
 )
 from zhenxun.services.ai.llm.adapters.base import (
+    BaseAdapter,
     RequestData,
     ResponseData,
     process_image_data,
@@ -55,6 +56,7 @@ from zhenxun.services.ai.llm.adapters.handlers.base import (
     ResponseParser,
     ToolSerializer,
 )
+from zhenxun.services.ai.protocols.llm import LLMModelBase
 from zhenxun.services.log import logger
 
 
@@ -101,7 +103,6 @@ class OpenAIConfigMapper(ConfigMapper):
 
         if config.openai_options.reasoning_effort:
             effort = config.openai_options.reasoning_effort
-            from zhenxun.services.ai.core.configs import ReasoningEffort
 
             params["reasoning_effort"] = (
                 effort.value.lower()
@@ -252,7 +253,7 @@ class OpenAIToolSerializer(ToolSerializer):
     def __init__(self, api_type: str = "openai"):
         self.api_type = api_type
 
-    def sanitize_schema(self, schema: Any) -> Any:
+    def sanitize_schema(self, schema: dict[str, Any]) -> dict[str, Any]:
         from zhenxun.services.ai.llm.schema_transformer import (
             OpenAIUnionFlattenTransformer,
             RefComplianceTransformer,
@@ -668,7 +669,7 @@ class OpenAITextHandler(BaseTextHandler):
         self.parser = OpenAIResponseParser()
 
     def _build_base_body(
-        self, model: "LLMModel", messages: list[Any]
+        self, model: LLMModelBase, messages: list[Any]
     ) -> dict[str, Any]:
         return {
             "model": model.model_name,
@@ -676,7 +677,10 @@ class OpenAITextHandler(BaseTextHandler):
         }
 
     def _inject_native_tools(
-        self, model: "LLMModel", config: "GenerationConfig | None", body: dict[str, Any]
+        self,
+        model: LLMModelBase,
+        config: GenerationConfig | None,
+        body: dict[str, Any],
     ) -> None:
         if not config:
             return
@@ -693,13 +697,13 @@ class OpenAITextHandler(BaseTextHandler):
 
     async def prepare_text_request(
         self,
-        adapter: "BaseAdapter",
-        model: "LLMModel",
+        adapter: BaseAdapter,
+        model: LLMModelBase,
         api_key: str,
         messages: list[LLMMessage],
         config: GenerationConfig | None = None,
         tools: list[Any] | None = None,
-        tool_choice: "ToolChoice | str | dict[str, Any] | None" = None,
+        tool_choice: ToolChoice | str | dict[str, Any] | None = None,
     ) -> RequestData:
         endpoint = getattr(adapter, "get_chat_endpoint")(model)
         url = adapter.get_api_url(model, endpoint)
@@ -825,8 +829,8 @@ class OpenAITextHandler(BaseTextHandler):
 
     def parse_text_response(
         self,
-        adapter: "BaseAdapter",
-        model: "LLMModel",
+        adapter: BaseAdapter,
+        model: LLMModelBase,
         response_json: dict[str, Any],
         is_advanced: bool = False,
     ) -> ResponseData:
@@ -873,7 +877,7 @@ class OpenAIResponsesTextHandler(OpenAITextHandler):
         self.parser = ResponsesResponseParser()
 
     def _build_base_body(
-        self, model: "LLMModel", messages: list[Any]
+        self, model: LLMModelBase, messages: list[Any]
     ) -> dict[str, Any]:
         return {
             "model": model.model_name,
@@ -881,7 +885,10 @@ class OpenAIResponsesTextHandler(OpenAITextHandler):
         }
 
     def _inject_native_tools(
-        self, model: "LLMModel", config: "GenerationConfig | None", body: dict[str, Any]
+        self,
+        model: LLMModelBase,
+        config: GenerationConfig | None,
+        body: dict[str, Any],
     ) -> None:
         if not config:
             return
@@ -890,8 +897,6 @@ class OpenAIResponsesTextHandler(OpenAITextHandler):
         requested_tools = []
 
         if config.enable_all_native_tools:
-            from zhenxun.services.ai.core.configs import NATIVE_TOOL_REGISTRY
-
             for t_name in supported:
                 if t_name in NATIVE_TOOL_REGISTRY:
                     requested_tools.append(NATIVE_TOOL_REGISTRY[t_name]())
@@ -928,14 +933,16 @@ class OpenAIResponsesTextHandler(OpenAITextHandler):
 class OpenAIEmbeddingHandler(BaseEmbeddingHandler):
     """OpenAI 嵌入向量处理器"""
 
-    def prepare_embedding_request(
+    async def prepare_embedding_request(
         self,
-        adapter: "BaseAdapter",
-        model: "LLMModel",
+        adapter: BaseAdapter,
+        model: LLMModelBase,
         api_key: str,
-        texts: list[str],
-        config: "LLMEmbeddingConfig",
+        batch: EmbedBatch,
+        config: LLMEmbeddingConfig,
     ) -> RequestData:
+        texts = batch.to_text_only(f"{model.model_name} (API: {adapter.api_type})")
+
         endpoint = getattr(adapter, "get_embedding_endpoint")(model)
         url = adapter.get_api_url(model, endpoint)
         headers = adapter.get_base_headers(api_key)
@@ -955,7 +962,7 @@ class OpenAIEmbeddingHandler(BaseEmbeddingHandler):
         return RequestData(url=url, headers=headers, body=body)
 
     def parse_embedding_response(
-        self, adapter: "BaseAdapter", response_json: dict[str, Any]
+        self, adapter: BaseAdapter, response_json: dict[str, Any]
     ) -> list[list[float]]:
         adapter.validate_response(response_json)
         try:
@@ -991,12 +998,12 @@ class OpenAIImageHandler(BaseImageHandler):
 
     def prepare_image_request(
         self,
-        adapter: "BaseAdapter",
-        model: "LLMModel",
+        adapter: BaseAdapter,
+        model: LLMModelBase,
         api_key: str,
         prompt: str,
         images: list[Any] | None = None,
-        config: "GenerationConfig | None" = None,
+        config: GenerationConfig | None = None,
     ) -> RequestData:
         headers = adapter.get_base_headers(api_key)
 
@@ -1054,7 +1061,7 @@ class OpenAIImageHandler(BaseImageHandler):
             return RequestData(url=url, headers=headers, body=body, files=files)
 
     def parse_image_response(
-        self, adapter: "BaseAdapter", response_json: dict[str, Any]
+        self, adapter: BaseAdapter, response_json: dict[str, Any]
     ) -> ResponseData:
         adapter.validate_response(response_json)
 
@@ -1099,8 +1106,8 @@ class OpenAIRerankHandler(BaseRerankHandler):
 
     def prepare_rerank_request(
         self,
-        adapter: "BaseAdapter",
-        model: "LLMModel",
+        adapter: BaseAdapter,
+        model: LLMModelBase,
         api_key: str,
         query: str,
         documents: list[str | dict[str, str]],
@@ -1126,8 +1133,8 @@ class OpenAIRerankHandler(BaseRerankHandler):
         return RequestData(url=url, headers=headers, body=body)
 
     def parse_rerank_response(
-        self, adapter: "BaseAdapter", response_json: dict[str, Any]
-    ) -> list["RerankResult"]:
+        self, adapter: BaseAdapter, response_json: dict[str, Any]
+    ) -> list[RerankResult]:
         adapter.validate_response(response_json)
         results = []
         for item in response_json.get("results", []):
@@ -1152,12 +1159,12 @@ class OpenAIAudioHandler(BaseAudioHandler):
 
     def prepare_speech_request(
         self,
-        adapter: "BaseAdapter",
-        model: "LLMModel",
+        adapter: BaseAdapter,
+        model: LLMModelBase,
         api_key: str,
         input_text: str,
         voice: str,
-        config: "TTSConfig",
+        config: TTSConfig,
     ) -> RequestData:
         endpoint = "/v1/audio/speech"
         url = adapter.get_api_url(model, endpoint)
@@ -1172,8 +1179,8 @@ class OpenAIAudioHandler(BaseAudioHandler):
         return RequestData(url=url, headers=headers, body=body)
 
     async def parse_speech_response(
-        self, adapter: "BaseAdapter", model: "LLMModel", raw_response: Any
-    ) -> "AudioResponse":
+        self, adapter: BaseAdapter, model: LLMModelBase, raw_response: httpx.Response
+    ) -> AudioResponse:
         from zhenxun.services.ai.core.messages import AudioResponse, UsageInfo
 
         audio_bytes = await raw_response.aread()
@@ -1199,7 +1206,7 @@ class CompositeOpenAITextHandler(BaseTextHandler):
             api_type="openai_responses"
         )
 
-    def _get_active_handler(self, model: "LLMModel") -> BaseTextHandler:
+    def _get_active_handler(self, model: LLMModelBase) -> BaseTextHandler:
         current_api_type = model.model_detail.api_type or model.api_type
         if current_api_type == "openai_responses":
             return self._responses_handler
@@ -1207,13 +1214,13 @@ class CompositeOpenAITextHandler(BaseTextHandler):
 
     async def prepare_text_request(
         self,
-        adapter: "BaseAdapter",
-        model: "LLMModel",
+        adapter: BaseAdapter,
+        model: LLMModelBase,
         api_key: str,
         messages: list[LLMMessage],
         config: GenerationConfig | None = None,
         tools: list[Any] | None = None,
-        tool_choice: "ToolChoice | str | dict[str, Any] | None" = None,
+        tool_choice: ToolChoice | str | dict[str, Any] | None = None,
     ) -> RequestData:
         handler = self._get_active_handler(model)
         return await handler.prepare_text_request(
@@ -1222,8 +1229,8 @@ class CompositeOpenAITextHandler(BaseTextHandler):
 
     def parse_text_response(
         self,
-        adapter: "BaseAdapter",
-        model: "LLMModel",
+        adapter: BaseAdapter,
+        model: LLMModelBase,
         response_json: dict[str, Any],
         is_advanced: bool = False,
     ) -> ResponseData:

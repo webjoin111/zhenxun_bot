@@ -8,14 +8,15 @@ from pydantic import BaseModel
 
 from zhenxun.configs.path_config import DATA_PATH
 from zhenxun.services.ai.core.exceptions import NeedsAuthException
+from zhenxun.services.ai.protocols.tool import ToolExecutable
 from zhenxun.services.ai.run import RunContext
 from zhenxun.services.ai.tools.models import (
     ResolvedToolPayload,
     ToolkitConfig,
     ToolOptions,
 )
-from zhenxun.utils.lifespan import LifespanManager
 from zhenxun.services.log import logger
+from zhenxun.utils.lifespan import LifespanManager
 from zhenxun.utils.pydantic_compat import dump_json_safely, model_copy, parse_as
 
 from .tool import BaseTool, FunctionTool
@@ -64,7 +65,7 @@ class BaseToolkit:
     def __init__(
         self,
         config: ToolkitConfig | None = None,
-        tools: list[Callable | BaseTool] | None = None,
+        tools: list[Callable | BaseTool | ToolExecutable] | None = None,
         instructions: str | None = None,
         **kwargs: Any,
     ):
@@ -352,7 +353,9 @@ class ApiConnectToolkit(BaseToolkit, ABC):
     async def get_client(self, context: RunContext) -> Any:
         """获取当前会话的客户端。如果未初始化，则检查凭证并自动初始化。"""
         session_id = context.session_id or "default_session"
-        await self.lifespan_manager.register(session_id, ttl=float(self.ttl), cleanup_callback=self.release_resource)
+        await self.lifespan_manager.register(
+            session_id, ttl=float(self.ttl), cleanup_callback=self.release_resource
+        )
 
         if session_id in self._clients:
             return self._clients[session_id]

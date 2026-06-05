@@ -35,7 +35,7 @@ class HandoffTool(BaseTool):
                 actual_schema = input_schema
 
         if actual_schema:
-            fields = {
+            fields: dict[str, Any] = {
                 "reason": (str, Field(..., description="移交的原因或简要状态说明")),
             }
             schema_fields = getattr(

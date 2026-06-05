@@ -146,7 +146,11 @@ class LLMGuardrail(BaseGuardrail):
             return GuardrailResult(success=False, feedback=f"系统护栏裁判模型异常: {e}")
 
 
-def parse_guardrails(guardrails: list[Any] | None) -> list[BaseGuardrail]:
+GuardrailSource = Callable[..., Any] | str | BaseGuardrail | LLMJudgeConfig
+"""护栏来源（函数、自然语言规则、BaseGuardrail 实例或裁判配置）"""
+
+
+def parse_guardrails(guardrails: list[GuardrailSource] | None) -> list[BaseGuardrail]:
     """工具方法：将各种类型的 Guardrail 解析为标准的 BaseGuardrail 列表"""
     v_list = []
     llm_rules = []

@@ -10,8 +10,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from zhenxun.services.ai.core.configs import (
+    GenerationConfig,
+    LLMEmbeddingConfig,
+    TTSConfig,
+)
 from zhenxun.services.ai.core.messages import LLMMessage, LLMResponse
 from zhenxun.services.ai.core.models import ToolChoice
+from zhenxun.services.ai.run.models import CancellationToken
 
 
 class LLMContext(BaseModel):
@@ -19,7 +25,7 @@ class LLMContext(BaseModel):
 
     messages: list[LLMMessage]
     """当前请求的消息列表。"""
-    config: Any
+    config: GenerationConfig | LLMEmbeddingConfig | TTSConfig | None
     """本次调用使用的模型生成配置。"""
     tools: list[Any] | None
     """可供模型调用的工具集合。"""
@@ -35,7 +41,7 @@ class LLMContext(BaseModel):
     """请求类型标识。"""
     runtime_state: dict[str, Any] = Field(default_factory=dict)
     """中间件运行时的临时状态存储。"""
-    cancellation_token: Any | None = Field(default=None)
+    cancellation_token: CancellationToken | None = Field(default=None)
     """全局取消令牌。"""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)

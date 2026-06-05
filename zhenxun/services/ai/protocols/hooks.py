@@ -1,6 +1,6 @@
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar
+from typing import Any, Generic, Protocol, TypeVar
 
 import anyio
 from nonebot.utils import is_coroutine_callable
@@ -15,9 +15,6 @@ from zhenxun.services.ai.protocols.capabilities import (
 )
 from zhenxun.services.ai.protocols.middleware import LLMContext
 from zhenxun.services.ai.run import AgentRunResult, RunContext
-
-if TYPE_CHECKING:
-    pass
 
 _FuncT = TypeVar("_FuncT", bound=Callable[..., Any])
 

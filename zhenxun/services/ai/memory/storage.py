@@ -23,7 +23,7 @@ from zhenxun.services.ai.memory.interfaces import (
     BaseChatContext,
     BaseSlotContext,
 )
-from zhenxun.services.ai.memory.models import MemorySlot, SessionMetadata, SlotScope
+from zhenxun.services.ai.memory.types import MemorySlot, SessionMetadata, SlotScope
 from zhenxun.services.ai.rag.models import BaseRecord, SearchResult
 from zhenxun.services.db_context import Model
 from zhenxun.utils.pydantic_compat import model_dump

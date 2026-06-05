@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 
-from zhenxun.services.ai.llm.adapters.base import RequestData
+from zhenxun.services.ai.llm.adapters.base import BaseAdapter, RequestData
 from zhenxun.services.ai.llm.adapters.handlers.openai_handlers import (
     OpenAIEmbeddingHandler,
     OpenAIRerankHandler,
@@ -8,9 +8,7 @@ from zhenxun.services.ai.llm.adapters.handlers.openai_handlers import (
 )
 from zhenxun.services.ai.llm.adapters.openai import OpenAICompatAdapter
 
-if TYPE_CHECKING:
-    from zhenxun.services.ai.llm.adapters.base import BaseAdapter
-    from zhenxun.services.ai.llm.service import LLMModel
+from zhenxun.services.ai.protocols.llm import LLMModelBase
 
 
 class GLMRerankHandler(OpenAIRerankHandler):
@@ -18,8 +16,8 @@ class GLMRerankHandler(OpenAIRerankHandler):
 
     def prepare_rerank_request(
         self,
-        adapter: "BaseAdapter",
-        model: "LLMModel",
+        adapter: BaseAdapter,
+        model: LLMModelBase,
         api_key: str,
         query: str,
         documents: list[str | dict[str, str]],
@@ -66,12 +64,12 @@ class GLMAdapter(OpenAICompatAdapter):
         """当前适配器支持的 API 类型列表。"""
         return ["glm"]
 
-    def get_chat_endpoint(self, model: "LLMModel") -> str:
+    def get_chat_endpoint(self, model: LLMModelBase) -> str:
         """返回对话端点，优先使用模型级自定义端点。"""
         if model.model_detail.endpoint:
             return model.model_detail.endpoint
         return "/api/paas/v4/chat/completions"
 
-    def get_embedding_endpoint(self, model: "LLMModel") -> str:
+    def get_embedding_endpoint(self, model: LLMModelBase) -> str:
         """返回嵌入端点。"""
         return "/api/paas/v4/embeddings"

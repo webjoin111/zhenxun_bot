@@ -2,11 +2,14 @@ import asyncio
 import base64
 import io
 import json
-from typing import TYPE_CHECKING, Any
+from typing import Any
 import wave
+
+import httpx
 
 from zhenxun.services.ai.config import get_gemini_safety_threshold
 from zhenxun.services.ai.core.configs import (
+    NATIVE_TOOL_REGISTRY,
     GenerationConfig,
     LLMEmbeddingConfig,
     TTSConfig,
@@ -15,8 +18,11 @@ from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
 from zhenxun.services.ai.core.messages import (
     AssistantMessage,
     AudioPart,
+    AudioResponse,
+    EmbedBatch,
     FilePart,
     ImagePart,
+    LLMContentPart,
     LLMGroundingAttribution,
     LLMGroundingMetadata,
     LLMMessage,
@@ -34,9 +40,11 @@ from zhenxun.services.ai.core.models import (
     ModelCapabilities,
     ModelDetail,
     ReasoningMode,
+    ToolChoice,
     ToolDefinition,
 )
 from zhenxun.services.ai.llm.adapters.base import (
+    BaseAdapter,
     RequestData,
     ResponseData,
     process_image_data,
@@ -51,14 +59,9 @@ from zhenxun.services.ai.llm.adapters.handlers.base import (
     ResponseParser,
     ToolSerializer,
 )
+from zhenxun.services.ai.protocols.llm import LLMModelBase
 from zhenxun.services.log import logger
 from zhenxun.utils.http_utils import AsyncHttpx
-
-if TYPE_CHECKING:
-    from zhenxun.services.ai.core.messages import AudioResponse
-    from zhenxun.services.ai.core.models import ToolChoice
-    from zhenxun.services.ai.llm.adapters.base import BaseAdapter
-    from zhenxun.services.ai.llm.service import LLMModel
 
 
 class GeminiConfigMapper(ConfigMapper):
@@ -234,12 +237,13 @@ class GeminiConfigMapper(ConfigMapper):
 
 
 class GeminiMessageConverter(MessageConverter):
-    async def convert_part(self, part: Any) -> dict[str, Any] | None:
+    async def convert_part(self, part: LLMContentPart) -> dict[str, Any] | None:
         """将单个内容部分转换为 Gemini API 格式"""
 
         def _get_gemini_resolution_dict() -> dict[str, Any]:
-            if getattr(part, "media_resolution", None):
-                value = part.media_resolution.upper()
+            res_val = getattr(part, "media_resolution", None)
+            if res_val and isinstance(res_val, str):
+                value = res_val.upper()
                 if not value.startswith("MEDIA_RESOLUTION_"):
                     value = f"MEDIA_RESOLUTION_{value}"
                 return {"media_resolution": {"level": value}}
@@ -433,7 +437,7 @@ class GeminiMessageConverter(MessageConverter):
 
 
 class GeminiToolSerializer(ToolSerializer):
-    def sanitize_schema(self, schema: Any) -> Any:
+    def sanitize_schema(self, schema: dict[str, Any]) -> dict[str, Any]:
         from zhenxun.services.ai.llm.schema_transformer import (
             GeminiCyclicRefTransformer,
             GeminiDeepRefInlineTransformer,
@@ -452,6 +456,7 @@ class GeminiToolSerializer(ToolSerializer):
             "title",
             "additionalProperties",
             "schema",
+            "$schema",
             "id",
             "propertyNames",
             "patternProperties",
@@ -663,13 +668,13 @@ class GeminiTextHandler(BaseTextHandler):
 
     async def prepare_text_request(
         self,
-        adapter: "BaseAdapter",
-        model: "LLMModel",
+        adapter: BaseAdapter,
+        model: LLMModelBase,
         api_key: str,
         messages: list[LLMMessage],
         config: GenerationConfig | None = None,
         tools: list[Any] | None = None,
-        tool_choice: "ToolChoice | str | dict[str, Any] | None" = None,
+        tool_choice: ToolChoice | str | dict[str, Any] | None = None,
     ) -> RequestData:
         effective_config = (
             config if config is not None else getattr(model, "_generation_config", None)
@@ -742,8 +747,6 @@ class GeminiTextHandler(BaseTextHandler):
             requested_tools = []
 
             if effective_config.enable_all_native_tools:
-                from zhenxun.services.ai.core.configs import NATIVE_TOOL_REGISTRY
-
                 for t_name in supported:
                     if t_name in NATIVE_TOOL_REGISTRY:
                         requested_tools.append(NATIVE_TOOL_REGISTRY[t_name]())
@@ -848,8 +851,8 @@ class GeminiTextHandler(BaseTextHandler):
 
     def parse_text_response(
         self,
-        adapter: "BaseAdapter",
-        model: "LLMModel",
+        adapter: BaseAdapter,
+        model: LLMModelBase,
         response_json: dict[str, Any],
         is_advanced: bool = False,
     ) -> ResponseData:
@@ -859,14 +862,15 @@ class GeminiTextHandler(BaseTextHandler):
 class GeminiEmbeddingHandler(BaseEmbeddingHandler):
     """Gemini 文本嵌入处理器"""
 
-    def prepare_embedding_request(
+    async def prepare_embedding_request(
         self,
-        adapter: "BaseAdapter",
-        model: "LLMModel",
+        adapter: BaseAdapter,
+        model: LLMModelBase,
         api_key: str,
-        texts: list[str],
+        batch: EmbedBatch,
         config: LLMEmbeddingConfig,
     ) -> RequestData:
+
         api_model_name = model.model_name
         if not api_model_name.startswith("models/"):
             api_model_name = f"models/{api_model_name}"
@@ -879,18 +883,45 @@ class GeminiEmbeddingHandler(BaseEmbeddingHandler):
         url = f"{base_url}/v1beta/{api_model_name}:batchEmbedContents"
         headers = adapter.get_base_headers(api_key)
 
+        from zhenxun.services.ai.llm.adapters.handlers.gemini_handlers import (
+            GeminiMessageConverter,
+        )
+
+        converter = GeminiMessageConverter()
+
         requests_payload = []
-        for text_content in texts:
-            safe_text = text_content if text_content else " "
+        for payload in batch.payloads:
+            gemini_parts = []
+            text_prefix = ""
+
+            if config.task_type == "RETRIEVAL_DOCUMENT":
+                title_str = config.title if config.title else "none"
+                text_prefix = f"title: {title_str} | text: "
+            elif config.task_type:
+                task_mapping = {
+                    "RETRIEVAL_QUERY": "search result",
+                    "QUESTION_ANSWERING": "question answering",
+                    "FACT_VERIFICATION": "fact checking",
+                    "CODE_RETRIEVAL_QUERY": "code retrieval",
+                }
+                mapped_task = task_mapping.get(str(config.task_type), "search result")
+                text_prefix = f"task: {mapped_task} | query: "
+
+            for i, part in enumerate(payload.parts):
+                part_dict = await converter.convert_part(part)
+                if part_dict:
+                    if text_prefix and "text" in part_dict and i == 0:
+                        part_dict["text"] = text_prefix + part_dict["text"]
+                    gemini_parts.append(part_dict)
+
+            if not gemini_parts:
+                gemini_parts.append({"text": text_prefix + " "})
+
             request_item: dict[str, Any] = {
                 "model": api_model_name,
-                "content": {"parts": [{"text": safe_text}]},
+                "content": {"parts": gemini_parts},
             }
 
-            if config.task_type:
-                request_item["task_type"] = str(config.task_type).upper()
-            if config.title:
-                request_item["title"] = config.title
             if config.output_dimensionality:
                 request_item["output_dimensionality"] = config.output_dimensionality
 
@@ -900,7 +931,7 @@ class GeminiEmbeddingHandler(BaseEmbeddingHandler):
         return RequestData(url=url, headers=headers, body=body)
 
     def parse_embedding_response(
-        self, adapter: "BaseAdapter", response_json: dict[str, Any]
+        self, adapter: BaseAdapter, response_json: dict[str, Any]
     ) -> list[list[float]]:
         adapter.validate_embedding_response(response_json)
         if "embeddings" not in response_json or not isinstance(
@@ -938,8 +969,8 @@ class GeminiImageHandler(BaseImageHandler):
 
     def prepare_image_request(
         self,
-        adapter: "BaseAdapter",
-        model: "LLMModel",
+        adapter: BaseAdapter,
+        model: LLMModelBase,
         api_key: str,
         prompt: str,
         images: list[Any] | None = None,
@@ -1002,8 +1033,6 @@ class GeminiImageHandler(BaseImageHandler):
             requested_tools = []
 
             if config.enable_all_native_tools:
-                from zhenxun.services.ai.core.configs import NATIVE_TOOL_REGISTRY
-
                 for t_name in supported:
                     if t_name in NATIVE_TOOL_REGISTRY:
                         requested_tools.append(NATIVE_TOOL_REGISTRY[t_name]())
@@ -1032,7 +1061,7 @@ class GeminiImageHandler(BaseImageHandler):
         return RequestData(url=url, headers=headers, body=body)
 
     def parse_image_response(
-        self, adapter: "BaseAdapter", response_json: dict[str, Any]
+        self, adapter: BaseAdapter, response_json: dict[str, Any]
     ) -> ResponseData:
         parser = GeminiResponseParser()
         return parser.parse(response_json)
@@ -1043,12 +1072,12 @@ class GeminiAudioHandler(BaseAudioHandler):
 
     def prepare_speech_request(
         self,
-        adapter: "BaseAdapter",
-        model: "LLMModel",
+        adapter: BaseAdapter,
+        model: LLMModelBase,
         api_key: str,
         input_text: str,
         voice: str,
-        config: "TTSConfig",
+        config: TTSConfig,
     ) -> RequestData:
         endpoint = getattr(adapter, "_get_gemini_endpoint")(model, None)
         url = adapter.get_api_url(model, endpoint)
@@ -1085,8 +1114,8 @@ class GeminiAudioHandler(BaseAudioHandler):
         return RequestData(url=url, headers=headers, body=body)
 
     async def parse_speech_response(
-        self, adapter: "BaseAdapter", model: "LLMModel", raw_response: Any
-    ) -> "AudioResponse":
+        self, adapter: BaseAdapter, model: LLMModelBase, raw_response: httpx.Response
+    ) -> AudioResponse:
         resp_bytes = await raw_response.aread()
         data = json.loads(resp_bytes)
         adapter.validate_response(data)
@@ -1108,7 +1137,7 @@ class GeminiAudioHandler(BaseAudioHandler):
             wav_file.setframerate(24000)
             wav_file.writeframes(audio_bytes)
 
-        from zhenxun.services.ai.core.messages import AudioResponse, UsageInfo
+        from zhenxun.services.ai.core.messages import UsageInfo
 
         return AudioResponse(
             audio_bytes=wav_io.getvalue(),

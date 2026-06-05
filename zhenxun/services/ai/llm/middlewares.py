@@ -2,7 +2,7 @@ import asyncio
 import json
 import re
 import time
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 
@@ -12,8 +12,12 @@ from zhenxun.services.ai.core.configs import (
     TTSConfig,
 )
 from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
-from zhenxun.services.ai.core.messages import LLMResponse
-from zhenxun.services.ai.llm.adapters.base import process_image_data
+from zhenxun.services.ai.core.messages import EmbedBatch, LLMResponse
+from zhenxun.services.ai.llm.adapters.base import (
+    BaseAdapter,
+    RequestData,
+    process_image_data,
+)
 from zhenxun.services.ai.llm.core import (
     HealthManager,
     RetryConfig,
@@ -26,9 +30,7 @@ from zhenxun.utils.http_utils import AsyncHttpx
 from zhenxun.utils.log_sanitizer import sanitize_for_logging
 from zhenxun.utils.pydantic_compat import dump_json_safely
 
-if TYPE_CHECKING:
-    from zhenxun.services.ai.llm.adapters.base import BaseAdapter, RequestData
-    from zhenxun.services.ai.llm.service import LLMModel
+from zhenxun.services.ai.protocols.llm import LLMModelBase
 
 
 class RetryMiddleware(BaseLLMMiddleware):
@@ -171,7 +173,7 @@ class EngineExecutionMiddleware(BaseLLMMiddleware):
     底层引擎执行中间件：将 Adapter 数据推入 Engine 运行，并解析回调
     """
 
-    def __init__(self, model_instance: "LLMModel", adapter: "BaseAdapter"):
+    def __init__(self, model_instance: LLMModelBase, adapter: BaseAdapter):
         self.model = model_instance
         self.adapter = adapter
         self.health_manager = model_instance.health_manager
@@ -180,7 +182,7 @@ class EngineExecutionMiddleware(BaseLLMMiddleware):
         api_key = context.runtime_state["api_key"]
         provider_name = self.model.provider_name
 
-        request_data: "RequestData"
+        request_data: RequestData
         gen_config: GenerationConfig | None = None
         embed_config: LLMEmbeddingConfig | None = None
 
@@ -188,11 +190,11 @@ class EngineExecutionMiddleware(BaseLLMMiddleware):
 
         if context.request_type == "embedding":
             embed_config = cast(LLMEmbeddingConfig, context.config)
-            texts = (context.extra or {}).get("texts", [])
-            request_data = self.adapter.prepare_embedding_request(
+            batch = cast(EmbedBatch, context.extra.get("embed_batch"))
+            request_data = await self.adapter.prepare_embedding_request(
                 model=self.model,
                 api_key=api_key,
-                texts=texts,
+                batch=batch,
                 config=embed_config,
             )
         elif context.request_type == "rerank":
@@ -326,7 +328,7 @@ class EngineExecutionMiddleware(BaseLLMMiddleware):
                         },
                     )
             else:
-                response_json = raw_engine_output
+                response_json = cast(dict[str, Any], raw_engine_output)
 
             sanitizer_resp_context = sanitizer_req_context.replace(
                 "_request", "_response"

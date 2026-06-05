@@ -27,7 +27,7 @@ class HybridRetriever(BaseRetriever):
         self.rrf_k = rrf_k
 
     async def retrieve(
-        self, query: str, limit: int = 10, **kwargs: Any
+        self, query: Any, limit: int = 10, **kwargs: Any
     ) -> list[SearchResult]:
         oversample_limit = max(limit * 2, 20)
 

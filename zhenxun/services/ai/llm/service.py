@@ -6,7 +6,10 @@ LLM 模型实现类
 
 from __future__ import annotations
 
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
+
+if TYPE_CHECKING:
+    from zhenxun.services.ai.run.models import CancellationToken
 
 from pydantic import BaseModel
 
@@ -20,6 +23,7 @@ from zhenxun.services.ai.core.engine.token_estimator import parse_usage_info
 from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
 from zhenxun.services.ai.core.messages import (
     AudioResponse,
+    EmbedBatch,
     EmbeddingResponse,
     LLMMessage,
     LLMResponse,
@@ -232,7 +236,7 @@ class LLMModel(LLMModelBase):
         tool_choice: str | dict[str, Any] | ToolChoice | None = None,
         timeout: float | None = None,
         extra: dict[str, Any] | None = None,
-        cancellation_token: Any | None = None,
+        cancellation_token: "CancellationToken | None" = None,
     ) -> LLMResponse:
         """
         生成高级响应 (支持中间件管道)。
@@ -318,12 +322,12 @@ class LLMModel(LLMModelBase):
 
     async def generate_embeddings(
         self,
-        texts: list[str],
+        batch: EmbedBatch,
         config: LLMEmbeddingConfig | None = None,
     ) -> EmbeddingResponse:
-        """生成文本嵌入向量"""
+        """生成文本或多模态嵌入向量"""
         self._check_not_closed()
-        if not texts:
+        if not batch.payloads:
             return EmbeddingResponse(
                 embeddings=[], usage=UsageInfo(), model_name=self.model_name
             )
@@ -337,7 +341,7 @@ class LLMModel(LLMModelBase):
             tool_choice=None,
             timeout=None,
             request_type="embedding",
-            extra={"texts": texts},
+            extra={"embed_batch": batch},
         )
 
         pipeline = self._build_pipeline()

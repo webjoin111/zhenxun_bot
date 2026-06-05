@@ -5,12 +5,12 @@ from typing import TYPE_CHECKING, Any
 from nonebot.adapters import Message as PlatformMessage
 
 from zhenxun.services.ai.core.exceptions import ToolFatalError
+from zhenxun.services.ai.run import RunContext
 from zhenxun.services.ai.run.di import DependencyInjector
 from zhenxun.services.ai.tools.models import ToolResult
 from zhenxun.services.log import logger
 
 if TYPE_CHECKING:
-    from zhenxun.services.ai.run import RunContext
     from zhenxun.services.ai.tools.core.tool import BaseTool
 
 
@@ -22,7 +22,7 @@ class ToolRunner(ABC):
 
     @abstractmethod
     async def run(
-        self, tool: "BaseTool", context: "RunContext", **kwargs: Any
+        self, tool: "BaseTool", context: RunContext, **kwargs: Any
     ) -> ToolResult:
         pass
 
@@ -34,7 +34,7 @@ class NativeToolRunner(ToolRunner):
     """
 
     async def run(
-        self, tool: "BaseTool", context: "RunContext", **kwargs: Any
+        self, tool: "BaseTool", context: RunContext, **kwargs: Any
     ) -> ToolResult:
         target_func = tool.get_execute_target()
         signature_target = tool.get_signature_target()

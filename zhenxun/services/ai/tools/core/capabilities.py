@@ -316,7 +316,7 @@ class InteractiveCapability(AbstractCapability):
         context: RunContext,
         tool_name: str,
         args: str | dict[str, Any],
-        handler: Callable,
+        handler: WrapToolValidateHandler,
     ) -> dict[str, Any]:
         from zhenxun.services.ai.core.exceptions import (
             NeedsInputException,

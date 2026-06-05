@@ -5,8 +5,9 @@
 from dataclasses import dataclass, field
 from enum import Enum, auto
 import sys
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
+from nonebot_plugin_alconna.uniseg import UniMessage
 from pydantic import BaseModel, ConfigDict, Field
 
 from zhenxun.services.ai.core.messages import ToolCallPart, UsageInfo
@@ -16,6 +17,11 @@ if sys.version_info >= (3, 11):
     from enum import StrEnum
 else:
     from strenum import StrEnum
+
+from zhenxun.services.ai.run.context import RunContext
+
+if TYPE_CHECKING:
+    from zhenxun.services.ai.tools.core.tool import BaseTool
 
 
 class ToolCategory(Enum):
@@ -71,8 +77,6 @@ class TaskType(Enum):
     MULTIMODAL = "multimodal"
 
 
-
-
 class ToolResult(BaseModel):
     """结构化的工具执行结果模型"""
 
@@ -83,7 +87,7 @@ class ToolResult(BaseModel):
     usage: UsageInfo | None = Field(default=None)
     """子智能体或复杂工具消耗的 Token 统计，将向主流程冒泡累加。"""
 
-    ui_display: Any = Field(default=None)
+    ui_display: "str | UniMessage | None" = Field(default=None)
     """专门用于前端群聊展示的内容 (str 或 UniMessage)"""
     log_content: str | None = Field(default=None)
     """后台日志专属摘要"""
@@ -238,7 +242,9 @@ class ToolOverride(BaseModel):
     def to_tool_options(self) -> ToolOptions:
         return self.options or ToolOptions()
 
-    async def resolve(self, context: Any | None = None) -> "ResolvedToolPayload":
+    async def resolve(
+        self, context: RunContext | None = None
+    ) -> "ResolvedToolPayload":
         from zhenxun.services.ai.tools.engine.registry import tool_provider_manager
         from zhenxun.services.ai.tools.models import ResolvedToolPayload
         from zhenxun.services.log import logger
@@ -308,15 +314,16 @@ class Query(BaseModel):
     )
     """如果提供，则工具的 metadata 必须包含这里列出的所有键值对。"""
 
-    def match(self, tool: Any) -> bool:
+    def match(self, tool: "BaseTool") -> bool:
         """判断某个工具或工具箱是否符合当前 Query 的筛选条件"""
         if self.name:
             tool_name = getattr(tool, "name", getattr(tool, "__class__", type).__name__)
             if tool_name != self.name:
                 return False
         if self.tags:
-            if hasattr(tool, "config") and hasattr(tool.config, "global_tags"):
-                tool_tags = tool.config.global_tags
+            tool_config = getattr(tool, "config", None)
+            if tool_config and hasattr(tool_config, "global_tags"):
+                tool_tags = tool_config.global_tags
             else:
                 tool_settings = getattr(tool, "settings", None)
                 tool_tags = getattr(tool_settings, "tags", []) if tool_settings else []

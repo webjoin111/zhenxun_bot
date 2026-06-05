@@ -4,10 +4,8 @@ from typing import Any, Literal
 from zhenxun.services.ai.memory.manager import memory_manager
 from zhenxun.services.ai.memory.models import (
     MemoryConfig,
-    MemorySlot,
-    SessionMetadata,
-    SlotScope,
 )
+from zhenxun.services.ai.memory.types import MemorySlot, SessionMetadata, SlotScope
 from zhenxun.services.ai.tools.core.decorators import silent, tool
 from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
 from zhenxun.services.ai.tools.models import ToolResult

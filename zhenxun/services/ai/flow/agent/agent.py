@@ -2,7 +2,7 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 import contextlib
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Generic, cast
+from typing import Any, Generic, cast
 from typing_extensions import Self
 
 from nonebot.utils import is_coroutine_callable
@@ -14,6 +14,7 @@ from zhenxun.services.ai.core.configs import (
 from zhenxun.services.ai.core.exceptions import (
     ControlFlowException,
 )
+from zhenxun.services.ai.core.guardrails import GuardrailSource
 from zhenxun.services.ai.core.messages import (
     LLMMessage,
     PromptInput,
@@ -30,7 +31,7 @@ from zhenxun.services.ai.llm.config.generation import IntentBuilder
 from zhenxun.services.ai.memory.builder import MemoryBuilder
 from zhenxun.services.ai.memory.models import MemoryConfig
 from zhenxun.services.ai.protocols.capabilities import AbstractCapability
-from zhenxun.services.ai.protocols.tool import ToolExecutable
+from zhenxun.services.ai.protocols.tool import ToolExecutable, ToolResolvable
 from zhenxun.services.ai.run import (
     AgentRunResult,
     ExecutionConfig,
@@ -44,7 +45,10 @@ from zhenxun.services.ai.run.models import (
     AgentRunError,
     AgentRunStart,
     OutputDataT,
+    StreamedRunResult,
 )
+from zhenxun.services.ai.tools.core.tool import BaseTool
+from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
 from zhenxun.services.ai.tools.engine.global_capabilities import ReflexionCapability
 from zhenxun.services.ai.tools.models import (
     GlobalToolFilter,
@@ -54,8 +58,11 @@ from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_copy
 from zhenxun.utils.utils import infer_plugin_namespace
 
-if TYPE_CHECKING:
-    from zhenxun.services.ai.run.models import StreamedRunResult
+ToolSource = Callable | BaseTool | dict[str, Any] | str | BaseToolkit | ToolResolvable
+"""任何可以作为工具提供给大模型的实体对象（函数、基础工具类、字典定义、工具名、工具箱）"""
+
+CapabilitySource = Callable | AbstractCapability
+"""能力/拦截器来源（函数或 AbstractCapability 实例）"""
 
 
 class Agent(
@@ -73,7 +80,7 @@ class Agent(
         description: str | None = None,
         persona: Persona | dict | None = None,
         model: str | Callable[[], str] | None = None,
-        tools: list | None = None,
+        tools: list[ToolSource] | None = None,
         generation_config: GenerationConfig | IntentBuilder | dict | None = None,
         response_model: BaseOutputDefinition | type[OutputDataT] | None = None,
         dynamic_prompts: list[Callable] | None = None,
@@ -81,8 +88,8 @@ class Agent(
         knowledge: BaseKnowledge | list[BaseKnowledge] | None = None,
         runtime_config: AgentRuntimeConfig | dict | None = None,
         prepare_tools: ToolsPrepareFunc | None = None,
-        guardrails: list[Any] | None = None,
-        capabilities: list[Any] | None = None,
+        guardrails: list[GuardrailSource] | None = None,
+        capabilities: list[CapabilitySource] | None = None,
     ):
         """
         初始化 Agent。
@@ -307,7 +314,7 @@ class Agent(
         config: ExecutionConfig | None = None,
         memory: bool | MemoryConfig | MemoryBuilder | None = None,
         generation_config: GenerationConfig | None = None,
-        capabilities: list[Any] | None = None,
+        capabilities: list[CapabilitySource] | None = None,
         **kwargs: Any,
     ) -> AgentRunResult[OutputDataT]:
         """
@@ -353,14 +360,13 @@ class Agent(
         memory: bool | MemoryConfig | MemoryBuilder | None = None,
         generation_config: GenerationConfig | None = None,
         event_streamer: EventStreamer | None = None,
-        capabilities: list[Any] | None = None,
+        capabilities: list[CapabilitySource] | None = None,
         **kwargs: Any,
-    ) -> "AsyncIterator[StreamedRunResult[OutputDataT]]":
+    ) -> AsyncIterator[StreamedRunResult[OutputDataT]]:
         """
         智能体流式运行入口。
         返回上下文管理器，可安全、解耦地获取底层事件或纯净文本结果。
         """
-        from zhenxun.services.ai.run import StreamedRunResult
 
         streamer = event_streamer or EventStreamer()
         if context is None:
@@ -525,7 +531,6 @@ class Agent(
             async with ToolBuilder.mount_toolkits(
                 toolkits, context.session_id or "", context
             ):
-                # 支持扩展：如果配置了 custom_executor，使用自定义引擎，否则使用默认引擎
                 executor_cls = getattr(self.runtime_config, "custom_executor", None)
                 if executor_cls is None:
                     from zhenxun.services.ai.flow.agent.engine.executor import (

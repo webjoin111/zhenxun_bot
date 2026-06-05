@@ -1,7 +1,7 @@
 import ast
 import asyncio
 import json
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import json_repair
 
@@ -10,6 +10,7 @@ from zhenxun.services.ai.core.exceptions import (
 )
 from zhenxun.services.ai.core.messages import AnyLLMMessage, LLMMessage, ToolCallPart
 from zhenxun.services.ai.core.stream_events import (
+    EventStreamer,
     ToolCallResultEvent,
     ToolCallStart,
 )
@@ -20,6 +21,9 @@ from zhenxun.services.ai.tools.models import (
     ValidatedToolCall,
 )
 from zhenxun.services.log import logger
+
+if TYPE_CHECKING:
+    from zhenxun.services.ai.tools.engine.registry import ToolCollection
 
 
 class ToolExecutor:
@@ -47,11 +51,13 @@ class ToolExecutor:
     async def validate_tool_call(
         self,
         tool_call: ToolCallPart,
-        available_tools: Any,
-        context: Any | None = None,
-        event_streamer: Any | None = None,
+        available_tools: "ToolCollection | dict[str, Any] | None",
+        context: RunContext | None = None,
+        event_streamer: EventStreamer | None = None,
     ) -> ValidatedToolCall:
         """验证单一工具调用，完成参数解析、类型检查与交互式补全(如果触发)。"""
+        if not available_tools:
+            available_tools = {}
         if not tool_call.tool_name:
             return ValidatedToolCall(
                 call=tool_call,
@@ -180,13 +186,15 @@ class ToolExecutor:
     async def execute_tool_call(
         self,
         validated: ValidatedToolCall,
-        available_tools: Any,
-        context: Any | None = None,
+        available_tools: "ToolCollection | dict[str, Any] | None",
+        context: RunContext | None = None,
         model_name: str | None = None,
         max_retries: int = 0,
-        event_streamer: Any | None = None,
+        event_streamer: EventStreamer | None = None,
     ) -> tuple[ToolCallPart, ToolResult]:
         """核心执行阶段。只接收已经通过 Validation 阶段的 ValidatedToolCall 载体。"""
+        if not available_tools:
+            available_tools = {}
         tool_name = validated.call.tool_name
         if not validated.args_valid or validated.tool is None:
             from zhenxun.services.ai.core.exceptions import ControlFlowException
@@ -264,13 +272,15 @@ class ToolExecutor:
     async def execute_batch(
         self,
         tool_calls: list[ToolCallPart],
-        available_tools: Any,
-        context: Any | None = None,
+        available_tools: "ToolCollection | dict[str, Any] | None",
+        context: RunContext | None = None,
         model_name: str | None = None,
         max_retries: int = 0,
-        event_streamer: Any | None = None,
+        event_streamer: EventStreamer | None = None,
     ) -> list[AnyLLMMessage]:
         """批量并发执行多个工具调用。"""
+        if not available_tools:
+            available_tools = {}
         if not tool_calls:
             return []
 

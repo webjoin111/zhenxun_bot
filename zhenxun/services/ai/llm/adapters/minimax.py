@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-from zhenxun.services.ai.core.configs import GenerationConfig
+import httpx
+
+from zhenxun.services.ai.core.configs import GenerationConfig, TTSConfig
 from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
+from zhenxun.services.ai.core.messages import AudioResponse
 from zhenxun.services.ai.core.models import ModelCapabilities, ModelDetail
-from zhenxun.services.ai.llm.adapters.base import RequestData
+from zhenxun.services.ai.llm.adapters.base import BaseAdapter, RequestData
 from zhenxun.services.ai.llm.adapters.handlers.base import BaseAudioHandler
+from zhenxun.services.ai.protocols.llm import LLMModelBase
 
 from .handlers.openai_handlers import (
     OpenAIConfigMapper,
@@ -15,24 +19,18 @@ from .handlers.openai_handlers import (
 )
 from .openai import OpenAICompatAdapter
 
-if TYPE_CHECKING:
-    from zhenxun.services.ai.core.configs import TTSConfig
-    from zhenxun.services.ai.core.messages import AudioResponse
-    from zhenxun.services.ai.llm.adapters.base import BaseAdapter
-    from zhenxun.services.ai.llm.service import LLMModel
-
 
 class MiniMaxAudioHandler(BaseAudioHandler):
     """MiniMax 专有文本转语音处理器"""
 
     def prepare_speech_request(
         self,
-        adapter: "BaseAdapter",
-        model: "LLMModel",
+        adapter: BaseAdapter,
+        model: LLMModelBase,
         api_key: str,
         input_text: str,
         voice: str,
-        config: "TTSConfig",
+        config: TTSConfig,
     ) -> RequestData:
         endpoint = "/v1/t2a_v2"
         base_url = (
@@ -83,8 +81,8 @@ class MiniMaxAudioHandler(BaseAudioHandler):
         return RequestData(url=url, headers=headers, body=body)
 
     async def parse_speech_response(
-        self, adapter: "BaseAdapter", model: "LLMModel", raw_response: Any
-    ) -> "AudioResponse":
+        self, adapter: BaseAdapter, model: LLMModelBase, raw_response: httpx.Response
+    ) -> AudioResponse:
         resp_bytes = await raw_response.aread()
         data = json.loads(resp_bytes)
 
@@ -163,13 +161,13 @@ class MiniMaxAdapter(OpenAICompatAdapter):
         """当前适配器支持的 API 类型列表。"""
         return ["minimax"]
 
-    def get_chat_endpoint(self, model: "LLMModel") -> str:
+    def get_chat_endpoint(self, model: LLMModelBase) -> str:
         """根据官方兼容要求，重写获取端点，允许自定义覆盖"""
         if model.model_detail.endpoint:
             return model.model_detail.endpoint
         return "/v1/chat/completions"
 
-    def _get_base_url(self, model: "LLMModel") -> str:
+    def _get_base_url(self, model: LLMModelBase) -> str:
         base_url = (
             model.api_base.rstrip("/") if model.api_base else "https://api.minimaxi.com"
         )

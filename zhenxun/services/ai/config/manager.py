@@ -91,6 +91,17 @@ def get_default_providers() -> list[dict[str, Any]]:
                 {"model_name": "x-ai/grok-4"},
             ],
         },
+        {
+            "name": "Jina",
+            "api_key": "YOUR_JINA_API_KEY",
+            "api_base": "https://api.jina.ai",
+            "api_type": "jina",
+            "models": [
+                {"model_name": "jina-embeddings-v3"},
+                {"model_name": "jina-embeddings-v5-omni-small"},
+                {"model_name": "jina-reranker-v2-base-multilingual"},
+            ],
+        },
     ]
 
 
@@ -181,6 +192,7 @@ def register_llm_configs():
             "- 'gemini': Google Gemini API\n"
             "- 'glm': 智谱 AI (GLM)\n"
             "- 'doubao': 字节跳动火山引擎 (Doubao)\n"
+            "- 'jina': Jina AI (专精于多模态嵌入与重排)\n"
             "- 'openrouter': OpenRouter 聚合平台\n"
             "- 'openai_responses': 支持新版 responses 格式的 OpenAI 兼容接口\n"
             "- 'smart': 智能路由模式 (主要用于第三方中转场景，自动根据模型名"

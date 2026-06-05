@@ -8,9 +8,8 @@ from zhenxun.services.ai.flow.agent.models import AgentLoopConfig, AgentLoopCont
 from zhenxun.services.ai.memory.engine import MemoryReader, MemoryWriter
 from zhenxun.services.ai.memory.models import (
     MemoryConfig,
-    MemoryIsolationLevel,
-    SessionMetadata,
 )
+from zhenxun.services.ai.memory.types import MemoryIsolationLevel, SessionMetadata
 from zhenxun.services.ai.memory.utils import generate_session_meta
 from zhenxun.services.ai.protocols.capabilities import (
     AbstractCapability,

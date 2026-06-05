@@ -60,7 +60,7 @@ class ScopedRAGClient:
 
     async def search(
         self,
-        query: str,
+        query: Any,
         limit: int = 10,
         scopes: str | list[str] | None = None,
         **kwargs: Any,

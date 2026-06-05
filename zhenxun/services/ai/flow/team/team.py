@@ -1,4 +1,4 @@
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from zhenxun.services.ai.core.messages import PromptInput
 from zhenxun.services.ai.flow.base import BaseRunnable
@@ -7,6 +7,10 @@ from zhenxun.services.ai.flow.team.strategy import (
     BaseTeamStrategy,
 )
 from zhenxun.services.ai.run import AgentRunResult, RunContext, Task
+
+if TYPE_CHECKING:
+    from zhenxun.services.ai.flow.agent.agent import CapabilitySource
+    from zhenxun.services.ai.flow.agent.models import Persona
 
 
 class Team(BaseRunnable[AgentRunResult[Any]]):
@@ -21,9 +25,9 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         members: list[BaseRunnable[Any]],
         strategy: BaseTeamStrategy,
         description: str | None = None,
-        persona: Any | None = None,
+        persona: "Persona | dict | None" = None,
         runtime_config: TeamRuntimeConfig | dict | None = None,
-        capabilities: list[Any] | None = None,
+        capabilities: list["CapabilitySource"] | None = None,
     ):
         """
         多智能体协作团队初始化。
@@ -68,8 +72,8 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         self,
         prompt: PromptInput | Task | None = None,
         *,
-        context: RunContext | None = None,
-        capabilities: list[Any] | None = None,
+        context: "RunContext | None" = None,
+        capabilities: list["CapabilitySource"] | None = None,
         **kwargs: Any,
     ) -> AgentRunResult[Any]:
         """
@@ -95,8 +99,8 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         self,
         prompt: PromptInput | Task | None = None,
         *,
-        context: RunContext | None = None,
-        capabilities: list[Any] | None = None,
+        context: "RunContext | None" = None,
+        capabilities: list["CapabilitySource"] | None = None,
         **kwargs: Any,
     ):
         import asyncio

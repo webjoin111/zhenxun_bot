@@ -5,7 +5,7 @@ import mimetypes
 from pathlib import Path
 from typing import Any, ClassVar, TypeVar, cast
 
-from nonebot.adapters import Message as PlatformMessage
+from nonebot.adapters import Bot, Event, Message as PlatformMessage
 from nonebot_plugin_alconna.uniseg import (
     Audio,
     Image,
@@ -20,6 +20,8 @@ from PIL.Image import Image as PILImageType
 from zhenxun.services.ai.core.messages import (
     AudioPart,
     BaseContentPart,
+    EmbedBatch,
+    EmbedPayload,
     FilePart,
     ImagePart,
     LLMContentPart,
@@ -204,7 +206,7 @@ class MessageBuilder:
 
     @classmethod
     async def _fetch_reply_as_parts(
-        cls, bot: Any, event: Any, namespace: str = "global"
+        cls, bot: "Bot", event: "Event", namespace: str = "global"
     ) -> list[LLMContentPart] | None:
         """提取公共引用抓取与解析逻辑"""
         try:
@@ -243,8 +245,8 @@ class MessageBuilder:
         cls,
         message: PromptInput,
         instruction: str | None = None,
-        bot: Any = None,
-        event: Any = None,
+        bot: "Bot | None" = None,
+        event: "Event | None" = None,
         namespace: str = "global",
     ) -> list[LLMMessage]:
         messages = []
@@ -334,6 +336,63 @@ class MessageBuilder:
     @classmethod
     def message_to_unimessage(cls, message: PlatformMessage) -> UniMessage:
         return UniMessage.of(message)
+
+    @classmethod
+    async def _extract_parts_for_embed(
+        cls, item: Any, bot: "Bot | None" = None, event: "Event | None" = None, namespace: str = "global"
+    ) -> list[LLMContentPart]:
+        """为 Embed 专用提取纯粹的内容片段，忽略工具调用等杂项"""
+        from zhenxun.services.ai.core.messages import (
+            AudioPart,
+            FilePart,
+            ImagePart,
+            TextPart,
+            VideoPart,
+        )
+
+        messages = await cls.normalize_to_llm_messages(
+            item, bot=bot, event=event, namespace=namespace
+        )
+        parts = []
+        for msg in messages:
+            for part in msg.content:
+                if isinstance(
+                    part, (TextPart, ImagePart, AudioPart, VideoPart, FilePart)
+                ):
+                    parts.append(part)
+        return parts
+
+    @classmethod
+    async def normalize_to_embed_batch(
+        cls, inputs: Any, bot: "Bot | None" = None, event: "Event | None" = None, namespace: str = "global"
+    ) -> "EmbedBatch":
+        """将任意输入标准化为 EmbedBatch (支持单模态批量与多模态融合)"""
+        from nonebot_plugin_alconna import UniMessage
+
+        from zhenxun.services.ai.core.messages import BaseContentPart, TextPart
+
+        if isinstance(inputs, list) and not isinstance(inputs, UniMessage):
+            if not inputs:
+                return EmbedBatch(payloads=[])
+            if isinstance(inputs[0], BaseContentPart):
+                return EmbedBatch(payloads=[EmbedPayload(parts=inputs)])
+
+            batch = EmbedBatch(payloads=[])
+            for item in inputs:
+                parts = await cls._extract_parts_for_embed(item, bot, event, namespace)
+                if parts:
+                    batch.payloads.append(EmbedPayload(parts=parts))
+                else:
+                    fallback_parts: list[LLMContentPart] = [TextPart(text=" ")]
+                    batch.payloads.append(EmbedPayload(parts=fallback_parts))
+            return batch
+
+        else:
+            parts = await cls._extract_parts_for_embed(inputs, bot, event, namespace)
+            if not parts:
+                fallback_parts: list[LLMContentPart] = [TextPart(text=" ")]
+                parts = fallback_parts
+            return EmbedBatch(payloads=[EmbedPayload(parts=parts)])
 
 
 @MessageBuilder.register_message_converter(UniMessage, scope="global")

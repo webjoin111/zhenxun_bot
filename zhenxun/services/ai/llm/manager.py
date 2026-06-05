@@ -10,12 +10,13 @@ from typing import Any
 
 from zhenxun.configs.config import Config
 from zhenxun.services.ai.config import ProviderConfig, get_llm_config
-from zhenxun.services.ai.core.configs import GenerationConfig
+from zhenxun.services.ai.core.configs import GenerationConfig, LLMEmbeddingConfig
 from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
-from zhenxun.services.ai.core.messages import EmbeddingResponse, LLMResponse
-from zhenxun.services.ai.core.models import ModelDetail, ModelModality
+from zhenxun.services.ai.core.messages import EmbedBatch, EmbeddingResponse, LLMResponse
+from zhenxun.services.ai.core.models import ModelDetail, ModelModality, ToolChoice
 from zhenxun.services.ai.llm.capabilities import get_model_capabilities
 from zhenxun.services.ai.protocols.llm import LLMModelBase
+from zhenxun.services.ai.run.models import CancellationToken
 from zhenxun.services.log import logger
 from zhenxun.utils.manager.priority_manager import PriorityLifecycle
 from zhenxun.utils.pydantic_compat import dump_json_safely, model_copy, model_dump
@@ -40,7 +41,10 @@ class RoutedLLMModel(LLMModelBase):
     """
 
     def __init__(
-        self, group_name: str, model_names: list[str], override_config: Any = None
+        self,
+        group_name: str,
+        model_names: list[str],
+        override_config: dict[str, Any] | GenerationConfig | None = None,
     ):
         self.group_name = group_name
         self.model_names = model_names
@@ -56,12 +60,12 @@ class RoutedLLMModel(LLMModelBase):
     async def generate_response(
         self,
         messages: list[Any],
-        config: Any = None,
+        config: GenerationConfig | None = None,
         tools: list[Any] | None = None,
-        tool_choice: Any = None,
+        tool_choice: str | dict | ToolChoice | None = None,
         timeout: float | None = None,
         extra: dict[str, Any] | None = None,
-        cancellation_token: Any | None = None,
+        cancellation_token: CancellationToken | None = None,
     ) -> LLMResponse:
         from zhenxun.services.ai.llm.core import health_manager
 
@@ -163,7 +167,7 @@ class RoutedLLMModel(LLMModelBase):
         )
 
     async def generate_embeddings(
-        self, texts: list[str], config: Any = None
+        self, batch: EmbedBatch, config: LLMEmbeddingConfig | None = None
     ) -> EmbeddingResponse:
         errors = []
         from zhenxun.services.ai.llm.core import health_manager
@@ -175,7 +179,7 @@ class RoutedLLMModel(LLMModelBase):
                 async with await get_model_instance(
                     m_name, self.override_config
                 ) as instance:
-                    return await instance.generate_embeddings(texts, config)
+                    return await instance.generate_embeddings(batch, config)
             except Exception:
                 errors.append(f"{m_name}(Error)")
         raise LLMException(f"路由组 '{self.group_name}' Embeddings 均失败: {errors}")
@@ -297,6 +301,7 @@ def get_default_api_base_for_type(api_type: str) -> str | None:
         "openai": "https://api.openai.com",
         "doubao": "https://ark.cn-beijing.volces.com/api",
         "deepseek": "https://api.deepseek.com",
+        "jina": "https://api.jina.ai",
         "glm": "https://open.bigmodel.cn",
         "gemini": "https://generativelanguage.googleapis.com",
         "openrouter": "https://openrouter.ai/api",
@@ -572,6 +577,7 @@ def get_default_model(task: str = "chat") -> str | None:
 def set_global_default_model_name(task: str, provider_model_name: str | None) -> bool:
     """设置全局默认模型名称。"""
     from zhenxun.services.ai.config import set_default_model as _set_default_model
+
     return _set_default_model(task, provider_model_name)
 
 

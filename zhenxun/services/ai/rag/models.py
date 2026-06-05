@@ -2,6 +2,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from zhenxun.services.ai.rag.backends import StorageBackend, Embedder
+    from zhenxun.services.ai.rag.retrieval import BaseRetriever, PreProcessor, PostProcessor
+    from zhenxun.services.ai.rag.indexing import ChunkingStrategy
+    from zhenxun.services.ai.rag.consolidation import Consolidator
+
 
 class BaseRecord(BaseModel):
     """RAG 基础记录载体，没有任何业务属性"""
@@ -65,7 +72,7 @@ class ConsolidationPlan(BaseModel):
 
 class ChunkingConfig(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    strategy: Any | None = None
+    strategy: "ChunkingStrategy | None" = None
     """文档切块策略"""
 
 
@@ -78,7 +85,7 @@ class DedupConfig(BaseModel):
 
 class ConsolidationConfig(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    consolidator: Any | None = None
+    consolidator: "Consolidator | None" = None
     """大模型记忆融合与反思器"""
     threshold: float = 0.85
     """融合相似度阈值"""
@@ -126,11 +133,11 @@ class LifecycleConfig(BaseModel):
 
 class RAGConfig(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    storage: Any | None = None
+    storage: "StorageBackend | None" = None
     """存储后端"""
-    embedder: Any | None = None
+    embedder: "Embedder | None" = None
     """向量化引擎"""
-    custom_retriever: Any | None = None
+    custom_retriever: "BaseRetriever | None" = None
     """自定义召回器"""
     scopes: str | list[str] = "/"
     """数据隔离作用域"""
@@ -150,7 +157,7 @@ class RAGConfig(BaseModel):
     """查询意图重写配置"""
     synonyms: dict[str, list[str]] = Field(default_factory=dict)
     """静态同义词扩展字典 (如 {"ys": ["原神"], "db": ["数据库"]})"""
-    pre_processors: list[Any] = Field(default_factory=list)
+    pre_processors: list["PreProcessor"] = Field(default_factory=list)
     """自定义查询前处理器列表"""
-    post_processors: list[Any] = Field(default_factory=list)
+    post_processors: list["PostProcessor"] = Field(default_factory=list)
     """自定义检索后处理器列表"""

@@ -22,7 +22,7 @@ class BaseRetriever(Protocol):
 
     @abstractmethod
     async def retrieve(
-        self, query: str, limit: int = 10, **kwargs: Any
+        self, query: Any, limit: int = 10, **kwargs: Any
     ) -> list[SearchResult]: ...
 
 
@@ -69,16 +69,24 @@ class VectorDBRetriever(BaseRetriever):
         self.scope_prefix = scope_prefix
 
     async def retrieve(
-        self, query: str, limit: int = 10, **kwargs: Any
+        self, query: Any, limit: int = 10, **kwargs: Any
     ) -> list[SearchResult]:
-        if not query.strip():
-            return []
+        text_query = ""
+        if isinstance(query, str):
+            text_query = query
+        elif hasattr(query, "extract_plain_text"):
+            text_query = query.extract_plain_text()
+        else:
+            text_query = str(query)
 
-        vecs = await self.embedder([query], task="query")
+        vecs = await self.embedder(query, task="query")
         query_vec = vecs[0] if vecs else None
 
+        if not text_query.strip() and not query_vec:
+            return []
+
         req = QueryRequest(
-            text=query,
+            text=text_query,
             embedding=query_vec,
             limit=limit,
             search_type="dense",
@@ -96,13 +104,22 @@ class DatabaseSparseRetriever(BaseRetriever):
         self.scope_prefix = scope_prefix
 
     async def retrieve(
-        self, query: str, limit: int = 10, **kwargs: Any
+        self, query: Any, limit: int = 10, **kwargs: Any
     ) -> list[SearchResult]:
-        if not query.strip():
+        text_query = (
+            query
+            if isinstance(query, str)
+            else (
+                query.extract_plain_text()
+                if hasattr(query, "extract_plain_text")
+                else str(query)
+            )
+        )
+        if not text_query.strip():
             return []
 
         req = QueryRequest(
-            text=query,
+            text=text_query,
             limit=limit,
             search_type="sparse",
             metadata_filters=kwargs.get("metadata_filters"),
@@ -125,7 +142,7 @@ class RerankRetriever(BaseRetriever):
         self.top_n = top_n
 
     async def retrieve(
-        self, query: str, limit: int = 10, **kwargs: Any
+        self, query: Any, limit: int = 10, **kwargs: Any
     ) -> list[SearchResult]:
         oversample_limit = max(limit * 2, 20)
         initial_results = await self.base_retriever.retrieve(
@@ -135,6 +152,16 @@ class RerankRetriever(BaseRetriever):
         if not initial_results:
             return []
 
+        text_query = (
+            query
+            if isinstance(query, str)
+            else (
+                query.extract_plain_text()
+                if hasattr(query, "extract_plain_text")
+                else str(query)
+            )
+        )
+
         docs: list[str | dict[str, str]] = [
             res.record.content for res in initial_results
         ]
@@ -143,7 +170,7 @@ class RerankRetriever(BaseRetriever):
 
         try:
             reranked = await rerank(
-                query=query,
+                query=text_query,
                 documents=docs,
                 top_n=min(limit, self.top_n),
                 model=self.model_name,
@@ -234,11 +261,32 @@ class PipelineRetriever(BaseRetriever):
         self.pre_processors = pre_processors or []
 
     async def retrieve(
-        self, query: str, limit: int = 10, **kwargs: Any
+        self, query: Any, limit: int = 10, **kwargs: Any
     ) -> list[SearchResult]:
+        text_query = (
+            query
+            if isinstance(query, str)
+            else (
+                query.extract_plain_text()
+                if hasattr(query, "extract_plain_text")
+                else ""
+            )
+        )
+
         queries_to_search = [query]
-        for pp in self.pre_processors:
-            queries_to_search = await pp.process(query)
+
+        if text_query.strip():
+            processed_texts = [text_query]
+            for pp in self.pre_processors:
+                new_texts = []
+                for t in processed_texts:
+                    new_texts.extend(await pp.process(t))
+                processed_texts = new_texts
+
+            if len(processed_texts) > 1 or (
+                len(processed_texts) == 1 and processed_texts[0] != text_query
+            ):
+                queries_to_search.extend(processed_texts)
 
         all_results = []
         seen_ids = set()
@@ -280,6 +328,7 @@ class LifecyclePostProcessor(PostProcessor):
     ) -> list[SearchResult]:
         now = time.time()
         import math
+
         for res in results:
             created_at = res.record.metadata.get("created_at", now)
             importance = res.record.metadata.get("importance", 0.5)

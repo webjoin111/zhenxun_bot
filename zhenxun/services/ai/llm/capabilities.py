@@ -19,6 +19,22 @@ PATTERNS_OPENAI_REASONING = ["o1-*", "o3-*", "deepseek-r1*", "deepseek-reasoner"
 PATTERNS_DEEPSEEK_V4 = ["deepseek-v4*"]
 PATTERNS_MINIMAX_REASONING = ["*MiniMax-M2*", "*minimax-m2*"]
 PATTERNS_GEMINI_IMAGE = ["*gemini*image*"]
+PATTERNS_GEMINI_EMBEDDING_2 = ["gemini-embedding-2*"]
+PATTERNS_JINA_EMBEDDING = ["jina-embeddings-*"]
+PATTERNS_JINA_V5_OMNI = ["jina-embeddings-v5-omni*"]
+PATTERNS_JINA_RERANKER = ["jina-reranker-*", "jina-colbert-*"]
+
+CAP_MULTIMODAL_EMBEDDING = ModelCapabilities(
+    input_modalities={
+        ModelModality.TEXT,
+        ModelModality.IMAGE,
+        ModelModality.AUDIO,
+        ModelModality.VIDEO,
+        ModelModality.FILE,
+    },
+    is_embedding_model=True,
+    supports_tool_calling=False,
+)
 
 STANDARD_TEXT_TOOL_CAPABILITIES = ModelCapabilities(
     input_modalities={ModelModality.TEXT},
@@ -205,6 +221,27 @@ def _build_registry() -> dict[str, ModelCapabilities]:
         ["deepseek-chat", "deepseek-v3*"], STANDARD_TEXT_TOOL_CAPABILITIES, ctx_128k_8k
     )
     register_family(["*reranker*", "*rerank*", "bge-m3*"], CAP_RERANK_ONLY)
+
+    register_family(
+        PATTERNS_GEMINI_EMBEDDING_2,
+        CAP_MULTIMODAL_EMBEDDING,
+        {"max_input_tokens": 8192},
+    )
+    register_family(
+        PATTERNS_JINA_V5_OMNI, CAP_MULTIMODAL_EMBEDDING, {"max_input_tokens": 8192}
+    )
+
+    register_family(
+        PATTERNS_JINA_EMBEDDING,
+        ModelCapabilities(
+            input_modalities={ModelModality.TEXT},
+            is_embedding_model=True,
+            supports_tool_calling=False,
+        ),
+        {"max_input_tokens": 8192},
+    )
+
+    register_family(PATTERNS_JINA_RERANKER, CAP_RERANK_ONLY, {"max_input_tokens": 8192})
 
     return registry
 

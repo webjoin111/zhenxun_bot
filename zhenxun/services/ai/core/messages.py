@@ -249,6 +249,41 @@ class ThoughtDeltaPart(BaseModel):
     """流式返回的思考过程增量字符串"""
 
 
+class EmbedPayload(BaseModel):
+    """单一的嵌入载体，包含一个或多个多模态片段（融合向量）"""
+
+    parts: list[LLMContentPart] = Field(default_factory=list)
+
+    @property
+    def text(self) -> str:
+        """快速提取纯文本（用于向下兼容不支持多模态的模型）"""
+        return "".join(p.text for p in self.parts if isinstance(p, TextPart)).strip()
+
+    @property
+    def has_multimodal(self) -> bool:
+        """判断是否包含图像/音频/视频/文件等非文本模态"""
+        return any(not isinstance(p, TextPart) for p in self.parts)
+
+
+class EmbedBatch(BaseModel):
+    """一次嵌入 API 请求的批次载体"""
+
+    payloads: list[EmbedPayload] = Field(default_factory=list)
+
+    def to_text_only(self, context_name: str) -> list[str]:
+        """降级工具：将多模态的批量向量安全剔除图片等内容，回退为纯文本数组"""
+        from zhenxun.services.log import logger
+        texts = []
+        for payload in self.payloads:
+            if payload.has_multimodal:
+                logger.warning(
+                    f"⚠️ 模型 {context_name} "
+                    "不支持多模态嵌入，已自动剔除富媒体内容，静默降级为纯文本进行向量化..."
+                )
+            texts.append(payload.text if payload.text else " ")
+        return texts
+
+
 class ToolCallDeltaPart(BaseModel):
     """流式工具调用增量片段"""
 
@@ -874,6 +909,8 @@ __all__ = [
     "AssistantMessage",
     "AudioPart",
     "AudioResponse",
+    "EmbedBatch",
+    "EmbedPayload",
     "EmbeddingResponse",
     "FilePart",
     "ImagePart",

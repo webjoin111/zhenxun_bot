@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 import inspect
 from typing import Any, cast
 
@@ -16,7 +16,7 @@ class TeamRoutingCapability(AbstractCapability):
         self,
         team_name: str,
         members: list[Any],
-        state_flow: dict[str, list[str]] | Callable | None = None,
+        state_flow: Mapping[str, Sequence[Any]] | Callable | None = None,
     ):
         self.team_name = team_name
         self.members = members

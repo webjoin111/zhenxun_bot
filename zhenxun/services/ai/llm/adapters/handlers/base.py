@@ -3,17 +3,27 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
-from zhenxun.services.ai.core.configs import GenerationConfig
-from zhenxun.services.ai.core.messages import LLMMessage
-from zhenxun.services.ai.core.models import ModelCapabilities, ModelDetail
-from zhenxun.services.ai.llm.adapters.base import RequestData, ResponseData
+import httpx
 
-if TYPE_CHECKING:
-    from zhenxun.services.ai.core.configs import LLMEmbeddingConfig, TTSConfig
-    from zhenxun.services.ai.core.messages import AudioResponse, RerankResult
-    from zhenxun.services.ai.core.models import ToolChoice, ToolDefinition
-    from zhenxun.services.ai.llm.adapters.base import BaseAdapter
-    from zhenxun.services.ai.llm.service import LLMModel
+from zhenxun.services.ai.core.configs import (
+    GenerationConfig,
+    LLMEmbeddingConfig,
+    TTSConfig,
+)
+from zhenxun.services.ai.core.messages import (
+    AudioResponse,
+    EmbedBatch,
+    LLMMessage,
+    RerankResult,
+)
+from zhenxun.services.ai.core.models import (
+    ModelCapabilities,
+    ModelDetail,
+    ToolChoice,
+    ToolDefinition,
+)
+from zhenxun.services.ai.llm.adapters.base import BaseAdapter, RequestData, ResponseData
+from zhenxun.services.ai.protocols.llm import LLMModelBase
 
 
 class ConfigMapper(ABC):
@@ -65,20 +75,20 @@ class BaseTextHandler(ABC):
     @abstractmethod
     async def prepare_text_request(
         self,
-        adapter: "BaseAdapter",
-        model: "LLMModel",
+        adapter: BaseAdapter,
+        model: LLMModelBase,
         api_key: str,
         messages: list[LLMMessage],
         config: GenerationConfig | None = None,
         tools: list[Any] | None = None,
-        tool_choice: "ToolChoice | str | dict[str, Any] | None" = None,
+        tool_choice: ToolChoice | str | dict[str, Any] | None = None,
     ) -> RequestData: ...
 
     @abstractmethod
     def parse_text_response(
         self,
-        adapter: "BaseAdapter",
-        model: "LLMModel",
+        adapter: BaseAdapter,
+        model: LLMModelBase,
         response_json: dict[str, Any],
         is_advanced: bool = False,
     ) -> ResponseData: ...
@@ -90,18 +100,18 @@ class BaseEmbeddingHandler(ABC):
     """
 
     @abstractmethod
-    def prepare_embedding_request(
+    async def prepare_embedding_request(
         self,
-        adapter: "BaseAdapter",
-        model: "LLMModel",
+        adapter: BaseAdapter,
+        model: LLMModelBase,
         api_key: str,
-        texts: list[str],
-        config: "LLMEmbeddingConfig",
+        batch: EmbedBatch,
+        config: LLMEmbeddingConfig,
     ) -> RequestData: ...
 
     @abstractmethod
     def parse_embedding_response(
-        self, adapter: "BaseAdapter", response_json: dict[str, Any]
+        self, adapter: BaseAdapter, response_json: dict[str, Any]
     ) -> list[list[float]]: ...
 
 
@@ -113,8 +123,8 @@ class BaseImageHandler(ABC):
     @abstractmethod
     def prepare_image_request(
         self,
-        adapter: "BaseAdapter",
-        model: "LLMModel",
+        adapter: BaseAdapter,
+        model: LLMModelBase,
         api_key: str,
         prompt: str,
         images: list[Any] | None = None,
@@ -123,7 +133,7 @@ class BaseImageHandler(ABC):
 
     @abstractmethod
     def parse_image_response(
-        self, adapter: "BaseAdapter", response_json: dict[str, Any]
+        self, adapter: BaseAdapter, response_json: dict[str, Any]
     ) -> ResponseData: ...
 
 
@@ -135,8 +145,8 @@ class BaseRerankHandler(ABC):
     @abstractmethod
     def prepare_rerank_request(
         self,
-        adapter: "BaseAdapter",
-        model: "LLMModel",
+        adapter: BaseAdapter,
+        model: LLMModelBase,
         api_key: str,
         query: str,
         documents: list[str | dict[str, str]],
@@ -145,8 +155,8 @@ class BaseRerankHandler(ABC):
 
     @abstractmethod
     def parse_rerank_response(
-        self, adapter: "BaseAdapter", response_json: dict[str, Any]
-    ) -> list["RerankResult"]: ...
+        self, adapter: BaseAdapter, response_json: dict[str, Any]
+    ) -> list[RerankResult]: ...
 
 
 class BaseAudioHandler(ABC):
@@ -157,15 +167,15 @@ class BaseAudioHandler(ABC):
     @abstractmethod
     def prepare_speech_request(
         self,
-        adapter: "BaseAdapter",
-        model: "LLMModel",
+        adapter: BaseAdapter,
+        model: LLMModelBase,
         api_key: str,
         input_text: str,
         voice: str,
-        config: "TTSConfig",
+        config: TTSConfig,
     ) -> RequestData: ...
 
     @abstractmethod
     async def parse_speech_response(
-        self, adapter: "BaseAdapter", model: "LLMModel", raw_response: Any
-    ) -> "AudioResponse": ...
+        self, adapter: BaseAdapter, model: LLMModelBase, raw_response: httpx.Response
+    ) -> AudioResponse: ...

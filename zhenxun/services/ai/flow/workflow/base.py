@@ -69,7 +69,7 @@ class BaseNode(ABC):
         self, step_input: StepInput, context: RunContext
     ) -> AsyncIterator[Any]:
         """标准化模板方法：处理缓存快进、授权挂起、异常熔断与生命周期事件分发"""
-        logger.debug(f"  ┣ ⚙️ [节点] `{self.name}` 开始执行...")
+        logger.debug(f"  ⚙️ [节点] `{self.name}` 开始执行...")
 
         cached_out = context.state.get("__completed_steps__", {}).get(self.name)
         if (
@@ -88,7 +88,7 @@ class BaseNode(ABC):
                     self.confirmation_message
                     or f"⚠️ 工作流即将执行高危步骤：[{self.name}]，等待授权..."
                 )
-                logger.debug(f"  ┣ ⏸️ **[节点挂起]** `{self.name}`: {msg}")
+                logger.debug(f"  ⏸️ **[节点挂起]** `{self.name}`: {msg}")
 
                 output = StepOutput(
                     step_name=self.name,
@@ -177,11 +177,11 @@ class BaseNode(ABC):
                         if policy_result.new_input:
                             current_input = policy_result.new_input
                             logger.debug(
-                                f"  ┣ 🩹 [自愈介入] 系统策略正在尝试修复 `{self.name}` 的参数输入错误..."
+                                f"  🩹 [自愈介入] 系统策略正在尝试修复 `{self.name}` 的参数输入错误..."
                             )
 
                         logger.debug(
-                            f"  ┣ 🔄 [节点重试] `{self.name}` 进行第 {attempt} 次重试..."
+                            f"  🔄 [节点重试] `{self.name}` 进行第 {attempt} 次重试..."
                         )
 
                         attempt += 1

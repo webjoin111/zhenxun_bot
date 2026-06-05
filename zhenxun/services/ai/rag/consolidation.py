@@ -1,10 +1,11 @@
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from zhenxun.services.ai.llm.api import generate_structured
 from zhenxun.services.ai.rag.models import BaseRecord, ConsolidationPlan
 from zhenxun.services.log import logger
 
 
+@runtime_checkable
 class Consolidator(Protocol):
     """数据融合器协议"""
 

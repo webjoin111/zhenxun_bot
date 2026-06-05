@@ -92,7 +92,7 @@ class TaskPlanningToolkit(BaseToolkit):
             metadata=metadata,
         )
 
-        logger.debug(f"  ┣ 🆕 [新建任务] `{task.title}` -> 👨💼{task.assignee}")
+        logger.debug(f"  🆕 [新建任务] `{task.title}` -> 👨💼{task.assignee}")
 
         board_str = board.render_board_to_string()
         return ToolResult(
@@ -136,7 +136,7 @@ class TaskPlanningToolkit(BaseToolkit):
 
         task_obj = board.get_task(task_id)
         task_title = task_obj.title if task_obj else "Unknown"
-        logger.debug(f"  ┣ 🔄 [任务状态变更] `{task_title}` -> {status.value}")
+        logger.debug(f"  🔄 [任务状态变更] `{task_title}` -> {status.value}")
 
         board_str = board.render_board_to_string()
         return ToolResult(

@@ -22,20 +22,20 @@ class ToolExecutable(Protocol):
     它将工具的"定义"（给LLM看）和"执行"（由框架调用）封装在一起。
     """
 
-    async def get_definition(self, context: Any | None = None) -> ToolDefinition | None:
+    async def get_definition(self, context: "RunContext | None" = None) -> ToolDefinition | None:
         """
         异步地获取一个结构化的工具定义。如果返回 None，则该工具对大模型不可见。
         """
         ...
 
-    async def execute(self, context: Any | None = None, **kwargs: Any) -> ToolResult:
+    async def execute(self, context: "RunContext | None" = None, **kwargs: Any) -> ToolResult:
         """
         异步执行工具并返回一个结构化的结果。
         """
         ...
 
     async def should_confirm(
-        self, context: Any | None = None, **kwargs: Any
+        self, context: "RunContext | None" = None, **kwargs: Any
     ) -> str | None:
         """
         [可选] 异步判定工具执行前是否需要用户交互确认。

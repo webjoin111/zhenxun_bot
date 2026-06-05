@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 
 from zhenxun.services.ai.core.messages import LLMMessage
-from zhenxun.services.ai.memory.models import MemorySlot, SessionMetadata
+from zhenxun.services.ai.memory.types import MemorySlot, SessionMetadata
 
 
 class BaseChatContext(ABC):

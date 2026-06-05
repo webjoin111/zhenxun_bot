@@ -1,8 +1,11 @@
 from collections import defaultdict
 import inspect
-from typing import Annotated, Any, ClassVar
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar
 
 from nonebot.adapters import Bot, Event
+
+if TYPE_CHECKING:
+    from zhenxun.services.ai.run.blackboard import BlackboardManager
 from nonebot.matcher import Matcher
 from nonebot.utils import is_coroutine_callable
 from nonebot_plugin_session import EventSession, extract_session
@@ -53,7 +56,9 @@ CurrentSharedState = Annotated[dict[str, Any], Hidden(), _InjectMarker("shared_s
 CurrentOriginalInput = Annotated[str, Hidden(), _InjectMarker("original_input")]
 UpstreamResults = Annotated[dict[str, Any], Hidden(), _InjectMarker("upstream_results")]
 ToolkitState = Annotated[Any, Hidden(), _InjectMarker("toolkit_state")]
-CurrentBlackboard = Annotated[Any, Hidden(), _InjectMarker("blackboard")]
+CurrentBlackboard = Annotated[
+    "BlackboardManager | None", Hidden(), _InjectMarker("blackboard")
+]
 CurrentSandbox = Annotated[Any, Hidden(), _InjectMarker("sandbox")]
 
 

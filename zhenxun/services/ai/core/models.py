@@ -37,6 +37,7 @@ class ModelModality(str, Enum):
     IMAGE = "image"
     AUDIO = "audio"
     VIDEO = "video"
+    FILE = "file"
     EMBEDDING = "embedding"
 
 

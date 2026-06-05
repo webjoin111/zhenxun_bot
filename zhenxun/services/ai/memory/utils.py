@@ -4,7 +4,7 @@ from nonebot.adapters import Bot, Event
 import numpy as np
 
 if TYPE_CHECKING:
-    from zhenxun.services.ai.memory.models import MemoryIsolationLevel, SessionMetadata
+    from zhenxun.services.ai.memory.types import MemoryIsolationLevel, SessionMetadata
 
 
 def cosine_similarity(vec1: list[float], vec2: list[float]) -> float:
@@ -29,7 +29,7 @@ def generate_session_meta(
     """根据事件和隔离级别，自动提取生成基于路径作用域 (Scope Path) 的 SessionMetadata"""
     from nonebot_plugin_session import extract_session
 
-    from zhenxun.services.ai.memory.models import (
+    from zhenxun.services.ai.memory.types import (
         MemoryIsolationLevel,
         SessionMetadata,
     )

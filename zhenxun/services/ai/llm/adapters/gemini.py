@@ -14,10 +14,8 @@ from .handlers.gemini_handlers import (
     GeminiTextHandler,
 )
 
-if TYPE_CHECKING:
-    from zhenxun.services.ai.core.configs import GenerationConfig
-
-    from ..service import LLMModel
+from zhenxun.services.ai.core.configs import GenerationConfig
+from zhenxun.services.ai.protocols.llm import LLMModelBase
 
 
 class GeminiAdapter(BaseAdapter):
@@ -57,7 +55,7 @@ class GeminiAdapter(BaseAdapter):
         return headers
 
     def _get_gemini_endpoint(
-        self, model: LLMModel, config: GenerationConfig | None = None
+        self, model: LLMModelBase, config: GenerationConfig | None = None
     ) -> str:
         """返回Gemini generateContent 端点"""
         return f"/v1beta/models/{model.model_name}:generateContent"

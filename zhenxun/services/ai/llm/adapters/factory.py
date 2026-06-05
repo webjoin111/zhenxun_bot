@@ -5,19 +5,15 @@ LLM 适配器工厂类
 from __future__ import annotations
 
 import fnmatch
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import Any, ClassVar
 
-from zhenxun.services.ai.core.configs import LLMEmbeddingConfig
+from zhenxun.services.ai.core.configs import GenerationConfig, LLMEmbeddingConfig
 from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
+from zhenxun.services.ai.core.messages import EmbedBatch, LLMMessage
 from zhenxun.services.ai.core.models import ToolChoice
+from zhenxun.services.ai.protocols.llm import LLMModelBase
 
 from .base import BaseAdapter, RequestData, ResponseData
-
-if TYPE_CHECKING:
-    from zhenxun.services.ai.core.configs import GenerationConfig
-    from zhenxun.services.ai.core.messages import LLMMessage
-
-    from ..service import LLMModel
 
 
 class LLMAdapterFactory:
@@ -36,11 +32,13 @@ class LLMAdapterFactory:
         from .doubao import DoubaoAdapter
         from .gemini import GeminiAdapter
         from .glm import GLMAdapter
+        from .jina import JinaAdapter
         from .minimax import MiniMaxAdapter
         from .openai import OpenAIAdapter
 
         cls.register_adapter(OpenAIAdapter())
         cls.register_adapter(DeepSeekAdapter())
+        cls.register_adapter(JinaAdapter())
         cls.register_adapter(GeminiAdapter())
         cls.register_adapter(GLMAdapter())
         cls.register_adapter(SmartAdapter())
@@ -130,7 +128,7 @@ class SmartAdapter(BaseAdapter):
         """当前适配器支持的 API 类型列表。"""
         return ["smart"]
 
-    def _get_delegate_adapter(self, model: LLMModel) -> BaseAdapter:
+    def _get_delegate_adapter(self, model: LLMModelBase) -> BaseAdapter:
         """
         核心路由逻辑：决定使用哪个适配器 (带缓存)
         """
@@ -155,7 +153,7 @@ class SmartAdapter(BaseAdapter):
 
     async def prepare_advanced_request(
         self,
-        model: LLMModel,
+        model: LLMModelBase,
         api_key: str,
         messages: list[LLMMessage],
         config: GenerationConfig | None = None,
@@ -170,7 +168,7 @@ class SmartAdapter(BaseAdapter):
 
     def parse_response(
         self,
-        model: LLMModel,
+        model: LLMModelBase,
         response_json: dict[str, Any],
         is_advanced: bool = False,
     ) -> ResponseData:
@@ -178,16 +176,16 @@ class SmartAdapter(BaseAdapter):
         adapter = self._get_delegate_adapter(model)
         return adapter.parse_response(model, response_json, is_advanced)
 
-    def prepare_embedding_request(
+    async def prepare_embedding_request(
         self,
-        model: LLMModel,
+        model: LLMModelBase,
         api_key: str,
-        texts: list[str],
+        batch: EmbedBatch,
         config: LLMEmbeddingConfig,
     ) -> RequestData:
         """按模型路由并准备嵌入请求。"""
         adapter = self._get_delegate_adapter(model)
-        return adapter.prepare_embedding_request(model, api_key, texts, config)
+        return await adapter.prepare_embedding_request(model, api_key, batch, config)
 
     def parse_embedding_response(
         self, response_json: dict[str, Any]
@@ -199,7 +197,7 @@ class SmartAdapter(BaseAdapter):
 
     def prepare_image_request(
         self,
-        model: LLMModel,
+        model: LLMModelBase,
         api_key: str,
         prompt: str,
         images: list[Any] | None = None,
@@ -219,7 +217,7 @@ class SmartAdapter(BaseAdapter):
 
     def prepare_rerank_request(
         self,
-        model: LLMModel,
+        model: LLMModelBase,
         api_key: str,
         query: str,
         documents: list[str | dict[str, str]],

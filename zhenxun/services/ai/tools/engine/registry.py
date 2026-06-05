@@ -12,6 +12,7 @@ from zhenxun.services.ai.protocols.tool import (
     ToolExecutable,
     ToolProvider,
 )
+from zhenxun.services.ai.run.context import RunContext
 from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
 from zhenxun.services.ai.tools.models import Query, ResolvedToolPayload
 from zhenxun.services.log import logger
@@ -138,22 +139,25 @@ class ToolCollection(list[T], Generic[T]):
 
 
 class _StringResolver:
-    def __init__(self, name: str, manager: "ToolProviderManager", default_namespace: str):
+    def __init__(
+        self, name: str, manager: "ToolProviderManager", default_namespace: str
+    ):
         self.name = name
         self.manager = manager
         self.default_namespace = default_namespace
 
-    async def resolve(self, context: Any | None = None) -> ResolvedToolPayload:
+    async def resolve(self, context: RunContext | None = None) -> ResolvedToolPayload:
         if self.name in self.manager._macro_resolvers:
             resolver = self.manager._macro_resolvers[self.name]
             resolved = (
                 await resolver() if is_coroutine_callable(resolver) else resolver()
             )
-            return await self.manager._normalize_to_resolver(resolved, self.default_namespace).resolve(context)
+            return await self.manager._normalize_to_resolver(
+                resolved, self.default_namespace
+            ).resolve(context)
 
         s = self.name
 
-        # 1. 拆分命名空间和目标
         if "." in s:
             ns, target = s.split(".", 1)
         else:
@@ -162,7 +166,6 @@ class _StringResolver:
 
         from zhenxun.services.ai.tools.models import Query
 
-        # 2. 解析语法树
         if target == "*":
             query = Query(namespace=ns)
         elif target.startswith("#"):
@@ -180,7 +183,7 @@ class _QueryResolver:
         self.query = query
         self.manager = manager
 
-    async def resolve(self, context: Any | None = None) -> ResolvedToolPayload:
+    async def resolve(self, context: RunContext | None = None) -> ResolvedToolPayload:
         payload = ResolvedToolPayload()
         namespaces_to_search = []
 
@@ -191,7 +194,6 @@ class _QueryResolver:
         else:
             raise ValueError(f"Query 对象必须显式指定 namespace 作用域: {self.query}")
 
-        # 1. 优先从本地/插件命名空间池中匹配
         for ns in namespaces_to_search:
             if ns in self.manager._namespaced_tools:
                 for tool in self.manager._namespaced_tools[ns]:
@@ -205,7 +207,6 @@ class _QueryResolver:
                         else:
                             payload.tools.append(tool)
 
-        # 2. 如果指定了名字且没找到，可能是在底层 Provider(如 MCP) 里，尝试回退发现
         if self.query.name and not payload.tools and not self.query.tags:
             specific = await self.manager.resolve_specific_tools([self.query.name])
             for t in specific:
@@ -220,7 +221,7 @@ class _CallableResolver:
         self.func = func
         self.manager = manager
 
-    async def resolve(self, context: Any | None = None) -> ResolvedToolPayload:
+    async def resolve(self, context: RunContext | None = None) -> ResolvedToolPayload:
         for candidate in (
             getattr(self.func, "__tool_name__", None),
             getattr(self.func, "__name__", None),
@@ -239,27 +240,33 @@ class _CallableResolver:
 
 class _TypeAdapterResolver:
     def __init__(
-        self, item: Any, resolver_func: Callable, manager: "ToolProviderManager", default_namespace: str
+        self,
+        item: Any,
+        resolver_func: Callable,
+        manager: "ToolProviderManager",
+        default_namespace: str,
     ):
         self.item = item
         self.resolver_func = resolver_func
         self.manager = manager
         self.default_namespace = default_namespace
 
-    async def resolve(self, context: Any | None = None) -> ResolvedToolPayload:
+    async def resolve(self, context: RunContext | None = None) -> ResolvedToolPayload:
         resolved = (
             await self.resolver_func(self.item)
             if is_coroutine_callable(self.resolver_func)
             else self.resolver_func(self.item)
         )
-        return await self.manager._normalize_to_resolver(resolved, self.default_namespace).resolve(context)
+        return await self.manager._normalize_to_resolver(
+            resolved, self.default_namespace
+        ).resolve(context)
 
 
 class _LegacyExecutableResolver:
     def __init__(self, executable: Any):
         self.executable = executable
 
-    async def resolve(self, context: Any | None = None) -> ResolvedToolPayload:
+    async def resolve(self, context: RunContext | None = None) -> ResolvedToolPayload:
         import copy
 
         if hasattr(self.executable, "get_definition"):
@@ -313,6 +320,7 @@ class ToolProviderManager:
         if not hasattr(tool, "name"):
             setattr(tool, "name", str(id(tool)))
         from zhenxun.utils.utils import infer_plugin_namespace
+
         ns = infer_plugin_namespace()
         if ns not in self._namespaced_tools:
             self._namespaced_tools[ns] = ToolCollection()
@@ -353,7 +361,7 @@ class ToolProviderManager:
         allowed_servers: list[str] | None = None,
         excluded_servers: list[str] | None = None,
         namespaces: list[str] | None = None,
-    ) -> Any:
+    ) -> ToolCollection:
         """
         获取所有已发现和解析的工具。
         此方法会触发懒加载初始化，并根据是否传入过滤器来决定是否使用全局缓存。
@@ -430,7 +438,7 @@ class ToolProviderManager:
 
         return all_tools
 
-    async def resolve_specific_tools(self, tool_names: list[str]) -> Any:
+    async def resolve_specific_tools(self, tool_names: list[str]) -> ToolCollection:
         """
         仅解析指定名称的工具，避免触发全量工具发现。
         优先从全局游离工具中查找，再回退到 Provider。
@@ -474,7 +482,9 @@ class ToolProviderManager:
 
         return resolved
 
-    async def get_function_tools(self, names: list[str] | None = None) -> Any:
+    async def get_function_tools(
+        self, names: list[str] | None = None
+    ) -> ToolCollection:
         """
         仅从直接注册的游离工具中解析指定的工具。
         """
@@ -502,7 +512,9 @@ class ToolProviderManager:
         if isinstance(item, str):
             return _StringResolver(item, self, default_ns)
         if type(item) in self._type_resolvers:
-            return _TypeAdapterResolver(item, self._type_resolvers[type(item)], self, default_ns)
+            return _TypeAdapterResolver(
+                item, self._type_resolvers[type(item)], self, default_ns
+            )
         if callable(item):
             return _CallableResolver(item, self)
         return _LegacyExecutableResolver(item)
@@ -511,7 +523,7 @@ class ToolProviderManager:
         self,
         tool_definitions: Iterable[Any] | None,
         namespace: str | None = None,
-        context: Any | None = None,
+        context: RunContext | None = None,
     ) -> ResolvedToolPayload:
         """
         统一解析工具配置，全面采用多态解析器与并发聚合管线。
@@ -523,7 +535,9 @@ class ToolProviderManager:
             from zhenxun.utils.utils import infer_plugin_namespace
 
             namespace = infer_plugin_namespace()
-            logger.debug(f"🔍 [StringRouter] 自动推断当前调用者所在插件为: '{namespace}'")
+            logger.debug(
+                f"🔍 [StringRouter] 自动推断当前调用者所在插件为: '{namespace}'"
+            )
 
         defs = []
 

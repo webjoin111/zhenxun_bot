@@ -16,7 +16,6 @@ from zhenxun.services.ai.core.messages import (
 )
 
 from .api import (
-    ModelName,
     chat,
     create_image,
     create_speech,
@@ -38,7 +37,6 @@ __all__ = [
     "LLMException",
     "LLMMessage",
     "LLMResponse",
-    "ModelName",
     "TTSConfig",
     "chat",
     "create_image",

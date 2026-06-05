@@ -14,24 +14,34 @@ import httpx
 from pydantic import BaseModel, Field
 
 from zhenxun.configs.path_config import TEMP_PATH
-from zhenxun.services.ai.core.configs import LLMEmbeddingConfig, TTSConfig
+from zhenxun.services.ai.core.configs import (
+    GenerationConfig,
+    LLMEmbeddingConfig,
+    TTSConfig,
+)
 from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
 from zhenxun.services.ai.core.messages import (
     AudioResponse,
+    EmbedBatch,
     ImagePart,
     LLMContentPart,
+    LLMMessage,
     RerankResult,
     TextPart,
     ThoughtPart,
 )
+from zhenxun.services.ai.core.models import ToolChoice
+from zhenxun.services.ai.protocols.llm import LLMModelBase
 from zhenxun.services.log import logger
 
 if TYPE_CHECKING:
-    from zhenxun.services.ai.core.configs import GenerationConfig
-    from zhenxun.services.ai.core.messages import LLMMessage
-    from zhenxun.services.ai.core.models import ToolChoice
-
-    from ..service import LLMModel
+    from zhenxun.services.ai.llm.adapters.handlers.base import (
+        BaseAudioHandler,
+        BaseEmbeddingHandler,
+        BaseImageHandler,
+        BaseRerankHandler,
+        BaseTextHandler,
+    )
 
 
 class RequestData(BaseModel):
@@ -148,11 +158,11 @@ class BaseAdapter(ABC):
     而将具体的模态序列化与反序列化逻辑委派给各路 Handler。
     """
 
-    text_handler: Any = None
-    image_handler: Any = None
-    embedding_handler: Any = None
-    rerank_handler: Any = None
-    audio_handler: Any = None
+    text_handler: "BaseTextHandler | None" = None
+    image_handler: "BaseImageHandler | None" = None
+    embedding_handler: "BaseEmbeddingHandler | None" = None
+    rerank_handler: "BaseRerankHandler | None" = None
+    audio_handler: "BaseAudioHandler | None" = None
 
     @property
     def log_sanitization_context(self) -> str:
@@ -173,7 +183,7 @@ class BaseAdapter(ABC):
 
     async def prepare_simple_request(
         self,
-        model: LLMModel,
+        model: LLMModelBase,
         api_key: str,
         prompt: str,
         history: list[dict[str, str]] | None = None,
@@ -218,7 +228,7 @@ class BaseAdapter(ABC):
 
     async def prepare_advanced_request(
         self,
-        model: LLMModel,
+        model: LLMModelBase,
         api_key: str,
         messages: list[LLMMessage],
         config: GenerationConfig | None = None,
@@ -242,7 +252,7 @@ class BaseAdapter(ABC):
 
     def parse_response(
         self,
-        model: LLMModel,
+        model: LLMModelBase,
         response_json: dict[str, Any],
         is_advanced: bool = False,
     ) -> ResponseData:
@@ -256,17 +266,17 @@ class BaseAdapter(ABC):
             )
         raise NotImplementedError(f"API 类型 '{self.api_type}' 未装配 TextHandler。")
 
-    def prepare_embedding_request(
+    async def prepare_embedding_request(
         self,
-        model: LLMModel,
+        model: LLMModelBase,
         api_key: str,
-        texts: list[str],
+        batch: EmbedBatch,
         config: LLMEmbeddingConfig,
     ) -> RequestData:
-        """准备文本嵌入请求并委派给 `embedding_handler`。"""
+        """准备文本/多模态嵌入请求并委派给 `embedding_handler`。"""
         if self.embedding_handler:
-            return self.embedding_handler.prepare_embedding_request(
-                adapter=self, model=model, api_key=api_key, texts=texts, config=config
+            return await self.embedding_handler.prepare_embedding_request(
+                adapter=self, model=model, api_key=api_key, batch=batch, config=config
             )
         raise NotImplementedError(
             f"API 类型 '{self.api_type}' 未装配 EmbeddingHandler，暂不支持向量嵌入。"
@@ -286,7 +296,7 @@ class BaseAdapter(ABC):
 
     def prepare_rerank_request(
         self,
-        model: LLMModel,
+        model: LLMModelBase,
         api_key: str,
         query: str,
         documents: list[str | dict[str, str]],
@@ -308,7 +318,7 @@ class BaseAdapter(ABC):
 
     def parse_rerank_response(
         self, response_json: dict[str, Any]
-    ) -> list["RerankResult"]:
+    ) -> list[RerankResult]:
         """解析重排响应并委派给 `rerank_handler`。"""
         if self.rerank_handler:
             return self.rerank_handler.parse_rerank_response(
@@ -318,11 +328,11 @@ class BaseAdapter(ABC):
 
     def prepare_image_request(
         self,
-        model: "LLMModel",
+        model: LLMModelBase,
         api_key: str,
         prompt: str,
         images: list[Any] | None = None,
-        config: "GenerationConfig | None" = None,
+        config: GenerationConfig | None = None,
     ) -> RequestData:
         """准备图像请求并委派给 `image_handler`。"""
         if self.image_handler:
@@ -348,11 +358,11 @@ class BaseAdapter(ABC):
 
     def prepare_speech_request(
         self,
-        model: "LLMModel",
+        model: LLMModelBase,
         api_key: str,
         input_text: str,
         voice: str,
-        config: "TTSConfig",
+        config: TTSConfig,
     ) -> RequestData:
         """准备语音生成请求并委派给 `audio_handler`。"""
         if self.audio_handler:
@@ -369,7 +379,7 @@ class BaseAdapter(ABC):
         )
 
     async def parse_speech_response(
-        self, model: "LLMModel", raw_response: Any
+        self, model: LLMModelBase, raw_response: httpx.Response
     ) -> AudioResponse:
         """解析语音响应并委派给 `audio_handler`。注意传入的是 httpx.Response 的 raw 对象"""
         if self.audio_handler:
@@ -393,7 +403,7 @@ class BaseAdapter(ABC):
                 details=response_json,
             )
 
-    def get_api_url(self, model: LLMModel, endpoint: str) -> str:
+    def get_api_url(self, model: LLMModelBase, endpoint: str) -> str:
         """拼接最终请求 URL，兼容 `path_prefix` 与端点前后斜杠。"""
         if not model.api_base:
             raise LLMException(

@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from zhenxun.services.ai.core.configs import GenerationConfig
 from zhenxun.services.ai.core.models import (
@@ -12,9 +12,7 @@ from zhenxun.services.ai.llm.adapters.handlers.openai_handlers import (
     OpenAIToolSerializer,
 )
 from zhenxun.services.ai.llm.adapters.openai import OpenAICompatAdapter
-
-if TYPE_CHECKING:
-    from zhenxun.services.ai.llm.service import LLMModel
+from zhenxun.services.ai.protocols.llm import LLMModelBase
 
 
 class DeepSeekToolSerializer(OpenAIToolSerializer):
@@ -27,7 +25,7 @@ class DeepSeekToolSerializer(OpenAIToolSerializer):
         """初始化 DeepSeek 工具序列化器。"""
         super().__init__(api_type=api_type)
 
-    def sanitize_schema(self, schema: Any) -> Any:
+    def sanitize_schema(self, schema: dict[str, Any]) -> dict[str, Any]:
         from zhenxun.services.ai.llm.schema_transformer import (
             DeepSeekFallbackTransformer,
             OpenAIUnionFlattenTransformer,
@@ -154,7 +152,7 @@ class DeepSeekAdapter(OpenAICompatAdapter):
         """当前适配器支持的 API 类型列表。"""
         return ["deepseek"]
 
-    def get_chat_endpoint(self, model: "LLMModel") -> str:
+    def get_chat_endpoint(self, model: LLMModelBase) -> str:
         """返回对话端点，优先使用模型级自定义端点。"""
         if model.model_detail.endpoint:
             return model.model_detail.endpoint

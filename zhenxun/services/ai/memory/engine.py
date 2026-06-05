@@ -6,7 +6,8 @@ from zhenxun.services.ai.memory.compression import (
     MultimodalPlaceholderReducer,
 )
 from zhenxun.services.ai.memory.manager import memory_manager
-from zhenxun.services.ai.memory.models import MemoryConfig, SessionMetadata
+from zhenxun.services.ai.memory.models import MemoryConfig
+from zhenxun.services.ai.memory.types import SessionMetadata
 from zhenxun.services.log import logger
 
 

@@ -228,7 +228,7 @@ class RunContext(Generic[AgentDepsT]):
             self.deps = cast(AgentDepsT, NoneBotDeps.get_current())
 
         if not self.session_id and self.deps:
-            from zhenxun.services.ai.memory.models import (
+            from zhenxun.services.ai.memory.types import (
                 MemoryIsolationLevel,
             )
             from zhenxun.services.ai.memory.utils import generate_session_meta

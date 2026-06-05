@@ -3,13 +3,14 @@ from __future__ import annotations
 from collections import defaultdict
 import json
 import time
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import Any, ClassVar
 
 from nonebot.permission import SUPERUSER
 
 from zhenxun.models.user_console import UserConsole
 from zhenxun.services.ai.core.exceptions import (
     AbortException,
+    ControlFlowException,
     GuardrailViolationError,
     LLMErrorCode,
     LLMException,
@@ -25,12 +26,10 @@ from zhenxun.services.ai.protocols.capabilities import (
     WrapRunHandler,
     WrapToolExecuteHandler,
 )
+from zhenxun.services.ai.protocols.middleware import LLMContext
 from zhenxun.services.ai.run import AgentRunResult, RunContext
 from zhenxun.services.ai.run.models import AgentRunSummary
 from zhenxun.services.ai.tools.models import ToolResult
-
-if TYPE_CHECKING:
-    from zhenxun.services.ai.protocols.middleware import LLMContext
 from zhenxun.services.cache.runtime_cache import LevelUserMemoryCache
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import GoldHandle
@@ -326,6 +325,12 @@ class TelemetryCapability(AbstractCapability):
         self.start_t = time.monotonic()
         try:
             res = await handler()
+        except ControlFlowException as e:
+            self.summary.total_latency_ms = (time.monotonic() - self.start_t) * 1000
+            logger.debug(
+                f"🛑 [Telemetry] 智能体 {agent_name} 正常中止/控制流转移: {type(e).__name__} (耗时: {self.summary.total_latency_ms:.2f}ms)"
+            )
+            raise e
         except Exception as e:
             self.summary.total_latency_ms = (time.monotonic() - self.start_t) * 1000
             logger.error(
@@ -405,6 +410,17 @@ class TelemetryCapability(AbstractCapability):
 
             logger.debug(f"🛠️ [Telemetry] 工具 {tool_name} 执行完毕 (耗时: {dur:.2f}ms)")
             return result
+        except ControlFlowException as e:
+            dur = (time.monotonic() - start_t) * 1000
+            self.summary.tools.total += 1
+            self.summary.tools.total_latency_ms += dur
+
+            tool_stat = self.summary.tools.by_name.setdefault(
+                tool_name, {"total": 0, "ok": 0, "error": 0, "latency_ms": 0.0}
+            )
+            tool_stat["total"] += 1
+            tool_stat["latency_ms"] += dur
+            raise e
         except Exception as e:
             dur = (time.monotonic() - start_t) * 1000
             self.summary.tools.total += 1

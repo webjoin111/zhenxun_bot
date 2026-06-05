@@ -1,17 +1,23 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
 from typing_extensions import Self
+
+if TYPE_CHECKING:
+    from zhenxun.services.ai.memory.interfaces import BaseChatContext, BaseSlotContext
+    from zhenxun.services.ai.memory.models import MemorySlot
+    from zhenxun.services.ai.rag.backends import Embedder, StorageBackend
+    from zhenxun.services.ai.rag.consolidation import Consolidator
 
 from zhenxun.services.ai.memory.compression import MemoryPolicy
 from zhenxun.services.ai.memory.models import (
     ContextCompressionConfig,
     LongTermConfig,
     MemoryConfig,
-    MemoryIsolationLevel,
     ShortTermConfig,
     SlotMemoryConfig,
 )
+from zhenxun.services.ai.memory.types import MemoryIsolationLevel
 
 
 class MemoryBuilder:
@@ -61,7 +67,7 @@ class MemoryBuilder:
         self,
         enable: bool = True,
         isolation_level: MemoryIsolationLevel = MemoryIsolationLevel.AGENT_USER,
-        backend: Any | None = None,
+        backend: "BaseChatContext | None" = None,
     ) -> Self:
         """
         配置短期对话历史记忆。
@@ -83,8 +89,8 @@ class MemoryBuilder:
     def with_slots(
         self,
         enable: bool = True,
-        default_slots: list[Any] | None = None,
-        backend: Any | None = None,
+        default_slots: list["MemorySlot"] | None = None,
+        backend: "BaseSlotContext | None" = None,
     ) -> Self:
         """
         配置核心槽位记忆 (Memory Slots)。
@@ -108,10 +114,10 @@ class MemoryBuilder:
         self,
         enable: bool = True,
         scope: str | None = None,
-        backend: Any | None = None,
-        embedder: Any | None = None,
+        backend: "StorageBackend | None" = None,
+        embedder: "Embedder | str | None" = None,
         auto_consolidate: bool = True,
-        consolidator: Any | None = None,
+        consolidator: "Consolidator | None" = None,
         async_write: bool = True,
     ) -> Self:
         """

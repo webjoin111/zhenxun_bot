@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from zhenxun.services.ai.core.configs import (
     GenerationConfig,
@@ -10,15 +10,34 @@ from zhenxun.services.ai.core.configs import (
 )
 from zhenxun.services.ai.core.messages import (
     AudioResponse,
+    EmbedBatch,
     EmbeddingResponse,
     LLMMessage,
     LLMResponse,
 )
-from zhenxun.services.ai.core.models import ToolChoice
+from zhenxun.services.ai.core.models import ModelCapabilities, ModelDetail, ToolChoice
+
+if TYPE_CHECKING:
+    from zhenxun.services.ai.run.models import CancellationToken
 
 
 class LLMModelBase(ABC):
     """底层 LLM 模型抽象基类（约束 Service 实现）"""
+
+    provider_name: str
+    model_name: str
+    api_type: str
+    api_base: str | None
+    path_prefix: str | None
+    model_detail: ModelDetail
+    capabilities: ModelCapabilities
+    health_manager: Any
+    engine: Any
+    _generation_config: GenerationConfig | None
+
+    @abstractmethod
+    def _get_effective_api_type(self) -> str:
+        pass
 
     @abstractmethod
     async def generate_response(
@@ -29,7 +48,7 @@ class LLMModelBase(ABC):
         tool_choice: str | dict[str, Any] | ToolChoice | None = None,
         timeout: float | None = None,
         extra: dict[str, Any] | None = None,
-        cancellation_token: Any | None = None,
+        cancellation_token: "CancellationToken | None" = None,
     ) -> LLMResponse:
         """生成高级响应"""
         pass
@@ -47,9 +66,9 @@ class LLMModelBase(ABC):
     @abstractmethod
     async def generate_embeddings(
         self,
-        texts: list[str],
+        batch: EmbedBatch,
         config: LLMEmbeddingConfig | None = None,
     ) -> EmbeddingResponse:
-        """生成文本嵌入向量"""
+        """生成文本或多模态嵌入向量"""
         pass
 

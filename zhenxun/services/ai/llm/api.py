@@ -18,6 +18,7 @@ from zhenxun.services.ai.core.exceptions import (
     LLMException,
     get_user_friendly_error_message,
 )
+from zhenxun.services.ai.core.guardrails import GuardrailSource
 from zhenxun.services.ai.core.messages import (
     AudioResponse,
     EmbeddingResponse,
@@ -85,7 +86,7 @@ async def chat(
 
 @overload
 async def embed(
-    texts: str,
+    input_batch: PromptInput,
     *,
     model: ModelName = None,
     task: Literal[
@@ -98,7 +99,7 @@ async def embed(
 
 @overload
 async def embed(
-    texts: list[str],
+    input_batch: list[Any],
     *,
     model: ModelName = None,
     task: Literal[
@@ -110,7 +111,7 @@ async def embed(
 
 
 async def embed(
-    texts: list[str] | str,
+    input_batch: PromptInput | list[Any],
     *,
     model: ModelName = None,
     task: Literal[
@@ -120,10 +121,10 @@ async def embed(
     config: LLMEmbeddingConfig | None = None,
 ) -> EmbeddingResponse:
     """
-    无状态的文本嵌入便捷函数，将文本转换为向量表示。
+    无状态的向量嵌入便捷函数，支持文本批量与图文多模态融合 (Fused Embeddings)。
 
     参数:
-        texts: 要生成嵌入的文本内容，支持单个字符串或字符串列表。
+        input_batch: 要生成嵌入的内容。传入单条字符串/消息视为单向量；传入多条视为批量。
         model: 要使用的嵌入模型名称，如果为None则使用默认模型。
         task: 生成意图
             (query检索词 / document目标文档 / similarity相似度 等)，将自动翻译到底层。
@@ -133,9 +134,11 @@ async def embed(
     返回:
         EmbeddingResponse: 包含向量和 Token 消耗统计的富响应对象。
     """
-    if isinstance(texts, str):
-        texts = [texts]
-    if not texts:
+    from zhenxun.services.ai.message_builder import MessageBuilder
+
+    batch = await MessageBuilder.normalize_to_embed_batch(input_batch)
+
+    if not batch.payloads:
         from zhenxun.services.ai.core.messages import UsageInfo
 
         return EmbeddingResponse(
@@ -158,7 +161,7 @@ async def embed(
 
     try:
         async with await get_model_instance(model, task="embedding") as model_instance:
-            return await model_instance.generate_embeddings(texts, config=final_config)
+            return await model_instance.generate_embeddings(batch, config=final_config)
     except LLMException:
         raise
     except Exception as e:
@@ -200,7 +203,7 @@ async def generate_structured(
     message: PromptInput | list[LLMMessage],
     response_model: type[T],
     *,
-    guardrails: list[Callable | str | Any] | None = None,
+    guardrails: list[GuardrailSource] | None = None,
     model: ModelName = None,
     config: GenerationConfig | IntentBuilder | None = None,
     max_retries: int | None = None,

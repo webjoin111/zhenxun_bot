@@ -1,6 +1,6 @@
 from typing import Any
 
-from zhenxun.services.ai.memory.models import SessionMetadata
+from zhenxun.services.ai.memory.types import SessionMetadata
 from zhenxun.services.ai.memory.storage import MemoryScope
 from zhenxun.services.ai.tools.core.decorators import silent, tool
 from zhenxun.services.ai.tools.core.toolkit import BaseToolkit

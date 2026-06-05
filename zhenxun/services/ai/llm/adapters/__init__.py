@@ -10,6 +10,7 @@ from .doubao import DoubaoAdapter
 from .factory import LLMAdapterFactory, get_adapter_for_api_type, register_adapter
 from .gemini import GeminiAdapter
 from .glm import GLMAdapter
+from .jina import JinaAdapter
 from .minimax import MiniMaxAdapter
 from .openai import OpenAIAdapter, OpenAICompatAdapter
 
@@ -21,6 +22,7 @@ __all__ = [
     "DoubaoAdapter",
     "GLMAdapter",
     "GeminiAdapter",
+    "JinaAdapter",
     "LLMAdapterFactory",
     "MiniMaxAdapter",
     "OpenAIAdapter",

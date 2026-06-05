@@ -21,8 +21,7 @@ from .handlers.openai_handlers import (
     OpenAIRerankHandler,
 )
 
-if TYPE_CHECKING:
-    from ..service import LLMModel
+from zhenxun.services.ai.protocols.llm import LLMModelBase
 
 
 class OpenAICompatAdapter(BaseAdapter):
@@ -37,17 +36,17 @@ class OpenAICompatAdapter(BaseAdapter):
         return "openai_request"
 
     @abstractmethod
-    def get_chat_endpoint(self, model: "LLMModel") -> str:
+    def get_chat_endpoint(self, model: LLMModelBase) -> str:
         """子类必须实现，返回 chat completions 的端点"""
         pass
 
-    def get_embedding_endpoint(self, model: "LLMModel") -> str:
+    def get_embedding_endpoint(self, model: LLMModelBase) -> str:
         """返回 embeddings 的默认端点"""
         return "/v1/embeddings"
 
     async def prepare_simple_request(
         self,
-        model: "LLMModel",
+        model: LLMModelBase,
         api_key: str,
         prompt: str,
         history: list[dict[str, str]] | None = None,
@@ -109,7 +108,7 @@ class OpenAIAdapter(OpenAICompatAdapter):
             "openai_responses",
         ]
 
-    def get_chat_endpoint(self, model: LLMModel) -> str:
+    def get_chat_endpoint(self, model: LLMModelBase) -> str:
         """返回聊天完成端点"""
         if model.model_detail.endpoint:
             return model.model_detail.endpoint
@@ -122,6 +121,6 @@ class OpenAIAdapter(OpenAICompatAdapter):
             return "/api/v3/chat/completions"
         return "/v1/chat/completions"
 
-    def get_embedding_endpoint(self, model: LLMModel) -> str:
+    def get_embedding_endpoint(self, model: LLMModelBase) -> str:
         """返回嵌入端点。"""
         return "/v1/embeddings"

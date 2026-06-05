@@ -1,8 +1,8 @@
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 import inspect
 import re
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from nonebot.utils import is_coroutine_callable
 
@@ -11,6 +11,9 @@ from zhenxun.services.ai.flow.team.models import RouteDecision
 from zhenxun.services.ai.run import RunContext, Task
 from zhenxun.services.ai.run.di import DependencyInjector
 from zhenxun.services.log import logger
+
+if TYPE_CHECKING:
+    from zhenxun.services.ai.flow.team.models import Transition
 
 
 class BaseRouter(ABC):
@@ -122,10 +125,10 @@ class LLMRouter(BaseRouter):
         members: list[Any],
         leader_model: str | None = None,
         leader_tools: list[Any] | None = None,
-        state_flow: Any = None,
+        state_flow: "Mapping[str, Sequence[Transition | str]] | Callable | None" = None,
         runtime_config: Any = None,
         custom_prompt: str | None = None,
-        allowed_transitions: list[Any] | None = None,
+        allowed_transitions: list["Transition"] | None = None,
     ):
         self.team_name = team_name
         self.members = members

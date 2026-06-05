@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, Any
 import uuid
 
 if TYPE_CHECKING:
+    from zhenxun.services.ai.flow.workflow.nodes import NodeSource
     from zhenxun.services.ai.run import StreamedRunResult
 
 
@@ -25,7 +26,7 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
     继承自 BaseRunnable，支持被作为节点嵌套在 Team 或 其他工作流中。
     """
 
-    def __init__(self, name: str, steps: list[Any], description: str = ""):
+    def __init__(self, name: str, steps: list["NodeSource"], description: str = ""):
         """
         静态图元工作流容器初始化。
 
@@ -108,7 +109,6 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
         返回:
             WorkflowRunResult: 包含执行状态、断点快照、各节点产出的全量工作流结果对象。
         """
-        from zhenxun.services.ai.run.context import RunContext
         from zhenxun.utils.message import MessageUtils
 
         ctx = RunContext()
@@ -267,7 +267,6 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
                 yield AgentRunEnd(result=agent_res)
         except Exception as e:
             logger.error(f"Workflow '{self.name}' 流式执行崩溃: {e}", e=e)
-
 
     async def acontinue_run(
         self,

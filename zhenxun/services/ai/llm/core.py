@@ -187,16 +187,7 @@ async def create_llm_http_client(
     timeout: int = 180,
     proxy: str | None = None,
 ) -> LLMHttpClient:
-    """
-    创建LLM HTTP客户端
-
-    参数:
-        timeout: 超时时间（秒）。
-        proxy: 代理服务器地址。
-
-    返回:
-        LLMHttpClient: HTTP客户端实例。
-    """
+    """创建LLM HTTP客户端"""
     config = HttpClientConfig(timeout=timeout, proxy=proxy)
     return LLMHttpClient(config)
 

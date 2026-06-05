@@ -1,11 +1,12 @@
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 import inspect
 from typing import Any, cast
 
 from nonebot.utils import is_coroutine_callable
 from pydantic import BaseModel, Field
 
+from zhenxun.services.ai.core.messages import PromptInput
 from zhenxun.services.ai.flow.base import BaseRunnable
 from zhenxun.services.ai.flow.workflow.base import BaseNode
 from zhenxun.services.ai.flow.workflow.types import (
@@ -18,6 +19,9 @@ from zhenxun.services.ai.run import RunContext
 from zhenxun.services.ai.run.di import DependencyInjector
 from zhenxun.services.log import logger
 
+NodeSource = BaseNode | BaseRunnable | Callable
+"""工作流节点来源，可以是图元、可执行引擎或原生函数"""
+
 
 class Step(BaseNode):
     """
@@ -29,8 +33,8 @@ class Step(BaseNode):
     def __new__(
         cls,
         name: str | None = None,
-        executor: Any = None,
-        prompt: Any = None,
+        executor: NodeSource | None = None,
+        prompt: PromptInput | None = None,
         requires_confirmation: bool = False,
         confirmation_message: str | None = None,
         failure_policy: BaseFailurePolicy | None = None,
@@ -46,8 +50,8 @@ class Step(BaseNode):
     def __init__(
         self,
         name: str | None = None,
-        executor: Any = None,
-        prompt: Any = None,
+        executor: NodeSource | None = None,
+        prompt: PromptInput | None = None,
         requires_confirmation: bool = False,
         confirmation_message: str | None = None,
         failure_policy: BaseFailurePolicy | None = None,
@@ -86,8 +90,10 @@ class RunnableNode(Step):
     ) -> AsyncIterator[Any]:
         import copy
 
+        from zhenxun.services.ai.flow.base import BaseRunnable
         from zhenxun.services.ai.run import Task
 
+        executor = cast(BaseRunnable, self.executor)
         prompt_data = self.prompt if self.prompt is not None else step_input.input
 
         if isinstance(prompt_data, Task):
@@ -110,7 +116,7 @@ class RunnableNode(Step):
         final_result = None
         sandbox_context = context.clone_for_member(self.name)
 
-        async with self.executor.run_stream(
+        async with executor.run_stream(
             prompt=prompt_data, context=sandbox_context
         ) as stream_result:
             async for event in stream_result.stream_events():
@@ -135,7 +141,8 @@ class FunctionNode(Step):
     ) -> AsyncIterator[Any]:
         context.run.user_input = str(step_input.input) if step_input.input else ""
 
-        sig = inspect.signature(self.executor)
+        executor = cast(Callable, self.executor)
+        sig = inspect.signature(executor)
         resolved_kwargs = await DependencyInjector.resolve_all(
             sig, call_kwargs={"step_input": step_input}, context=context
         )
@@ -143,11 +150,11 @@ class FunctionNode(Step):
             k: v for k, v in resolved_kwargs.items() if k in sig.parameters
         }
 
-        if is_coroutine_callable(self.executor):
-            func = cast(Callable[..., Awaitable[Any]], self.executor)
+        if is_coroutine_callable(executor):
+            func = cast(Callable[..., Awaitable[Any]], executor)
             res = await func(**filtered_kwargs)
         else:
-            func = cast(Callable[..., Any], self.executor)
+            func = cast(Callable[..., Any], executor)
             res = func(**filtered_kwargs)
 
         if isinstance(res, StepOutput):
@@ -179,7 +186,7 @@ class RouterMeta(BaseModel):
 class Steps(BaseNode):
     """串行执行的工作流容器。按照列表顺序依次执行。"""
 
-    def __init__(self, steps: list[Any], name: str = "StepsGroup"):
+    def __init__(self, steps: Sequence[NodeSource], name: str = "StepsGroup"):
         super().__init__(name=name)
         self.steps = [NodeFactory.build(step) for step in steps]
 
@@ -225,8 +232,8 @@ class Condition(BaseNode):
     def __init__(
         self,
         evaluator: Any,
-        steps: list[Any],
-        else_steps: list[Any] | None = None,
+        steps: Sequence[NodeSource],
+        else_steps: Sequence[NodeSource] | None = None,
         name: str = "ConditionGroup",
     ):
         super().__init__(name=name)
@@ -286,7 +293,9 @@ class Condition(BaseNode):
 class Router(BaseNode):
     """根据选择器函数的返回值(名称)，从候选项中挑选步骤执行"""
 
-    def __init__(self, choices: list[Any], selector: Any, name: str = "RouterGroup"):
+    def __init__(
+        self, choices: Sequence[NodeSource], selector: Any, name: str = "RouterGroup"
+    ):
         super().__init__(name=name)
         self.choices = [NodeFactory.build(c) for c in choices]
         self.selector = selector
@@ -352,7 +361,7 @@ class Loop(BaseNode):
 
     def __init__(
         self,
-        steps: list[Any],
+        steps: Sequence[NodeSource],
         max_iterations: int = 3,
         end_condition: Any = None,
         name: str = "LoopGroup",
@@ -370,7 +379,7 @@ class Loop(BaseNode):
         self, step_input: StepInput, context: RunContext
     ) -> AsyncIterator[Any]:
         logger.debug(
-            f"  ┣ 🔁 开始循环: [Loop] `{self.name}` (最大 {self.max_iterations} 次)"
+            f"  🔁 开始循环: [Loop] `{self.name}` (最大 {self.max_iterations} 次)"
         )
 
         iteration = 0
@@ -382,7 +391,7 @@ class Loop(BaseNode):
         )
 
         while iteration < self.max_iterations:
-            logger.debug(f"  ┃  ┣ 🔄 第 {iteration + 1} 次迭代...")
+            logger.debug(f"  ┃  🔄 第 {iteration + 1} 次迭代...")
 
             steps_container = Steps(
                 steps=self.steps, name=f"{self.name}_iter_{iteration + 1}"
@@ -438,17 +447,17 @@ class Loop(BaseNode):
             steps=all_results,
         )
 
-        logger.debug(f"  ┣ ✅ 循环结束: [Loop] `{self.name}` (共执行 {iteration} 次)")
+        logger.debug(f"  ✅ 循环结束: [Loop] `{self.name}` (共执行 {iteration} 次)")
 
 
 class Parallel(BaseNode):
     """并发执行的工作流容器。无序地并发执行内部所有步骤，并最终聚合成一个输出。"""
 
-    def __init__(self, *args: Any, name: str | None = None):
+    def __init__(self, *args: NodeSource | str, name: str | None = None):
         super().__init__(name=name or "ParallelGroup")
         self.steps = []
         for arg in args:
-            if isinstance(arg, str) and self.name == "ParallelGroup":
+            if isinstance(arg, str):
                 self.name = arg
             else:
                 self.steps.append(NodeFactory.build(arg))
@@ -460,7 +469,7 @@ class Parallel(BaseNode):
     async def run_stream(
         self, step_input: StepInput, context: RunContext
     ) -> AsyncIterator[Any]:
-        logger.debug(f"  ┣ 🔀 [并发] `{self.name}` 开启了 {len(self.steps)} 个并发任务")
+        logger.debug(f"  🔀 [并发] `{self.name}` 开启了 {len(self.steps)} 个并发任务")
 
         queue = asyncio.Queue()
         bg_tasks = []
@@ -544,14 +553,14 @@ class Parallel(BaseNode):
             stop=any(getattr(o, "stop", False) for o in all_outputs),
         )
 
-        logger.debug(f"  ┣ ✅ [并发] `{self.name}` 执行完毕")
+        logger.debug(f"  ✅ [并发] `{self.name}` 执行完毕")
 
 
 class NodeFactory:
     """统一节点装配工厂"""
 
     @staticmethod
-    def build(item: Any, name: str | None = None) -> BaseNode:
+    def build(item: NodeSource, name: str | None = None) -> BaseNode:
         if isinstance(item, BaseNode):
             if name and item.name in (
                 "unnamed_step",

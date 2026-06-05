@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from zhenxun.services.ai.protocols.llm import LLMModelBase
 
 from .handlers.openai_handlers import (
     OpenAITextHandler,
 )
 from .openai import OpenAICompatAdapter
-
-if TYPE_CHECKING:
-    from zhenxun.services.ai.llm.service import LLMModel
 
 
 class DoubaoAdapter(OpenAICompatAdapter):
@@ -29,7 +26,7 @@ class DoubaoAdapter(OpenAICompatAdapter):
         """当前适配器支持的 API 类型列表。"""
         return ["doubao"]
 
-    def get_chat_endpoint(self, model: "LLMModel") -> str:
+    def get_chat_endpoint(self, model: LLMModelBase) -> str:
         """返回对话端点，优先使用模型级自定义端点。"""
         if model.model_detail.endpoint:
             return model.model_detail.endpoint

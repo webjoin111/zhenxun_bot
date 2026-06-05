@@ -1,5 +1,5 @@
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
@@ -10,7 +10,6 @@ from zhenxun.services.ai.tools.models import ToolResult
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_dump
 
-from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from zhenxun.services.ai.flow.base import BaseRunnable
 
@@ -36,7 +35,10 @@ class DelegateTool(BaseTool):
     """
 
     def __init__(
-        self, runnable: "BaseRunnable[Any]", name: str | None = None, description: str | None = None
+        self,
+        runnable: "BaseRunnable[Any]",
+        name: str | None = None,
+        description: str | None = None,
     ):
         resolved_name = name or getattr(runnable, "name", "SubRunnable")
         resolved_desc = description or getattr(
@@ -110,8 +112,12 @@ class DelegateTool(BaseTool):
                             await streamer.send(
                                 ToolStreamChunk(
                                     tool_name=self.name,
-                                    content=f"🔁 正在调用工具: {event.tool_name}..." 
-                                            + (f" (意图: {event.intent})" if getattr(event, "intent", None) else ""),
+                                    content=f"🔁 正在调用工具: {event.tool_name}..."
+                                    + (
+                                        f" (意图: {event.intent})"
+                                        if getattr(event, "intent", None)
+                                        else ""
+                                    ),
                                 )
                             )
 
@@ -141,7 +147,6 @@ class DelegateTool(BaseTool):
                 usage=usage,
             ).show_to_user(f"🧠 实体 {self.name} 执行完毕")
         except ControlFlowException as e:
-            # 核心修复：放行移交、提交等控制流异常，不要将其拦截为报错
             raise e
         except Exception as e:
             logger.error(f"委派实体 {self.name} 执行失败: {e}", e=e)

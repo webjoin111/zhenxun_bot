@@ -1,6 +1,6 @@
 from abc import ABC
-from collections.abc import AsyncGenerator, Callable
-from typing import Any, cast
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel
 
@@ -17,6 +17,10 @@ from zhenxun.services.ai.flow.team.router import BaseRouter
 from zhenxun.services.ai.run import RunContext, Task
 from zhenxun.services.ai.tools.bridges.delegate import DelegateTool
 from zhenxun.services.log import logger
+
+if TYPE_CHECKING:
+    from zhenxun.services.ai.flow.agent.agent import ToolSource
+    from zhenxun.services.ai.flow.team.team import Team
 
 
 class BaseTeamStrategy(ABC):
@@ -38,7 +42,7 @@ class BaseTeamStrategy(ABC):
         return PromptTemplate(template).render(**kwargs)
 
     async def generate_plan(
-        self, team: Any, prompt: str | Task | None, context: RunContext, **kwargs
+        self, team: "Team", prompt: str | Task | None, context: RunContext, **kwargs
     ) -> AsyncGenerator[TeamAction, Any]:
         """
         核心决策生成器 (Action Yielding Pattern)。
@@ -55,7 +59,7 @@ class BaseTeamStrategy(ABC):
         )
 
     def _build_leader_agent(
-        self, team: Any, name: str, instruction: str, tools: list[Any]
+        self, team: "Team", name: str, instruction: str, tools: list["ToolSource"]
     ) -> Agent:
         """
         统一的团队 Leader / Planner 装配工厂。
@@ -74,17 +78,16 @@ class BaseTeamStrategy(ABC):
         )
 
 
-
 class RouteStrategy(BaseTeamStrategy):
     """路由策略：基于挂载的 Router 进行最合适的专家分发"""
 
     def __init__(
         self,
-        state_flow: dict[str, list[str | Any]] | Callable | None = None,
+        state_flow: "Mapping[str, Sequence[str | Any]] | Callable | None" = None,
         selector_func: Callable[..., str | None] | None = None,
         router: BaseRouter | None = None,
         leader_model: str | None = None,
-        leader_tools: list[Any] | None = None,
+        leader_tools: list["ToolSource"] | None = None,
         custom_prompt: str | None = None,
     ):
         """
@@ -121,7 +124,7 @@ class RouteStrategy(BaseTeamStrategy):
             self.state_flow = state_flow
 
     async def generate_plan(
-        self, team: Any, prompt: str | Task | None, context: RunContext, **kwargs
+        self, team: "Team", prompt: str | Task | None, context: RunContext, **kwargs
     ):
         router = self.router
         if not router:
@@ -228,19 +231,21 @@ class RouteStrategy(BaseTeamStrategy):
             fast_routed = False
             if isinstance(self.state_flow, dict) and current_target in self.state_flow:
                 for t in self.state_flow[current_target]:
-                    if getattr(t, "trigger_regex", None):
+                    trigger_regex = getattr(t, "trigger_regex", None)
+                    if trigger_regex:
                         import re
 
-                        if re.search(t.trigger_regex, output_str):
-                            current_target = t.target
+                        if re.search(trigger_regex, output_str):
+                            current_target = getattr(t, "target", current_target)
                             handoff_reason = ""
                             context_data = output_str
                             fast_routed = True
                             break
-                    if getattr(t, "trigger_func", None):
+                    trigger_func = getattr(t, "trigger_func", None)
+                    if trigger_func:
                         try:
-                            if t.trigger_func(output_str):
-                                current_target = t.target
+                            if trigger_func(output_str):
+                                current_target = getattr(t, "target", current_target)
                                 handoff_reason = ""
                                 context_data = output_str
                                 fast_routed = True
@@ -249,7 +254,9 @@ class RouteStrategy(BaseTeamStrategy):
                             pass
 
             if fast_routed:
-                logger.info(f"🛣️ **路由决策**: 委派给专员 👨💼`{current_target}` (系统拦截：正则/函数状态流发生转移)")
+                logger.info(
+                    f"🛣️ **路由决策**: 委派给专员 👨💼`{current_target}` (系统拦截：正则/函数状态流发生转移)"
+                )
                 continue
 
             yield FinishAction(result=run_result.output)
@@ -267,7 +274,7 @@ class CoordinateStrategy(BaseTeamStrategy):
     def __init__(
         self,
         leader_model: str | None = None,
-        leader_tools: list[Any] | None = None,
+        leader_tools: list["ToolSource"] | None = None,
         custom_prompt: str | None = None,
     ):
         """
@@ -283,14 +290,14 @@ class CoordinateStrategy(BaseTeamStrategy):
         self.leader_tools = leader_tools or []
 
     async def generate_plan(
-        self, team: Any, prompt: str | Task | None, context: RunContext, **kwargs
+        self, team: "Team", prompt: str | Task | None, context: RunContext, **kwargs
     ):
         delegation_tools = []
         for m in team.members:
-            if getattr(m, "persona", None):
-                desc = f"角色：{m.persona.role}，目标：{m.persona.goal}"
-            else:
-                desc = getattr(m, "description", "") or "处理节点"
+            persona = getattr(m, "persona", None)
+            desc = getattr(m, "description", "") or "处理节点"
+            if persona and not isinstance(persona, dict):
+                desc = f"角色：{persona.role}，目标：{persona.goal}"
 
             delegation_tools.append(
                 DelegateTool(
@@ -307,11 +314,9 @@ class CoordinateStrategy(BaseTeamStrategy):
             team=team,
             name=f"{team.name}_Leader",
             instruction=self.get_prompt(),
-            tools=leader_tools
+            tools=leader_tools,
         )
 
-
-        session_id = context.session_id or "default_team_session"
         logger.info(f"✨ **团队 [{team.name}] Leader** 正在汇总各方报告...")
 
         if context.run.streamer:
@@ -341,7 +346,7 @@ class BroadcastStrategy(BaseTeamStrategy):
     def __init__(
         self,
         leader_model: str | None = None,
-        leader_tools: list[Any] | None = None,
+        leader_tools: list["ToolSource"] | None = None,
         custom_prompt: str | None = None,
     ):
         """
@@ -357,13 +362,12 @@ class BroadcastStrategy(BaseTeamStrategy):
         self.leader_tools = leader_tools or []
 
     async def generate_plan(
-        self, team: Any, prompt: str | Task | None, context: RunContext, **kwargs
+        self, team: "Team", prompt: str | Task | None, context: RunContext, **kwargs
     ):
         task_desc_str = (
             prompt.description if isinstance(prompt, Task) else (prompt or "")
         )
 
-        session_id = context.session_id or "default_team_session"
 
         if context.run.streamer:
             from zhenxun.services.ai.core.stream_events import ToolStreamChunk
@@ -404,9 +408,8 @@ class BroadcastStrategy(BaseTeamStrategy):
             team=team,
             name=f"{team.name}_Leader",
             instruction=synthesize_prompt,
-            tools=self.leader_tools
+            tools=self.leader_tools,
         )
-
 
         leader_res = yield CallAction(agent=leader_agent, task=synthesize_prompt)
 
@@ -430,7 +433,7 @@ class TaskStrategy(BaseTeamStrategy):
     def __init__(
         self,
         leader_model: str | None = None,
-        leader_tools: list[Any] | None = None,
+        leader_tools: list["ToolSource"] | None = None,
         max_iterations: int = 15,
         blackboard_schema: type[BaseModel] | None = None,
         initial_blackboard_state: BaseModel | None = None,
@@ -468,9 +471,8 @@ class TaskStrategy(BaseTeamStrategy):
             self.leader_tools.extend(self.bb_tools)
 
     async def generate_plan(
-        self, team: Any, prompt: str | Task | None, context: RunContext, **kwargs
+        self, team: "Team", prompt: str | Task | None, context: RunContext, **kwargs
     ) -> AsyncGenerator[TeamAction, Any]:
-        # EventCenter and Event types removed
         from zhenxun.services.ai.flow.team.models import TaskBoardState, TaskNodeStatus
         from zhenxun.services.ai.flow.team.task_tools import TaskPlanningToolkit
 
@@ -479,21 +481,24 @@ class TaskStrategy(BaseTeamStrategy):
 
         if self.bb_tools:
             for m in team.members:
-                if not getattr(m, "tool_definitions", None):
-                    m.tool_definitions = []
+                if not hasattr(m, "tool_definitions"):
+                    setattr(m, "tool_definitions", [])
+
+                m_tools = getattr(m, "tool_definitions")
                 for t in self.bb_tools:
-                    if t not in m.tool_definitions:
-                        m.tool_definitions.append(t)
+                    if t not in m_tools:
+                        m_tools.append(t)
 
         member_infos = []
         for m in team.members:
-            desc = getattr(m, "description", "")
-            if getattr(m, "persona", None):
-                desc = f"角色：{m.persona.role}，目标：{m.persona.goal}"
+            desc = getattr(m, "description", "") or "处理节点"
+            persona = getattr(m, "persona", None)
+            if persona and not isinstance(persona, dict):
+                desc = f"角色：{persona.role}，目标：{persona.goal}"
             member_infos.append(
                 f'<member id="{m.name}" name="{m.name}">\n'
-                f'  Description: {desc}\n'
-                f'</member>'
+                f"  Description: {desc}\n"
+                f"</member>"
             )
 
         members_xml = "<team_members>\n" + "\n".join(member_infos) + "\n</team_members>"
@@ -509,9 +514,8 @@ class TaskStrategy(BaseTeamStrategy):
             team=team,
             name=f"{team.name}_Planner",
             instruction=final_instruction,
-            tools=leader_tools
+            tools=leader_tools,
         )
-
 
         logger.info(
             f"📋 [TaskStrategy] '{team.name}' 正在启动 Engine-Driven 状态机循环..."
@@ -570,7 +574,7 @@ class TaskStrategy(BaseTeamStrategy):
                     continue
 
                 board.update_task_status(task.id, TaskNodeStatus.in_progress)
-                logger.debug(f"  ┣ 🔄 [任务状态变更] `{task.title}` -> in_progress")
+                logger.debug(f"  🔄 [任务状态变更] `{task.title}` -> in_progress")
 
                 task_prompt = f"### 🎯 你被指派的任务目标：\n{task.description}"
 
@@ -625,7 +629,7 @@ class TaskStrategy(BaseTeamStrategy):
                         )
                         final_status = "completed"
 
-                logger.debug(f"  ┣ 🔄 [任务状态变更] `{task.title}` -> {final_status}")
+                logger.debug(f"  🔄 [任务状态变更] `{task.title}` -> {final_status}")
 
         yield FinishAction(
             result=f"达到最大迭代次数 ({max_iterations})，任务未能在限定步数内完成。"

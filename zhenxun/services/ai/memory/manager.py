@@ -68,7 +68,7 @@ class GlobalMemoryManager:
         ns = scope if scope is not None else infer_plugin_namespace()
         self._consolidator_factories[ns] = factory
 
-    def get_embedder(self, embedder_val: Any | None) -> Embedder | None:
+    def get_embedder(self, embedder_val: "Embedder | str | None") -> Embedder | None:
         """获取向量化引擎实例。如果传入的是字符串，则视为 API 模型名称。"""
         if not embedder_val:
             return None

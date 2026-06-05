@@ -3,6 +3,8 @@ import asyncio
 import json
 from typing import Any
 
+import httpx
+
 from zhenxun.services.ai.llm.adapters.base import RequestData
 from zhenxun.services.ai.llm.core import LLMHttpClient
 from zhenxun.services.ai.protocols.middleware import LLMContext
@@ -15,16 +17,16 @@ class BaseEngine(ABC):
     """
 
     @abstractmethod
-    async def execute(self, context: LLMContext, payload: Any) -> Any:
+    async def execute(self, context: LLMContext, payload: RequestData) -> httpx.Response | Any:
         """
         执行底层调用。
 
         参数:
             context: 执行上下文
-            payload: 由 Adapter 构建的底层所需数据 (如 HTTP 的 RequestData)
+            payload: 由 Adapter 构建的底层所需数据
 
         返回:
-            Any: 原始执行结果
+            httpx.Response | Any: 原始执行结果，通常为 HTTP 响应对象
         """
         pass
 
@@ -40,7 +42,7 @@ class HttpEngine(BaseEngine):
     def __init__(self, client: LLMHttpClient):
         self.client = client
 
-    async def execute(self, context: LLMContext, payload: Any) -> Any:
+    async def execute(self, context: LLMContext, payload: RequestData) -> httpx.Response:
         if not isinstance(payload, RequestData):
             raise ValueError("HttpEngine 仅支持 RequestData 类型的 Payload")
 

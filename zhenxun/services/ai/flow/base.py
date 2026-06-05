@@ -7,7 +7,10 @@ from typing_extensions import Self
 
 from pydantic import BaseModel, Field, model_validator
 
+from zhenxun.services.ai.run.context import RunContext
+
 if TYPE_CHECKING:
+    from zhenxun.services.ai.flow.agent.models import Persona
     from zhenxun.services.ai.run.models import StreamedRunResult
 
 from zhenxun.services.ai.core.messages import PromptInput
@@ -58,7 +61,7 @@ class BaseRunnable(ABC, Generic[T_RunResult]):
     description: str
     """可执行实体的详细描述。用于外部路由(Router)或上层智能体(DelegateTool)决定是否调用它"""
 
-    persona: Any | None = None
+    persona: "Persona | dict | None" = None
     """(可选) 实体的角色设定 (Persona)。包含 role 和 goal，在多智能体路由移交时优先级最高"""
 
     runtime_config: BaseRuntimeConfig
@@ -80,7 +83,7 @@ class BaseRunnable(ABC, Generic[T_RunResult]):
         prompt: PromptInput | None = None,
         reply_to: bool = False,
         *,
-        context: Any = None,
+        context: RunContext | None = None,
         **kwargs: Any,
     ) -> T_RunResult:
         """交互执行语法糖，自动渲染流式进度并最终将结果回复给终端用户"""
@@ -90,7 +93,11 @@ class BaseRunnable(ABC, Generic[T_RunResult]):
         return cast(T_RunResult, await runner.reply(prompt=prompt, reply_to=reply_to))
 
     async def run(
-        self, prompt: PromptInput | None = None, *, context: Any = None, **kwargs: Any
+        self,
+        prompt: PromptInput | None = None,
+        *,
+        context: RunContext | None = None,
+        **kwargs: Any,
     ) -> T_RunResult:
         """阻塞式核心运行入口，默认通过 run_stream 消费提取结果"""
         async with self.run_stream(
@@ -101,7 +108,11 @@ class BaseRunnable(ABC, Generic[T_RunResult]):
     @abstractmethod
     @contextlib.asynccontextmanager
     async def run_stream(
-        self, prompt: PromptInput | None = None, *, context: Any = None, **kwargs: Any
+        self,
+        prompt: PromptInput | None = None,
+        *,
+        context: RunContext | None = None,
+        **kwargs: Any,
     ) -> "AsyncIterator[StreamedRunResult[Any]]":
         """流式运行入口，返回上下文管理器，用于消费底层执行流事件 (StreamedRunResult)"""
         yield cast(Any, None)
