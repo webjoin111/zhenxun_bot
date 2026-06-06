@@ -78,6 +78,13 @@ class CancellationToken:
             self._futures.append(future)
 
 
+class HandoffPayload(BaseModel):
+    """移交信息载荷"""
+    target: str
+    reason: str = ""
+    context_data: Any = ""
+
+
 OutputDataT = TypeVar("OutputDataT", default=str)
 
 
@@ -94,6 +101,8 @@ class AgentRunResult(BaseModel, Generic[OutputDataT]):
     """拦截到的结构化结果字典"""
     telemetry: AgentRunSummary | None = None
     """单次运行的完整可观测性遥测摘要"""
+    handoff: HandoffPayload | None = None
+    """向外抛出的软移交载荷（存在时说明Agent发起了移交请求）"""
 
     class Config:
         arbitrary_types_allowed = True
@@ -186,19 +195,6 @@ class StreamedRunResult(Generic[OutputDataT]):
         return cast(AgentRunResult[OutputDataT], self._result)
 
 
-class ExecutionConfig(BaseModel):
-    """Agent 执行引擎的配置"""
-
-    max_cycles: int = 10
-    """工具调用最大循环次数"""
-    enable_parallel_calls: bool = True
-    """允许并行工具调用"""
-    reflexion_retries: int = 1
-    """反思重试次数"""
-    enable_fallback_summary: bool = True
-    """达到最大循环次数时，是否触发大模型兜底总结（而不是直接报错）"""
-
-
 class TaskResult(BaseModel):
     """单个数据契约任务的执行结果"""
 
@@ -258,7 +254,6 @@ class Task(BaseModel):
 __all__ = [
     "AgentRunResult",
     "CancellationToken",
-    "ExecutionConfig",
     "OutputDataT",
     "StreamedRunResult",
     "Task",

@@ -7,10 +7,9 @@ from nonebot.compat import type_validate_json
 from pydantic import BaseModel, Field, ValidationError, create_model
 
 from zhenxun.services.ai.core.exceptions import (
-    ControlFlowException,
+    ControlFlowExit,
     GuardrailViolationError,
     SchemaParseError,
-    SubmitStructuredException,
 )
 from zhenxun.services.ai.core.models import ToolDefinition
 from zhenxun.services.ai.protocols.tool import ToolExecutable
@@ -189,8 +188,9 @@ class SubmitFinalResultExecutable(ToolExecutable):
             if failed_feedbacks:
                 raise GuardrailViolationError("\n".join(failed_feedbacks))
 
-            raise SubmitStructuredException(data=final_obj)
-        except ControlFlowException as e:
+            from zhenxun.services.ai.tools.models import StructuredSubmitResult
+            return StructuredSubmitResult(output=final_obj)
+        except ControlFlowExit as e:
             raise e
         except Exception as e:
             error_msg = f"系统捕获到解析异常：\n{e}"

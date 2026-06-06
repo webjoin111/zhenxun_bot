@@ -10,7 +10,7 @@ from nonebot.permission import SUPERUSER
 from zhenxun.models.user_console import UserConsole
 from zhenxun.services.ai.core.exceptions import (
     AbortException,
-    ControlFlowException,
+    ControlFlowExit,
     GuardrailViolationError,
     LLMErrorCode,
     LLMException,
@@ -325,7 +325,7 @@ class TelemetryCapability(AbstractCapability):
         self.start_t = time.monotonic()
         try:
             res = await handler()
-        except ControlFlowException as e:
+        except ControlFlowExit as e:
             self.summary.total_latency_ms = (time.monotonic() - self.start_t) * 1000
             logger.debug(
                 f"🛑 [Telemetry] 智能体 {agent_name} 正常中止/控制流转移: {type(e).__name__} (耗时: {self.summary.total_latency_ms:.2f}ms)"
@@ -410,7 +410,7 @@ class TelemetryCapability(AbstractCapability):
 
             logger.debug(f"🛠️ [Telemetry] 工具 {tool_name} 执行完毕 (耗时: {dur:.2f}ms)")
             return result
-        except ControlFlowException as e:
+        except ControlFlowExit as e:
             dur = (time.monotonic() - start_t) * 1000
             self.summary.tools.total += 1
             self.summary.tools.total_latency_ms += dur
@@ -487,14 +487,14 @@ class ToolRetryAndReflectionCapability(AbstractCapability):
         except Exception as e:
             from zhenxun.services.ai.core.exceptions import (
                 AbortException,
-                ControlFlowException,
+                ControlFlowExit,
                 ToolFatalError,
                 ToolFinishException,
             )
             from zhenxun.services.ai.tools.engine.policy import ToolExecutionPolicy
             from zhenxun.services.ai.tools.models import ToolResult
 
-            if isinstance(e, ControlFlowException):
+            if isinstance(e, ControlFlowExit):
                 raise e
 
             retries = context.run.tool_retries.get(tool_name, 0)

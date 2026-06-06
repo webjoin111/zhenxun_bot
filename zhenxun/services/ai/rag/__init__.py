@@ -9,7 +9,8 @@ from .backends.storages import (
     TortoiseStorageBackend,
 )
 from .builder import RAGBuilder
-from .models import BaseRecord, RAGConfig, SearchResult
+from .configs import RAGConfig
+from .models import BaseRecord, SearchResult
 
 __all__ = [
     "AbstractVectorRecord",

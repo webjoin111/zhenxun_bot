@@ -77,6 +77,15 @@ class TaskType(Enum):
     MULTIMODAL = "multimodal"
 
 
+class ToolDirective(StrEnum):
+    """工具控制流数据指令契约"""
+
+    CONTINUE = "continue"
+    END_RUN = "end_run"
+    HANDOFF = "handoff"
+    SUBMIT_STRUCTURED = "submit_structured"
+
+
 class ToolResult(BaseModel):
     """结构化的工具执行结果模型"""
 
@@ -95,6 +104,8 @@ class ToolResult(BaseModel):
     """是否发生了业务级别的错误"""
     is_retryable: bool = Field(default=True)
     """标记该错误是否允许大模型进行自愈反思重试"""
+    directive: ToolDirective = Field(default=ToolDirective.CONTINUE)
+    """工具控制流指示，框架将根据此状态机决定后续走向。"""
 
     def show_to_user(self, display: Any) -> "ToolResult":
         """链式方法：将此结果或特定富文本推送到群聊前端渲染"""
@@ -117,6 +128,63 @@ class ToolResult(BaseModel):
         self.is_error = True
         self.is_retryable = False
         return self
+
+
+class EndRunResult(ToolResult):
+    """数据契约：结束当前大模型思考循环并返回输出"""
+
+    def __init__(self, output: Any, ui_display: Any = None, **kwargs):
+        kwargs.update(
+            {
+                "output": output,
+                "ui_display": ui_display,
+                "directive": ToolDirective.END_RUN,
+            }
+        )
+        super().__init__(**kwargs)
+
+
+class HandoffResult(ToolResult):
+    """数据契约：移交控制权至另一个节点"""
+
+    target: str = Field(..., description="移交的目标节点名称")
+    reason: str = Field(default="", description="移交的原因")
+    context_data: Any = Field(default="", description="需要传递的上下文载荷")
+
+    def __init__(
+        self,
+        target: str,
+        reason: str = "",
+        context_data: Any = "",
+        ui_display: Any = None,
+        **kwargs,
+    ):
+        output = f"已触发控制权移交 -> {target}。原因: {reason}"
+        kwargs.update(
+            {
+                "output": output,
+                "ui_display": ui_display,
+                "directive": ToolDirective.HANDOFF,
+                "target": target,
+                "reason": reason,
+                "context_data": context_data,
+            }
+        )
+        super().__init__(**kwargs)
+
+
+class StructuredSubmitResult(ToolResult):
+    """数据契约：提交结构化解析结果"""
+
+    def __init__(self, output: Any, ui_display: Any = None, **kwargs):
+        kwargs.update(
+            {
+                "output": output,
+                "ui_display": ui_display,
+                "directive": ToolDirective.SUBMIT_STRUCTURED,
+            }
+        )
+        super().__init__(**kwargs)
 
 
 class StateSyncResult(ToolResult):
@@ -242,9 +310,7 @@ class ToolOverride(BaseModel):
     def to_tool_options(self) -> ToolOptions:
         return self.options or ToolOptions()
 
-    async def resolve(
-        self, context: RunContext | None = None
-    ) -> "ResolvedToolPayload":
+    async def resolve(self, context: RunContext | None = None) -> "ResolvedToolPayload":
         from zhenxun.services.ai.tools.engine.registry import tool_provider_manager
         from zhenxun.services.ai.tools.models import ResolvedToolPayload
         from zhenxun.services.log import logger
@@ -289,7 +355,7 @@ class ValidatedToolCall(BaseModel):
     """参数是否成功通过校验"""
     validated_args: dict[str, Any] | None = Field(default=None)
     """通过验证并反序列化后的参数字典"""
-    validation_error: Exception | None = Field(default=None)
+    validation_error: BaseException | None = Field(default=None)
     """验证失败时的异常信息"""
     intent: str | None = Field(default=None)
     """从参数中剥离出的大模型调用意图 (_intent)"""

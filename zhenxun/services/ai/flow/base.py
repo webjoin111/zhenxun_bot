@@ -99,11 +99,35 @@ class BaseRunnable(ABC, Generic[T_RunResult]):
         context: RunContext | None = None,
         **kwargs: Any,
     ) -> T_RunResult:
-        """阻塞式核心运行入口，默认通过 run_stream 消费提取结果"""
-        async with self.run_stream(
-            prompt=prompt, context=context, **kwargs
-        ) as stream_result:
-            return cast(T_RunResult, await stream_result.get_run_result())
+        """阻塞式核心运行入口，安全捕获内部抛出的静默退出信号"""
+        from zhenxun.services.ai.core.exceptions import ControlFlowExit
+        from zhenxun.services.log import logger
+
+        try:
+            async with self.run_stream(
+                prompt=prompt, context=context, **kwargs
+            ) as stream_result:
+                return cast(T_RunResult, await stream_result.get_run_result())
+        except ControlFlowExit as e:
+            logger.info(f"[{self.name}] 触发底层控制流，已安全退出: {e}")
+
+            display_msg = getattr(e, "display", None) or getattr(e, "display_content", None)
+            if display_msg:
+                try:
+                    from nonebot_plugin_alconna import UniMessage
+                    if isinstance(display_msg, UniMessage):
+                        bot = context.get_bot() if context else None
+                        event = context.get_event() if context else None
+                        if bot and event:
+                            await display_msg.send(event, bot=bot)
+                    else:
+                        from zhenxun.utils.message import MessageUtils
+                        await MessageUtils.build_message(str(display_msg)).send()
+                except Exception:
+                    pass
+
+            import asyncio
+            raise asyncio.CancelledError()
 
     @abstractmethod
     @contextlib.asynccontextmanager

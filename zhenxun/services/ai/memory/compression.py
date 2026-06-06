@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 
-from zhenxun.services.ai.core.engine.token_estimator import global_estimator
+from zhenxun.services.ai.core.engine.token_counter import token_counter
 from zhenxun.services.ai.core.messages import (
     AudioPart,
     FilePart,
@@ -8,7 +8,6 @@ from zhenxun.services.ai.core.messages import (
     LLMMessage,
     SystemMessage,
     TextPart,
-    ToolMessage,
     VideoPart,
 )
 from zhenxun.services.ai.llm.manager import get_default_model
@@ -92,70 +91,27 @@ class MultimodalPlaceholderReducer(BaseMemoryReducer):
             return messages, False, current_tokens
 
         processed_messages.reverse()
-        new_tokens = global_estimator.estimate_context(
+        new_tokens = token_counter.count_context(
             processed_messages, model_name, base_overhead
         )
         return processed_messages, True, new_tokens
 
 
-class ToolOutputCompactor(BaseMemoryReducer):
-    async def reduce(self, messages, current_tokens, model_name, base_overhead=0):
-        changed = False
-        new_messages = []
-        for msg in messages:
-            if isinstance(msg, ToolMessage):
-                new_content = []
-                msg_changed = False
-                for return_part in msg.tool_returns:
-                    text = (
-                        str(return_part.output)
-                        if not isinstance(return_part.output, str)
-                        else return_part.output
-                    )
-                    if len(text) > 1000:
-                        head = text[:300]
-                        tail = text[-300:]
-                        omitted = len(text) - 600
-                        new_output = (
-                            f"{head}\n\n...[由于上下文限制，已静默省略 "
-                            f"{omitted} 个字符]...\n\n{tail}"
-                        )
-                        new_part = model_copy(
-                            return_part, update={"output": new_output}
-                        )
-                        new_content.append(new_part)
-                        msg_changed = True
-                        changed = True
-                    else:
-                        new_content.append(return_part)
-
-                if msg_changed:
-                    new_msg = model_copy(msg, deep=True)
-                    new_msg.content = new_content
-                    new_msg.token_cost = None
-                    new_messages.append(new_msg)
-                else:
-                    new_messages.append(msg)
-            else:
-                new_messages.append(msg)
-        if changed:
-            return (
-                new_messages,
-                True,
-                global_estimator.estimate_context(
-                    new_messages, model_name, base_overhead
-                ),
-            )
-        return messages, False, current_tokens
-
-
 class MessageDropper(BaseMemoryReducer):
+    """消息丢弃器：在 Token 超过阈值时丢弃最早的非置顶消息对。"""
+
     def __init__(self, trigger_tokens: int = 4000):
         self.trigger_tokens = trigger_tokens
 
     async def reduce(self, messages, current_tokens, model_name, base_overhead=0):
         if current_tokens <= self.trigger_tokens:
             return messages, False, current_tokens
+
+        logger.info(
+            "✂️ [MemoryCompression] 触发硬截断丢弃策略 | 原因: "
+            f"当前 Token 预估 ({current_tokens}) 仍超过硬性上限 ({self.trigger_tokens})，"  # noqa: E501
+            "开始丢弃最旧的历史对话..."
+        )
         new_messages = list(messages)
         changed = False
 
@@ -176,13 +132,15 @@ class MessageDropper(BaseMemoryReducer):
             del new_messages[start_idx:end_idx]
             changed = True
 
-            current_tokens = global_estimator.estimate_context(
+            current_tokens = token_counter.count_context(
                 new_messages, model_name, base_overhead
             )
         return new_messages, changed, current_tokens
 
 
 class LLMSummarizerReducer(BaseMemoryReducer):
+    """大模型总结压缩器：将较早的历史对话记录通过 LLM 压缩合并为一段文本摘要。"""
+
     def __init__(
         self,
         keep_recent_turns: int = 0,
@@ -208,10 +166,24 @@ class LLMSummarizerReducer(BaseMemoryReducer):
             and not (m.metadata and m.metadata.get("is_summary", False))
         )
         is_token_exceeded = current_tokens > self.trigger_tokens
-        is_turn_exceeded = self.max_turns is not None and user_turns > self.max_turns
+        is_turn_exceeded = (
+            self.max_turns is not None
+            and self.max_turns > 0
+            and user_turns > self.max_turns
+        )
 
         if not (is_token_exceeded or is_turn_exceeded):
             return messages, False, current_tokens
+
+        reasons = []
+        if is_token_exceeded:
+            reasons.append(f"Token 预估超限 ({current_tokens} > {self.trigger_tokens})")
+        if is_turn_exceeded:
+            reasons.append(f"有效对话轮次超限 ({user_turns} > {self.max_turns})")
+        logger.info(
+            "🔄 [MemoryCompression] 触发历史对话合并总结策略 | 原因: "
+            f"{' 且 '.join(reasons)}"
+        )
 
         pinned_msgs, working_msgs, prev_summary = [], [], ""
         for msg in messages:
@@ -272,11 +244,13 @@ class LLMSummarizerReducer(BaseMemoryReducer):
         return (
             new_messages,
             True,
-            global_estimator.estimate_context(new_messages, model_name, base_overhead),
+            token_counter.count_context(new_messages, model_name, base_overhead),
         )
 
 
 class StructuredSummaryReducer(BaseMemoryReducer):
+    """结构化总结压缩器：基于 JSON Schema 格式化抽取全局长上下文状态信息并合并。"""
+
     def __init__(
         self,
         keep_recent_turns: int = 0,
@@ -297,10 +271,24 @@ class StructuredSummaryReducer(BaseMemoryReducer):
             and not (m.metadata and m.metadata.get("is_summary", False))
         )
         is_token_exceeded = current_tokens > self.trigger_tokens
-        is_turn_exceeded = self.max_turns is not None and user_turns > self.max_turns
+        is_turn_exceeded = (
+            self.max_turns is not None
+            and self.max_turns > 0
+            and user_turns > self.max_turns
+        )
 
         if not (is_token_exceeded or is_turn_exceeded):
             return messages, False, current_tokens
+
+        reasons = []
+        if is_token_exceeded:
+            reasons.append(f"Token 预估超限 ({current_tokens} > {self.trigger_tokens})")
+        if is_turn_exceeded:
+            reasons.append(f"有效对话轮次超限 ({user_turns} > {self.max_turns})")
+        logger.info(
+            "🔄 [MemoryCompression] 触发结构化状态抽取压缩策略 | 原因: "
+            f"{' 且 '.join(reasons)}"
+        )
 
         pinned_msgs, working_msgs, prev_summary = [], [], ""
         for msg in messages:
@@ -387,18 +375,20 @@ class StructuredSummaryReducer(BaseMemoryReducer):
         return (
             new_messages,
             True,
-            global_estimator.estimate_context(new_messages, model_name, base_overhead),
+            token_counter.count_context(new_messages, model_name, base_overhead),
         )
 
 
 class CondenserPipeline:
+    """上下文压缩流水线：按顺序依次执行各阶段的记忆压缩减项。"""
+
     def __init__(self, reducers: list[BaseMemoryReducer]):
         self.reducers = reducers
 
     async def run(
         self, messages, model_name, base_overhead=0
     ) -> tuple[list[LLMMessage], bool]:
-        current_tokens = global_estimator.estimate_context(
+        current_tokens = token_counter.count_context(
             messages, model_name, base_overhead
         )
 
@@ -420,7 +410,6 @@ class MemoryPolicy:
     """
     记忆策略工厂 (Strategy Factory Facade)。
     为开发者提供开箱即用的上下文压缩管线组装方案。
-    (多模态视窗 vision_window 已作为正交配置独立到 AgentMemory 中)
     """
 
     @staticmethod
@@ -441,7 +430,6 @@ class MemoryPolicy:
     ) -> list[BaseMemoryReducer]:
         """LLM 总结压缩模式。Token 达标后，自动将历史对话合并为一段 Summary。"""
         return [
-            ToolOutputCompactor(),
             LLMSummarizerReducer(
                 keep_recent_turns=keep_recent_turns,
                 trigger_tokens=trigger_tokens,
@@ -461,7 +449,6 @@ class MemoryPolicy:
     ) -> list[BaseMemoryReducer]:
         """结构化总结压缩模式。使用 JSON Schema 强制大模型提取核心状态。"""
         return [
-            ToolOutputCompactor(),
             StructuredSummaryReducer(
                 keep_recent_turns=keep_recent_turns,
                 trigger_tokens=trigger_tokens,

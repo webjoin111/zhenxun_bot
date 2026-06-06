@@ -5,7 +5,8 @@ import mimetypes
 from pathlib import Path
 from typing import Any, ClassVar, TypeVar, cast
 
-from nonebot.adapters import Bot, Event, Message as PlatformMessage
+from nonebot.adapters import Bot, Event
+from nonebot.adapters import Message as PlatformMessage
 from nonebot_plugin_alconna.uniseg import (
     Audio,
     Image,
@@ -339,7 +340,11 @@ class MessageBuilder:
 
     @classmethod
     async def _extract_parts_for_embed(
-        cls, item: Any, bot: "Bot | None" = None, event: "Event | None" = None, namespace: str = "global"
+        cls,
+        item: Any,
+        bot: "Bot | None" = None,
+        event: "Event | None" = None,
+        namespace: str = "global",
     ) -> list[LLMContentPart]:
         """为 Embed 专用提取纯粹的内容片段，忽略工具调用等杂项"""
         from zhenxun.services.ai.core.messages import (
@@ -364,7 +369,11 @@ class MessageBuilder:
 
     @classmethod
     async def normalize_to_embed_batch(
-        cls, inputs: Any, bot: "Bot | None" = None, event: "Event | None" = None, namespace: str = "global"
+        cls,
+        inputs: Any,
+        bot: "Bot | None" = None,
+        event: "Event | None" = None,
+        namespace: str = "global",
     ) -> "EmbedBatch":
         """将任意输入标准化为 EmbedBatch (支持单模态批量与多模态融合)"""
         from nonebot_plugin_alconna import UniMessage

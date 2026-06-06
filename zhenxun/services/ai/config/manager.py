@@ -125,7 +125,7 @@ def register_llm_configs():
         help=(
             "LLM客户端高级设置。\n"
             "包含: timeout(超时秒数), max_retries(重试次数), "
-            "retry_delay(重试延迟), structured_retries(结构化生成重试), proxy(代理)"
+            "retry_delay(重试延迟), structured_retries(结构化生成重试)"
         ),
         type=dict,
     )
@@ -159,11 +159,15 @@ def register_llm_configs():
         model_dump(llm_config.context_settings),
         help=(
             "智能上下文管理与压缩配置。\n"
-            "包含: default_strategy(默认策略: unlimited为不压缩, "
-            "sliding_window为滑动窗口, llm_summary为模型总结, "
-            "structured_summary为结构化总结), "
-            "trigger_threshold(触发阈值), max_history_turns(最大轮数), "
-            "strategy_kwargs(各模式特有参数), vision_window_size(多模态保留轮数)"
+            "包含:\n"
+            "  - llm_summary: 大模型总结策略配置\n"
+            "    - enable: 是否开启大模型对话总结以压缩上下文\n"
+            "    - trigger_threshold: 触发压缩的 Token 阈值。<=1.0为比例，>1.0为绝对 Token 数\n"  # noqa: E501
+            "    - max_history_turns: 触发压缩的最大历史对话轮数\n"
+            "    - summarization_model: 指定用于总结的大模型名称\n"
+            "    - summarization_prompt: 指导大模型总结的系统提示词\n"
+            "    - keep_recent_turns: 总结外强制原样保留的最近对话轮数\n"
+            "  - vision_window_size: 多模态滑动窗口大小。0表示无限制，>0表示仅保留最近N轮包含多模态真实数据的消息，超过则自动降级为占位符"  # noqa: E501
         ),
         type=dict,
     )
@@ -176,6 +180,20 @@ def register_llm_configs():
             "虚拟模型路由组配置 (Virtual Router Groups)。\n"
             "键为组名，值为模型名称或其它组名的列表。\n"
             "使用 chat(model='cheap_models') 时系统将自动按列表顺序轮询和故障转移。"
+        ),
+        type=dict,
+    )
+
+    Config.add_plugin_config(
+        AI_CONFIG_GROUP,
+        "agent_settings",
+        model_dump(llm_config.agent_settings),
+        help=(
+            "Agent 执行引擎默认设置。\n"
+            "包含: max_cycles(最大工具循环数), enable_parallel_calls(允许并行), "
+            "reflexion_retries(反思重试次数), "
+            "enable_fallback_summary(达到最大循环时兜底总结), "
+            "enable_hitl(是否允许智能体主动向用户求助)"
         ),
         type=dict,
     )
@@ -223,6 +241,7 @@ def get_llm_config() -> LLMConfig:
         PROVIDERS_CONFIG_KEY: ai_config.get(PROVIDERS_CONFIG_KEY, []),
         "context_settings": ai_config.get("context_settings", {}),
         "model_groups": ai_config.get("MODEL_GROUPS", {}),
+        "agent_settings": ai_config.get("agent_settings", {}),
     }
 
     return parse_as(LLMConfig, config_data)

@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from typing import Any, cast
+from typing import cast
 
 from zhenxun.services.ai.memory.interfaces import (
     BaseChatContext,

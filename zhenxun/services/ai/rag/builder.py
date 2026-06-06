@@ -14,7 +14,7 @@ from zhenxun.services.ai.rag.indexing import (
     StorageCommitNode,
     UpdateEmbeddingNode,
 )
-from zhenxun.services.ai.rag.models import RAGConfig
+from zhenxun.services.ai.rag.configs import RAGConfig
 from zhenxun.services.ai.rag.retrieval import (
     BaseRetriever,
     LifecyclePostProcessor,

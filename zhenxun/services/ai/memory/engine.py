@@ -126,10 +126,7 @@ class MemoryReader:
             if policy is not None:
                 pipeline_reducers.extend(policy)
             else:
-                strategy = config.default_strategy
-                s_kwargs = config.strategy_kwargs.get(strategy, {}).copy()
-
-                threshold = config.trigger_threshold
+                threshold = config.llm_summary.trigger_threshold
                 if (
                     self.memory_config
                     and self.memory_config.compression.threshold is not None
@@ -145,24 +142,22 @@ class MemoryReader:
                     else int(threshold)
                 )
 
-                max_turns = config.max_history_turns
+                max_turns = config.llm_summary.max_history_turns
                 if (
                     self.memory_config
                     and self.memory_config.compression.max_history_turns is not None
                 ):
                     max_turns = self.memory_config.compression.max_history_turns
 
-                if strategy == "unlimited":
-                    pipeline_reducers.extend(MemoryPolicy.unlimited())
-                elif strategy == "llm_summary":
-                    s_kwargs["trigger_tokens"] = limit
-                    s_kwargs["max_turns"] = max_turns
-                    pipeline_reducers.extend(MemoryPolicy.llm_summarize(**s_kwargs))
-                elif strategy == "structured_summary":
-                    s_kwargs["trigger_tokens"] = limit
-                    s_kwargs["max_turns"] = max_turns
+                if config.llm_summary.enable:
                     pipeline_reducers.extend(
-                        MemoryPolicy.structured_summarize(**s_kwargs)
+                        MemoryPolicy.llm_summarize(
+                            trigger_tokens=limit,
+                            max_turns=max_turns,
+                            keep_recent_turns=config.llm_summary.keep_recent_turns,
+                            summarization_model=config.llm_summary.summarization_model,
+                            summarization_prompt=config.llm_summary.summarization_prompt,
+                        )
                     )
                 else:
                     pipeline_reducers.extend(MemoryPolicy.unlimited())

@@ -162,7 +162,7 @@ class MemoryBuilder:
     def with_llm_summary(
         self,
         trigger_tokens: int = 4000,
-        max_turns: int | None = None,
+        max_turns: int = 0,
         keep_recent_turns: int = 0,
         summarization_model: str | None = None,
         summarization_prompt: str = "请概括以下对话内容，保留关键的约束条件、用户偏好、已完成的任务状态和未解决的问题。",  # noqa: E501
@@ -192,7 +192,7 @@ class MemoryBuilder:
     def with_structured_summary(
         self,
         trigger_tokens: int = 4000,
-        max_turns: int | None = None,
+        max_turns: int = 0,
         keep_recent_turns: int = 0,
         summarization_model: str | None = None,
     ) -> Self:

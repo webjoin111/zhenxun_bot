@@ -4,7 +4,7 @@ from typing_extensions import TypeVar
 from nonebot.adapters import Bot, Event
 from nonebot_plugin_alconna.uniseg import UniMessage
 
-from zhenxun.services.ai.core.exceptions import ControlFlowException
+from zhenxun.services.ai.core.exceptions import ControlFlowExit
 from zhenxun.services.ai.core.messages import UsageInfo
 from zhenxun.services.ai.core.stream_events import ToolStreamChunk
 from zhenxun.services.ai.flow.base import BaseRunnable
@@ -95,7 +95,7 @@ class AgentRunner(Generic[T_Out]):
                     elif isinstance(stream_event, AgentRunError):
                         raise stream_event.error
 
-        except ControlFlowException as e:
+        except ControlFlowExit as e:
             from zhenxun.services.ai.core.exceptions import (
                 ConcurrencyInterruptException,
                 ConcurrencyRejectException,
@@ -122,25 +122,25 @@ class AgentRunner(Generic[T_Out]):
             )
             display_msg = getattr(e, "display", None)
             if display_msg and self._bot and self._event:
-                if isinstance(display_msg, UniMessage):
-                    await display_msg.send(
-                        self._event, bot=self._bot, reply_to=reply_to
-                    )
-                else:
-                    await self._bot.send(self._event, str(display_msg))
-            output_val = getattr(e, "result_output", None) or str(e)
-            return cast(
-                AgentRunResult[T_Out],
-                AgentRunResult(output=output_val, usage=UsageInfo()),
-            )
+                try:
+                    if isinstance(display_msg, UniMessage):
+                        await display_msg.send(
+                            self._event, bot=self._bot, reply_to=reply_to
+                        )
+                    else:
+                        await self._bot.send(self._event, str(display_msg))
+                except Exception:
+                    pass
+
+            import asyncio
+
+            raise asyncio.CancelledError()
 
         except Exception as e:
             logger.error(f"{self.runnable.name} 运行失败: {e}", e=e)
             if self._bot and self._event:
                 await MessageUtils.build_message(f"❌ 运行发生错误: {e}").send()
             raise e
-
-
 
         if final_result and final_result.output and self._bot and self._event:
             if isinstance(final_result.output, UniMessage):

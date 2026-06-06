@@ -369,11 +369,8 @@ class MatcherTool(BaseTool):
 
         except FinishedException:
             if self.terminal:
-                from zhenxun.services.ai.core.exceptions import EndRunException
-
-                raise EndRunException(
-                    result_output="任务已完成。结果已直接发送给用户。", display=None
-                )
+                from zhenxun.services.ai.tools.models import EndRunResult
+                return EndRunResult(output="任务已完成。结果已直接发送给用户。")
             return ToolResult(output="执行完毕，已直接向用户发送结果。")
 
         except PausedException:
@@ -398,9 +395,8 @@ class MatcherTool(BaseTool):
             return ToolResult(output=f"执行时发生底层错误: {real_err}").as_error()
 
         if self.terminal:
-            from zhenxun.services.ai.core.exceptions import EndRunException
-
-            raise EndRunException(result_output="执行完毕。", display=None)
+            from zhenxun.services.ai.tools.models import EndRunResult
+            return EndRunResult(output="执行完毕。")
 
         return ToolResult(output="命令已在后台成功执行完成。")
 

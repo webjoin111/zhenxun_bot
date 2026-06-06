@@ -12,7 +12,7 @@ from zhenxun.services.ai.core.configs import (
     GenerationConfig,
 )
 from zhenxun.services.ai.core.exceptions import (
-    ControlFlowException,
+    ControlFlowExit,
 )
 from zhenxun.services.ai.core.guardrails import GuardrailSource
 from zhenxun.services.ai.core.messages import (
@@ -22,6 +22,7 @@ from zhenxun.services.ai.core.messages import (
 from zhenxun.services.ai.core.stream_events import EventStreamer
 from zhenxun.services.ai.flow.agent.engine.builders import ToolBuilder
 from zhenxun.services.ai.flow.agent.models import (
+    AgentEngineConfig,
     AgentRuntimeConfig,
     Persona,
 )
@@ -34,7 +35,6 @@ from zhenxun.services.ai.protocols.capabilities import AbstractCapability
 from zhenxun.services.ai.protocols.tool import ToolExecutable, ToolResolvable
 from zhenxun.services.ai.run import (
     AgentRunResult,
-    ExecutionConfig,
     RunContext,
     Task,
     TemplateStr,
@@ -166,6 +166,10 @@ class Agent(
         if isinstance(runtime_config, dict):
             runtime_config = AgentRuntimeConfig(**runtime_config)
         self.runtime_config = runtime_config or AgentRuntimeConfig()
+
+        if self.runtime_config.enable_hitl is None:
+            from zhenxun.services.ai.config import get_llm_config
+            self.runtime_config.enable_hitl = get_llm_config().agent_settings.enable_hitl
 
         self.runtime_config.stateless = not self.memory_config.short_term.enable
 
@@ -311,7 +315,7 @@ class Agent(
         context: RunContext[AgentDepsT] | None = None,
         message_history: list[LLMMessage] | None = None,
         tool_filter: GlobalToolFilter | None = None,
-        config: ExecutionConfig | None = None,
+        config: AgentEngineConfig | None = None,
         memory: bool | MemoryConfig | MemoryBuilder | None = None,
         generation_config: GenerationConfig | None = None,
         capabilities: list[CapabilitySource] | None = None,
@@ -356,7 +360,7 @@ class Agent(
         context: RunContext[AgentDepsT] | None = None,
         message_history: list[LLMMessage] | None = None,
         tool_filter: GlobalToolFilter | None = None,
-        config: ExecutionConfig | None = None,
+        config: AgentEngineConfig | None = None,
         memory: bool | MemoryConfig | MemoryBuilder | None = None,
         generation_config: GenerationConfig | None = None,
         event_streamer: EventStreamer | None = None,
@@ -416,7 +420,7 @@ class Agent(
                         **kwargs,
                     )
                     await streamer.send(AgentRunEnd(result=result))
-            except ControlFlowException as e:
+            except ControlFlowExit as e:
                 await streamer.send(AgentRunError(error=e))
             except asyncio.CancelledError:
                 from zhenxun.services.ai.core.exceptions import (
@@ -485,7 +489,7 @@ class Agent(
         context: RunContext[AgentDepsT],
         message_history: list[LLMMessage] | None = None,
         tool_filter: GlobalToolFilter | None = None,
-        config: ExecutionConfig | None = None,
+        config: AgentEngineConfig | None = None,
         memory: bool | MemoryConfig | MemoryBuilder | None = None,
         generation_config: GenerationConfig | None = None,
         cancellation_token: Any = None,
@@ -499,7 +503,8 @@ class Agent(
         harness = AgentHarness(self)
         (
             loop_ctx,
-            loop_config,
+            exec_config,
+            final_gen_config,
             writer,
             toolkits,
             run_scoped_cap,
@@ -531,23 +536,18 @@ class Agent(
             async with ToolBuilder.mount_toolkits(
                 toolkits, context.session_id or "", context
             ):
-                executor_cls = getattr(self.runtime_config, "custom_executor", None)
-                if executor_cls is None:
-                    from zhenxun.services.ai.flow.agent.engine.executor import (
-                        AgentExecutor,
-                    )
-
-                    executor_cls = AgentExecutor
-                executor = executor_cls()
+                from zhenxun.services.ai.flow.agent.engine.executor import AgentExecutor
+                executor = AgentExecutor()
 
                 from zhenxun.services.ai.llm.manager import get_model_instance
 
                 async with await get_model_instance(
-                    loop_config.model_name, override_config=None
+                    context.run.current_model, override_config=None
                 ) as instance:
                     raw_result: Any = await executor.run(
                         loop_ctx=loop_ctx,
-                        loop_config=loop_config,
+                        exec_config=exec_config,
+                        generation_config=final_gen_config,
                         model_instance=instance,
                     )
 
@@ -555,7 +555,7 @@ class Agent(
 
         try:
             return await run_scoped_cap.wrap_run(context, inner_run_handler)
-        except ControlFlowException as e:
+        except ControlFlowExit as e:
             raise e
         except Exception as e:
             logger.error(f"Agent '{self.name}' 运行失败: {e}", e=e)

@@ -145,7 +145,6 @@ class LLMRouter(BaseRouter):
         history: list[LLMMessage],
         prompt: str | Task | None = None,
     ) -> RouteDecision | None:
-        from zhenxun.services.ai.core.exceptions import HandoffException
         from zhenxun.services.ai.core.templates import PromptTemplate
         from zhenxun.services.ai.flow.agent.agent import Agent
         from zhenxun.services.ai.flow.agent.models import AgentRuntimeConfig
@@ -190,22 +189,19 @@ class LLMRouter(BaseRouter):
         sub_context.capabilities = list(sub_context.capabilities)
         sub_context.capabilities.append(routing_cap)
 
-        try:
-            logger.debug("🤖 [LLMRouter] 启动 LLM 思考路由决策...")
-            await router_agent.run(
-                prompt=prompt,
-                context=sub_context,
-                message_history=history,
-            )
-            logger.warning("🤖 [LLMRouter] LLM 没有调用移交工具，放弃路由。")
-            return None
-        except HandoffException as e:
-            target_name = e.target
-            reason = e.payload.get("reason", "") if e.payload else ""
-            context_data = e.payload.get("context_data", "") if e.payload else ""
-            logger.debug(f"🤖 [LLMRouter] 决策完毕: 移交给 -> {target_name}")
+        logger.debug("🤖 [LLMRouter] 启动 LLM 思考路由决策...")
+        res = await router_agent.run(
+            prompt=prompt,
+            context=sub_context,
+            message_history=history,
+        )
+        if res.handoff:
+            logger.debug(f"🤖 [LLMRouter] 决策完毕: 移交给 -> {res.handoff.target}")
             return RouteDecision(
-                target_name=target_name,
-                reason=reason,
-                context_data=context_data,
+                target_name=res.handoff.target,
+                reason=res.handoff.reason,
+                context_data=res.handoff.context_data,
             )
+
+        logger.warning("🤖 [LLMRouter] LLM 没有调用移交工具，放弃路由。")
+        return None

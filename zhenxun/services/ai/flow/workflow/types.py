@@ -115,7 +115,7 @@ class BaseFailurePolicy(ABC):
 
     @abstractmethod
     async def handle_failure(
-        self, node: Any, exception: Exception, step_input: StepInput, context: Any
+        self, node: Any, exception: BaseException, step_input: StepInput, context: Any
     ) -> PolicyResult:
         pass
 
@@ -124,7 +124,7 @@ class AbortPolicy(BaseFailurePolicy):
     """直接中断策略"""
 
     async def handle_failure(
-        self, node: Any, exception: Exception, step_input: StepInput, context: Any
+        self, node: Any, exception: BaseException, step_input: StepInput, context: Any
     ) -> PolicyResult:
         return PolicyResult(action=PolicyAction.ABORT)
 
@@ -133,7 +133,7 @@ class SkipPolicy(BaseFailurePolicy):
     """跳过并继续策略"""
 
     async def handle_failure(
-        self, node: Any, exception: Exception, step_input: StepInput, context: Any
+        self, node: Any, exception: BaseException, step_input: StepInput, context: Any
     ) -> PolicyResult:
         return PolicyResult(action=PolicyAction.CONTINUE)
 
@@ -146,7 +146,7 @@ class RetryPolicy(BaseFailurePolicy):
         self.delay = delay
 
     async def handle_failure(
-        self, node: Any, exception: Exception, step_input: StepInput, context: Any
+        self, node: Any, exception: BaseException, step_input: StepInput, context: Any
     ) -> PolicyResult:
         counts = context.state.setdefault("__retry_counts__", {})
         key = f"{node.name}_{id(self)}"
@@ -164,7 +164,7 @@ class FallbackPolicy(BaseFailurePolicy):
         self.fallback_node = fallback_node
 
     async def handle_failure(
-        self, node: Any, exception: Exception, step_input: StepInput, context: Any
+        self, node: Any, exception: BaseException, step_input: StepInput, context: Any
     ) -> PolicyResult:
         return PolicyResult(
             action=PolicyAction.FALLBACK, fallback_node=self.fallback_node
@@ -179,7 +179,7 @@ class SelfHealingPolicy(BaseFailurePolicy):
         self.max_retries = max_retries
 
     async def handle_failure(
-        self, node: Any, exception: Exception, step_input: StepInput, context: Any
+        self, node: Any, exception: BaseException, step_input: StepInput, context: Any
     ) -> PolicyResult:
         counts = context.state.setdefault("__heal_counts__", {})
         key = f"{node.name}_{id(self)}"

@@ -2,7 +2,7 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from zhenxun.services.ai.core.exceptions import EndRunException
+
 from zhenxun.services.ai.flow.base import BaseRunnable
 from zhenxun.services.ai.run.context import RunContext
 from zhenxun.services.ai.tools.core.decorators import tool
@@ -160,4 +160,5 @@ class TaskPlanningToolkit(BaseToolkit):
         board.is_goal_complete = True
         board.final_summary = summary
 
-        raise EndRunException(result_output=summary, display=None)
+        from zhenxun.services.ai.tools.models import EndRunResult
+        return EndRunResult(output=summary)

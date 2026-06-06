@@ -2,7 +2,6 @@
 LLM Token 动态预估与上下文管理模块
 """
 
-from abc import ABC, abstractmethod
 import math
 import re
 from typing import Any
@@ -22,67 +21,24 @@ from zhenxun.services.ai.core.messages import (
 )
 
 
-class BaseTokenEstimator(ABC):
+class TokenCounter:
     """
-    Token 预估器协议接口
-    允许第三方开发者未来挂载 tiktoken 等硬核离线分词库
-    """
-
-    @abstractmethod
-    def estimate_message(self, msg: LLMMessage, model_name: str) -> int:
-        """估算单条消息的 Token 数量"""
-        pass
-
-    @abstractmethod
-    def estimate_context(
-        self, messages: list[LLMMessage], model_name: str, base_overhead: int = 0
-    ) -> int:
-        """估算整个对话上下文的 Token 数量"""
-        pass
-
-    @abstractmethod
-    def calibrate(
-        self,
-        actual_prompt_tokens: int,
-        estimated_messages: list[LLMMessage],
-        model_name: str,
-    ) -> None:
-        """接收 API 的后验反馈 (静态引擎中此方法为空，动态锚定将由 Session 完成)"""
-        pass
-
-
-def estimate_tools_schema(obj: dict | list | str | Any) -> int:
-    """
-    启发式预估工具 JSON Schema 的 Token 开销 (The Hidden Token Tax)。
-    根据研究，每个 Key 约占 12 Tokens，描述文本(description)按字符计算。
-    """
-    if isinstance(obj, dict):
-        cost = len(obj.keys()) * 12
-        for k, v in obj.items():
-            if k == "description" and isinstance(v, str):
-                cost += int(len(v) * 0.3)
-            else:
-                cost += estimate_tools_schema(v)
-        return cost
-    elif isinstance(obj, list):
-        return sum(estimate_tools_schema(item) for item in obj)
-    return 0
-
-
-class StaticTokenEngine(BaseTokenEstimator):
-    """
-    静态多模态计算引擎 (Static Rule Engine)
-    基于第一性原理数学计算，摆脱外部库依赖，提供绝对稳定的预估基线。
+    Token 计数器
+    基于确定性规则，摆脱外部库依赖，提供绝对稳定的 Token 消耗预估基线。
     """
 
-    def _estimate_text(self, text: str) -> int:
+    @staticmethod
+    def _count_text(text: str) -> int:
+        """基于字符类型近似计算纯文本的 Token 消耗量。"""
         if not text:
             return 0
         cjk_chars = len(re.findall(r"[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]", text))
         ascii_chars = len(text) - cjk_chars
         return math.ceil(cjk_chars * 1.2 + ascii_chars * 0.3)
 
-    def _estimate_image(self, resolution_hint: str | None, model_name: str) -> int:
+    @staticmethod
+    def _count_image(resolution_hint: str | None, model_name: str) -> int:
+        """根据分辨率策略和模型厂商计算单张图片的 Token 消耗量。"""
         if "gemini" in model_name.lower():
             res = (resolution_hint or "").upper()
             if "ULTRA_HIGH" in res:
@@ -94,7 +50,24 @@ class StaticTokenEngine(BaseTokenEstimator):
             return 1032
         return 765
 
-    def estimate_message(self, msg: LLMMessage, model_name: str) -> int:
+    @classmethod
+    def count_tools_schema(cls, obj: dict | list | str | Any) -> int:
+        """递归计算 JSON Schema 结构在被大模型作为工具时的 Token 开销。"""
+        if isinstance(obj, dict):
+            cost = len(obj.keys()) * 12
+            for k, v in obj.items():
+                if k == "description" and isinstance(v, str):
+                    cost += int(len(v) * 0.3)
+                else:
+                    cost += cls.count_tools_schema(v)
+            return cost
+        elif isinstance(obj, list):
+            return sum(cls.count_tools_schema(item) for item in obj)
+        return 0
+
+    @classmethod
+    def count_message(cls, msg: LLMMessage, model_name: str) -> int:
+        """累加计算单条包含多模态片段和工具调用的消息 Token 总数。"""
         if msg.token_cost is not None:
             return msg.token_cost
 
@@ -104,53 +77,40 @@ class StaticTokenEngine(BaseTokenEstimator):
             total_tokens += 40
 
         if isinstance(msg.content, str):
-            total_tokens += self._estimate_text(msg.content)
+            total_tokens += cls._count_text(msg.content)
         elif isinstance(msg.content, list):
             for part in msg.content:
                 if isinstance(part, TextPart) and part.text:
-                    total_tokens += self._estimate_text(part.text)
+                    total_tokens += cls._count_text(part.text)
                 elif isinstance(part, ImagePart):
-                    total_tokens += self._estimate_image(
+                    total_tokens += cls._count_image(
                         getattr(part, "media_resolution", None), model_name
                     )
-                elif isinstance(
-                    part,
-                    (
-                        VideoPart,
-                        AudioPart,
-                        FilePart,
-                    ),
-                ):
+                elif isinstance(part, (VideoPart, AudioPart, FilePart)):
                     total_tokens += 1032
                 elif isinstance(part, ThoughtPart) and part.thought_text:
-                    total_tokens += self._estimate_text(part.thought_text)
+                    total_tokens += cls._count_text(part.thought_text)
                 elif isinstance(part, ToolCallPart) and part.args:
-                    total_tokens += self._estimate_text(str(part.args))
+                    total_tokens += cls._count_text(str(part.args))
                 elif isinstance(part, ToolReturnPart) and part.output:
-                    total_tokens += self._estimate_text(str(part.output))
+                    total_tokens += cls._count_text(str(part.output))
 
         msg.token_cost = total_tokens
         return total_tokens
 
-    def estimate_context(
-        self, messages: list[LLMMessage], model_name: str, base_overhead: int = 0
+    @classmethod
+    def count_context(
+        cls, messages: list[LLMMessage], model_name: str, base_overhead: int = 0
     ) -> int:
+        """计算整个对话历史上下文的 Token 总和。"""
         if not messages:
             return base_overhead
         return base_overhead + sum(
-            self.estimate_message(msg, model_name) for msg in messages
+            cls.count_message(msg, model_name) for msg in messages
         )
 
-    def calibrate(
-        self,
-        actual_prompt_tokens: int,
-        estimated_messages: list[LLMMessage],
-        model_name: str,
-    ) -> None:
-        pass
 
-
-global_estimator = StaticTokenEngine()
+token_counter = TokenCounter
 
 
 def parse_usage_info(usage_info: dict | None) -> UsageInfo:

@@ -82,16 +82,11 @@ class HITLController:
         event = await self.wait_event(prompt_msg, timeout=timeout, strict_user=True)
         if event is None:
             logger.warning("🛡️ [HITL] 文本参数收集超时，任务已被系统强杀。")
-            raise ToolFatalError(
-                "参数收集超时，用户已离开，任务已中止。",
-                display_content="❌ 等待用户输入超时，操作已取消。",
-            )
+            raise ToolFatalError("参数收集超时，用户已离开，任务已中止。")
 
         user_input = event.get_plaintext().strip()
         if user_input.lower() in CANCEL_WORDS:
-            raise AbortException(
-                reason="用户主动取消了操作", display="❌ 操作已被用户主动取消。"
-            )
+            raise AbortException(reason="用户主动取消了操作")
 
         return user_input
 
@@ -116,7 +111,7 @@ class HITLController:
         while True:
             remaining = timeout - (time.time() - start_time)
             if remaining <= 0:
-                raise ToolFatalError("审批超时", display_content="❌ 审批超时取消。")
+                raise ToolFatalError("审批超时")
 
             event = await self.wait_event(
                 prompt_msg=full_prompt if is_first_prompt else None,
@@ -126,7 +121,7 @@ class HITLController:
             is_first_prompt = False
 
             if event is None:
-                raise ToolFatalError("审批超时", display_content="❌ 审批超时取消。")
+                raise ToolFatalError("审批超时")
 
             text = event.get_plaintext().strip().lower()
             if (
@@ -146,4 +141,4 @@ class HITLController:
             if text in CONFIRM_WORDS:
                 return True
 
-            raise AbortException(reason="审批被拒绝", display="❌ 操作已被拒绝或取消。")
+            raise AbortException(reason="审批被拒绝")

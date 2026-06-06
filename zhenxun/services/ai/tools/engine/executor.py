@@ -175,7 +175,7 @@ class ToolExecutor:
                 validated_args=validated_args,
                 intent=intent_str,
             )
-        except Exception as e:
+        except BaseException as e:
             return ValidatedToolCall(
                 call=tool_call,
                 tool=executable,
@@ -197,9 +197,9 @@ class ToolExecutor:
             available_tools = {}
         tool_name = validated.call.tool_name
         if not validated.args_valid or validated.tool is None:
-            from zhenxun.services.ai.core.exceptions import ControlFlowException
+            from zhenxun.services.ai.core.exceptions import ControlFlowExit
 
-            if isinstance(validated.validation_error, ControlFlowException):
+            if isinstance(validated.validation_error, ControlFlowExit):
                 raise validated.validation_error
 
             err_msg = getattr(
@@ -250,10 +250,10 @@ class ToolExecutor:
 
                 if not isinstance(result, ToolResult):
                     result = ToolResult(output=result)
-            except Exception as e:
-                from zhenxun.services.ai.core.exceptions import ControlFlowException
+            except BaseException as e:
+                from zhenxun.services.ai.core.exceptions import ControlFlowExit
 
-                if isinstance(e, ControlFlowException):
+                if isinstance(e, ControlFlowExit):
                     raise e
                 logger.error(f"洋葱模型异常穿透: {e}")
                 result = ToolResult(output=f"System Fatal Error: {e}").as_error()
@@ -358,9 +358,9 @@ class ToolExecutor:
             func_name = original_call.tool_name
 
             if isinstance(result_pair, BaseException):
-                from zhenxun.services.ai.core.exceptions import ControlFlowException
+                from zhenxun.services.ai.core.exceptions import ControlFlowExit
 
-                if isinstance(result_pair, ControlFlowException):
+                if isinstance(result_pair, ControlFlowExit):
                     raise result_pair
 
                 logger.error(f"工具批量执行并发崩溃: {func_name}, 错误: {result_pair}")

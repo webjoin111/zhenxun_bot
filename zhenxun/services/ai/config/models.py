@@ -1,4 +1,3 @@
-from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -30,42 +29,37 @@ class ClientSettings(BaseModel):
     """请求重试的基础延迟时间 (秒)"""
     structured_retries: int = 2
     """结构化生成校验失败时的最大重试次数 (IVR)"""
-    proxy: str | None = None
-    """网络代理地址，例如 http://127.0.0.1:7890"""
+
+
+class LLMSummaryConfig(BaseModel):
+    """LLM 自然语言总结压缩策略配置"""
+
+    enable: bool = True
+    """是否开启大模型对话总结以压缩上下文"""
+    trigger_threshold: float = 0.8
+    """触发压缩的 Token 阈值。<=1.0 为比例，>1.0 为绝对 Token 数"""
+    max_history_turns: int = 0
+    """触发压缩的最大历史对话轮数。设为 0 表示不限制轮数（仅受 Token 阈值控制）。"""
+    summarization_model: str | None = "Gemini/gemini-3.5-flash"
+    """指定用于执行总结任务的大模型名称，为空则使用全局默认"""
+    summarization_prompt: str = (
+        "请以客观、精炼的语言概括以下对话内容。重点保留："
+        "1. 核心讨论话题及重要决定；"
+        "2. 用户的个性特征、核心偏好、提及的生活背景或特殊设定；"
+        "3. 双方互动的温度与情感基调。无需保留寒暄等客套话。"
+    )
+    """指导大模型进行总结的系统提示词"""
+    keep_recent_turns: int = 3
+    """在总结之外，强制原样保留的最近对话轮数"""
 
 
 class ContextManagementSettings(BaseModel):
     """智能上下文管理与压缩算法设置"""
 
-    default_strategy: Literal[
-        "unlimited", "llm_summary", "structured_summary"
-    ] = "unlimited"
-    """全局默认记忆策略"""
+    llm_summary: LLMSummaryConfig = Field(default_factory=LLMSummaryConfig)
+    """大模型自然语言总结策略"""
 
-    trigger_threshold: float = 0.8
-    """触发压缩的 Token 阈值。<=1.0 为比例，>1.0 为绝对 Token 数"""
-    max_history_turns: int | None = None
-    """触发压缩的最大历史对话轮数"""
-
-    strategy_kwargs: dict[str, dict[str, Any]] = Field(
-        default_factory=lambda: {
-            "llm_summary": {
-                "summarization_model": None,
-                "summarization_prompt": (
-                    "请概括以下对话内容，保留关键的约束条件、用户偏好、"
-                    "已完成的任务状态和未解决的问题。"
-                ),
-                "keep_recent_turns": 0,
-            },
-            "structured_summary": {
-                "summarization_model": None,
-                "keep_recent_turns": 0,
-            },
-        }
-    )
-    """各模式专属的特有参数字典"""
-
-    vision_window_size: int = Field(default=5)
+    vision_window_size: int = Field(default=3)
     """多模态滑动窗口大小。0表示无限制，>0表示仅保留最近N轮包含多模态真实数据的消息，超龄则自动降级为占位符"""
 
 
@@ -90,8 +84,6 @@ class ProviderConfig(BaseModel):
     """该提供商提供的具体模型列表"""
     timeout: int = 180
     """针对该提供商的特定超时时间"""
-    proxy: str | None = None
-    """针对该提供商的特定代理设置"""
 
 
 class DefaultModelsConfig(BaseModel):
@@ -101,6 +93,21 @@ class DefaultModelsConfig(BaseModel):
     tts: str | None = Field(default="Gemini/gemini-3.1-flash-tts-preview")
     image: str | None = Field(default="Gemini/gemini-2.5-flash-image")
     rerank: str | None = Field(default="siliconflow/BAAI/bge-reranker-v2-m3")
+
+
+class AgentEngineSettings(BaseModel):
+    """全局默认的 Agent 推理引擎配置"""
+
+    max_cycles: int = 10
+    """工具调用最大循环次数"""
+    enable_parallel_calls: bool = True
+    """允许并行工具调用"""
+    reflexion_retries: int = 1
+    """反思重试次数"""
+    enable_fallback_summary: bool = True
+    """达到最大循环次数时，是否触发大模型兜底总结（而不是直接报错）"""
+    enable_hitl: bool = True
+    """是否允许智能体主动挂起任务，向用户求助 (Human-in-the-Loop)"""
 
 
 class LLMConfig(BaseModel):
@@ -127,6 +134,8 @@ class LLMConfig(BaseModel):
         }
     )
     """虚拟模型路由组配置 (Virtual Router Groups)"""
+    agent_settings: AgentEngineSettings = Field(default_factory=AgentEngineSettings)
+    """Agent 执行引擎层核心默认参数配置"""
 
     def validate_model_name(self, provider_model_name: str) -> bool:
         """验证模型名称在当前配置中是否存在"""

@@ -3,16 +3,14 @@ import json
 from typing import Any, cast
 
 from zhenxun.services.ai.core.configs import GenerationConfig
-from zhenxun.services.ai.core.engine.token_estimator import (
-    global_estimator,
+from zhenxun.services.ai.core.engine.token_counter import (
     parse_usage_info,
+    token_counter,
 )
 from zhenxun.services.ai.core.exceptions import (
-    ControlFlowException,
-    EndRunException,
+    ControlFlowExit,
     LLMErrorCode,
     LLMException,
-    SubmitStructuredException,
 )
 from zhenxun.services.ai.core.messages import (
     AssistantMessage,
@@ -22,10 +20,7 @@ from zhenxun.services.ai.core.messages import (
     ToolCallPart,
     UsageInfo,
 )
-from zhenxun.services.ai.flow.agent.models import (
-    AgentLoopConfig,
-    AgentLoopContext,
-)
+from zhenxun.services.ai.flow.agent.models import AgentEngineConfig, AgentLoopContext
 from zhenxun.services.ai.run import AgentRunResult, RunContext
 from zhenxun.services.ai.tools.engine.executor import ToolExecutor
 from zhenxun.services.ai.tools.models import ToolResult
@@ -177,7 +172,8 @@ class AgentExecutor:
     async def run(
         self,
         loop_ctx: AgentLoopContext,
-        loop_config: AgentLoopConfig,
+        exec_config: AgentEngineConfig,
+        generation_config: GenerationConfig,
         model_instance: Any,
     ) -> AgentRunResult[Any]:
         """
@@ -185,11 +181,10 @@ class AgentExecutor:
         返回: 包含运行状态、历史消息和控制流信号的 AgentRunResult 对象
         """
         tool_executor = ToolExecutor()
-        gen_config = loop_config.generation_config
         run_context = loop_ctx.run_context
         tools = loop_ctx.tools
-        cancellation_token = loop_config.cancellation_token
-        event_streamer = loop_config.event_streamer
+        cancellation_token = run_context.run.cancellation_token
+        event_streamer = run_context.run.streamer
 
         execution_history = list(loop_ctx.messages)
         run_context.run.messages = execution_history
@@ -197,12 +192,12 @@ class AgentExecutor:
         cumulative_usage = UsageInfo()
 
         try:
-            for cycle_index in range(loop_config.max_cycles):
+            for cycle_index in range(exec_config.max_cycles):
                 if cancellation_token:
                     cancellation_token.raise_if_cancelled()
 
                 try:
-                    est_tokens = global_estimator.estimate_context(
+                    est_tokens = token_counter.count_context(
                         execution_history, model_instance.model_name, base_overhead=0
                     )
                     logger.debug(
@@ -246,7 +241,7 @@ class AgentExecutor:
                 response = await self._execute_model_request(
                     model_instance=model_instance,
                     messages=messages_to_send,
-                    config=gen_config,
+                    config=generation_config,
                     run_context=run_context,
                     tools=list(tools) if tools else None,
                     tool_choice=None,
@@ -278,12 +273,6 @@ class AgentExecutor:
                     assistant_message.metadata["parsed_obj"] = response.parsed_obj
 
                 usage_obj = parse_usage_info(response.usage_info)
-                if usage_obj.prompt_tokens > 0:
-                    global_estimator.calibrate(
-                        usage_obj.prompt_tokens,
-                        execution_history,
-                        model_instance.model_name,
-                    )
                 cumulative_usage += usage_obj
                 if usage_obj.completion_tokens > 0:
                     assistant_message.token_cost = usage_obj.completion_tokens
@@ -324,44 +313,20 @@ class AgentExecutor:
 
                 structured_result = None
                 early_result_output = None
-
                 should_terminate = False
+                handoff_triggered = None
 
                 from zhenxun.services.ai.run.ui_controller import UIController
 
                 for i, res_or_exc in enumerate(tool_results):
                     original_call = response.tool_calls[i]
                     media_parts = []
+                    display_msg = None
+                    final_content = "Success"
 
                     if isinstance(res_or_exc, BaseException):
-                        if isinstance(res_or_exc, ControlFlowException):
-                            if isinstance(res_or_exc, SubmitStructuredException):
-                                structured_result = res_or_exc.data
-                                display_msg = None
-                                final_content = "✅ 结构化结果校验通过，已提交。"
-                            elif isinstance(res_or_exc, EndRunException):
-                                should_terminate = True
-                                display_msg = res_or_exc.display
-                                early_result_output = getattr(
-                                    res_or_exc, "result_output", None
-                                )
-                                final_content = "✅ 已获取最终结果，结束当前任务。"
-                                logger.info(
-                                    f"🛑 [中断执行] 工具 {original_call.tool_name} "
-                                    "触发了直接返回结果信号。"
-                                )
-                            else:
-                                raise res_or_exc
-
-                            if display_msg:
-                                ui = UIController(run_context)
-                                await ui.send_display(display_msg)
-                                logger.info(
-                                    "📤 已通过 UIController 将控制流 "
-                                    f"'{original_call.tool_name}' 的展示数据发往前端。"
-                                )
-
-                            tool_res = None
+                        if isinstance(res_or_exc, ControlFlowExit):
+                            raise res_or_exc
                         else:
                             final_content = json.dumps(
                                 {"error": str(res_or_exc), "status": "failed"},
@@ -371,41 +336,67 @@ class AgentExecutor:
                     else:
                         _, tool_res = res_or_exc
 
-                        log_msg = getattr(tool_res, "log_content", None)
-                        if log_msg:
-                            logger.info(f"📝 [{original_call.tool_name}] {log_msg}")
+                        if hasattr(tool_res, "directive"):
+                            if tool_res.directive == "submit_structured":
+                                structured_result = tool_res.output
+                                display_msg = tool_res.ui_display
+                                final_content = "✅ 结构化结果处理完毕。"
+                                tool_res = None
+                            elif tool_res.directive == "end_run":
+                                should_terminate = True
+                                early_result_output = tool_res.output
+                                display_msg = tool_res.ui_display
+                                final_content = "✅ 已获取最终结果，结束当前任务。"
+                                tool_res = None
+                            elif tool_res.directive == "handoff":
+                                should_terminate = True
+                                early_result_output = tool_res.output
+                                handoff_triggered = tool_res
+                                display_msg = tool_res.ui_display
+                                final_content = f"✅ 已决定移交控制权至 {getattr(tool_res, 'target', 'unknown')}。"
+                                tool_res = None
 
-                        from zhenxun.services.ai.core.messages import (
-                            AudioPart,
-                            FilePart,
-                            ImagePart,
-                            TextPart,
-                            VideoPart,
-                        )
-                        from zhenxun.utils.pydantic_compat import dump_json_safely
+                            if display_msg:
+                                ui = UIController(run_context)
+                                await ui.send_display(display_msg)
 
-                        if isinstance(tool_res.output, list):
-                            texts = []
-                            for item in tool_res.output:
-                                if isinstance(
-                                    item, (ImagePart, AudioPart, VideoPart, FilePart)
-                                ):
-                                    media_parts.append(item)
-                                elif isinstance(item, TextPart):
-                                    texts.append(item.text)
-                                else:
-                                    texts.append(str(item))
-                            final_content = " ".join(texts) if texts else "Success"
-                        elif isinstance(tool_res.output, str):
-                            final_content = tool_res.output
-                        else:
-                            final_content = dump_json_safely(
-                                tool_res.output, ensure_ascii=False
+                        if tool_res is not None:
+                            log_msg = getattr(tool_res, "log_content", None)
+                            if log_msg:
+                                logger.info(f"📝 [{original_call.tool_name}] {log_msg}")
+
+                            from zhenxun.services.ai.core.messages import (
+                                AudioPart,
+                                FilePart,
+                                ImagePart,
+                                TextPart,
+                                VideoPart,
                             )
+                            from zhenxun.utils.pydantic_compat import dump_json_safely
 
-                        tool_usage = getattr(tool_res, "usage", None)
-                        if tool_usage is not None:
-                            cumulative_usage += tool_usage
+                            if isinstance(tool_res.output, list):
+                                texts = []
+                                for item in tool_res.output:
+                                    if isinstance(
+                                        item,
+                                        (ImagePart, AudioPart, VideoPart, FilePart),
+                                    ):
+                                        media_parts.append(item)
+                                    elif isinstance(item, TextPart):
+                                        texts.append(item.text)
+                                    else:
+                                        texts.append(str(item))
+                                final_content = " ".join(texts) if texts else "Success"
+                            elif isinstance(tool_res.output, str):
+                                final_content = tool_res.output
+                            else:
+                                final_content = dump_json_safely(
+                                    tool_res.output, ensure_ascii=False
+                                )
+
+                            tool_usage = getattr(tool_res, "usage", None)
+                            if tool_usage is not None:
+                                cumulative_usage += tool_usage
 
                     msg = LLMMessage.tool_response(
                         original_call.id, original_call.tool_name, final_content
@@ -428,6 +419,22 @@ class AgentExecutor:
                         usage=cumulative_usage,
                     )
 
+                if handoff_triggered is not None:
+                    from zhenxun.services.ai.run.models import HandoffPayload
+
+                    logger.info("✅ AgentExecutor：拦截到移交(Handoff)信号，结束循环。")
+                    return model_construct(
+                        AgentRunResult,
+                        output=early_result_output,
+                        messages=execution_history,
+                        usage=cumulative_usage,
+                        handoff=HandoffPayload(
+                            target=getattr(handoff_triggered, "target", ""),
+                            reason=getattr(handoff_triggered, "reason", ""),
+                            context_data=getattr(handoff_triggered, "context_data", ""),
+                        ),
+                    )
+
                 if should_terminate:
                     logger.debug(
                         "✅ AgentExecutor：捕获到工具发出的终止信号，提前结束推理循环。"
@@ -439,14 +446,14 @@ class AgentExecutor:
                         usage=cumulative_usage,
                     )
 
-            if not loop_config.enable_fallback_summary:
+            if not exec_config.enable_fallback_summary:
                 raise LLMException(
-                    f"超过最大工具调用循环次数 ({loop_config.max_cycles})。",
+                    f"超过最大工具调用循环次数 ({exec_config.max_cycles})。",
                     code=LLMErrorCode.GENERATION_FAILED,
                 )
 
             logger.warning(
-                f"AgentExecutor 达到最大循环次数 ({loop_config.max_cycles})，"
+                f"AgentExecutor 达到最大循环次数 ({exec_config.max_cycles})，"
                 "触发兜底总结机制。"
             )
 
@@ -476,7 +483,7 @@ class AgentExecutor:
             fallback_response = await self._execute_model_request(
                 model_instance=model_instance,
                 messages=execution_history,
-                config=gen_config,
+                config=generation_config,
                 run_context=run_context,
                 tools=[],
                 tool_choice="none",
@@ -493,12 +500,6 @@ class AgentExecutor:
             )
 
             usage_obj = parse_usage_info(fallback_response.usage_info)
-            if usage_obj.prompt_tokens > 0:
-                global_estimator.calibrate(
-                    usage_obj.prompt_tokens,
-                    execution_history,
-                    model_instance.model_name,
-                )
             cumulative_usage += usage_obj
             if usage_obj.completion_tokens > 0:
                 assistant_message.token_cost = usage_obj.completion_tokens

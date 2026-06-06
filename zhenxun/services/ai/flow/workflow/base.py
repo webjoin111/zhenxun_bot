@@ -4,9 +4,7 @@ from typing import Any
 
 from zhenxun.services.ai.core.exceptions import (
     AbortException,
-    ControlFlowException,
-    EndRunException,
-    SubmitStructuredException,
+    ControlFlowExit,
     ToolFatalError,
 )
 from zhenxun.services.ai.flow.workflow.types import (
@@ -134,8 +132,8 @@ class BaseNode(ABC):
 
                 break
 
-            except Exception as e:
-                if isinstance(e, ControlFlowException):
+            except BaseException as e:
+                if isinstance(e, ControlFlowExit):
                     logger.info(
                         f"⏭️ [控制流拦截] Node '{self.name}' 触发中断信号: {type(e).__name__} - {e}"
                     )
@@ -152,9 +150,7 @@ class BaseNode(ABC):
                         step_name=self.name,
                         step_type=self.node_type,
                         content=content,
-                        success=isinstance(
-                            e, (EndRunException, SubmitStructuredException)
-                        ),
+                        success=False,
                         stop=True,
                         error=str(e)
                         if isinstance(e, (AbortException, ToolFatalError))
@@ -162,7 +158,7 @@ class BaseNode(ABC):
                     )
                     break
                 else:
-                    logger.warning(f"Node '{self.name}' 执行发生异常: {e}", e=e)
+                    logger.warning(f"Node '{self.name}' 执行发生异常: {e}")
 
                     policy_result = await self.failure_policy.handle_failure(
                         self, e, current_input, context

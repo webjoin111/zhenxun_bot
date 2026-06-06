@@ -67,10 +67,11 @@ class HandoffTool(BaseTool):
         else:
             context_data = kwargs
 
-        from zhenxun.services.ai.core.exceptions import HandoffException
-
-        raise HandoffException(
+        from zhenxun.services.ai.tools.models import HandoffResult
+        
+        return HandoffResult(
             target=self.target_name,
-            payload={"reason": reason, "context_data": context_data},
-            display=f"🔄 正在将控制权移交给 {self.target_name}...",
+            reason=reason,
+            context_data=context_data,
+            ui_display=f"🔄 正在将控制权移交给 {self.target_name}...",
         )

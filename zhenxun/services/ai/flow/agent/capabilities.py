@@ -14,6 +14,14 @@ from zhenxun.services.log import logger
 class OutputValidationCapability(AbstractCapability):
     """输出拦截与校验能力组件 (支持纯文本及结构化护栏)"""
 
+    def get_ordering(self) -> Any:
+        from zhenxun.services.ai.protocols.capabilities import CapabilityOrdering
+        from zhenxun.services.ai.tools.engine.global_capabilities import (
+            ReflexionCapability,
+        )
+
+        return CapabilityOrdering(wraps=[ReflexionCapability])
+
     def __init__(
         self, output_type: Any | None = None, guardrails: list[Any] | None = None
     ):

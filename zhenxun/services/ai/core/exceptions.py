@@ -51,13 +51,13 @@ class GuardrailViolationError(ModelRetry):
         super().__init__(message)
 
 
-class ControlFlowException(Exception):
-    """控制流异常基类，用于中断或转移大模型执行流。"""
+class ControlFlowExit(BaseException):
+    """控制流退出基类，继承自BaseException以避免被常规Exception捕获，用于静默中断。"""
 
     pass
 
 
-class ToolFatalError(ControlFlowException):
+class ToolFatalError(ControlFlowExit):
     """
     致命工具异常（不可恢复）。
     当工具执行遇到权限不足、严重系统故障等大模型无法通过重试解决的问题时抛出。
@@ -70,7 +70,7 @@ class ToolFatalError(ControlFlowException):
         super().__init__(self.message)
 
 
-class GuardrailFatalException(ControlFlowException):
+class GuardrailFatalException(ControlFlowExit):
     """护栏致命拦截异常 (触发 ABORT/REJECT 时抛出)"""
 
     def __init__(self, guard_name: str, reason: str, display: str | None = None):
@@ -103,16 +103,7 @@ class ToolFinishException(ToolFatalError):
         super().__init__(message, display_content)
 
 
-class EndRunException(ControlFlowException):
-    """结束当前大模型思考循环，直接返回。"""
-
-    def __init__(self, result_output: Any, display: Any = None):
-        self.result_output = result_output
-        self.display = display
-        super().__init__("End Run")
-
-
-class AbortException(ControlFlowException):
+class AbortException(ControlFlowExit):
     """异常中止当前 Agent 思考流。"""
 
     def __init__(self, reason: str, display: Any = None):
@@ -121,19 +112,7 @@ class AbortException(ControlFlowException):
         super().__init__(f"Aborted: {reason}")
 
 
-class HandoffException(ControlFlowException):
-    """移交控制权给其他 Agent。"""
-
-    def __init__(
-        self, target: str, payload: dict[str, Any] | None = None, display: Any = None
-    ):
-        self.target = target
-        self.payload = payload or {}
-        self.display = display
-        super().__init__(f"Handoff to {target}")
-
-
-class ConcurrencyRejectException(ControlFlowException):
+class ConcurrencyRejectException(ControlFlowExit):
     """并发拒绝异常。当 Agent 设置为 REJECT 且正在忙碌时抛出。"""
 
     def __init__(self, message: str, display: Any = None):
@@ -142,7 +121,7 @@ class ConcurrencyRejectException(ControlFlowException):
         super().__init__(message)
 
 
-class ConcurrencyInterruptException(ControlFlowException):
+class ConcurrencyInterruptException(ControlFlowExit):
     """并发打断异常。当 Agent 设置为 INTERRUPT 且被新请求打断时抛出。"""
 
     def __init__(self, message: str):
@@ -150,12 +129,7 @@ class ConcurrencyInterruptException(ControlFlowException):
         super().__init__(message)
 
 
-class SubmitStructuredException(ControlFlowException):
-    """拦截结构化结果并提交。"""
 
-    def __init__(self, data: Any):
-        self.data = data
-        super().__init__("Submit Structured Data")
 
 
 class NeedsInputException(Exception):

@@ -169,11 +169,9 @@ def direct_reply():
             if isinstance(result, ToolResult):
                 if not result.ui_display:
                     result.ui_display = result.output
-                from zhenxun.services.ai.core.exceptions import EndRunException
+                from zhenxun.services.ai.tools.models import ToolDirective
 
-                raise EndRunException(
-                    result_output=result.output, display=result.ui_display
-                )
+                result.directive = ToolDirective.END_RUN
             return result
 
     def decorator(func: Callable):

@@ -16,6 +16,7 @@ import httpx
 import nonebot
 from pydantic import BaseModel, Field
 
+from zhenxun.configs.config import BotConfig
 from zhenxun.configs.path_config import DATA_PATH
 from zhenxun.services.ai.config import ProviderConfig
 from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
@@ -31,7 +32,6 @@ class HttpClientConfig(BaseModel):
     timeout: int = 180
     max_connections: int = 100
     max_keepalive_connections: int = 20
-    proxy: str | None = None
 
 
 class LLMHttpClient:
@@ -59,7 +59,7 @@ class LLMHttpClient:
                     timeout = httpx.Timeout(self.config.timeout)
 
                     client_kwargs = {}
-                    if self.config.proxy:
+                    if BotConfig.system_proxy:
                         try:
                             version_parts = httpx.__version__.split(".")
                             major = int(
@@ -71,11 +71,11 @@ class LLMHttpClient:
                                 else 0
                             )
                             if (major, minor) >= (0, 28):
-                                client_kwargs["proxy"] = self.config.proxy
+                                client_kwargs["proxy"] = BotConfig.system_proxy
                             else:
-                                client_kwargs["proxies"] = self.config.proxy
+                                client_kwargs["proxies"] = BotConfig.system_proxy
                         except (ValueError, IndexError):
-                            client_kwargs["proxies"] = self.config.proxy
+                            client_kwargs["proxies"] = BotConfig.system_proxy
                             logger.warning(
                                 f"无法解析 httpx 版本 '{httpx.__version__}'，"
                                 "LLM模块将默认使用旧版 'proxies' 参数语法。"
@@ -132,13 +132,11 @@ class LLMHttpClientManager:
     """[内部 API] 负责管理与复用 LLMHttpClient 连接池。"""
 
     def __init__(self):
-        self._clients: dict[tuple[int, str | None], LLMHttpClient] = {}
+        self._clients: dict[tuple[int], LLMHttpClient] = {}
         self._lock = asyncio.Lock()
 
-    def _get_client_key(
-        self, provider_config: ProviderConfig
-    ) -> tuple[int, str | None]:
-        return (provider_config.timeout, provider_config.proxy)
+    def _get_client_key(self, provider_config: ProviderConfig) -> tuple[int]:
+        return (provider_config.timeout,)
 
     async def get_client(self, provider_config: ProviderConfig) -> LLMHttpClient:
         key = self._get_client_key(provider_config)
@@ -157,9 +155,7 @@ class LLMHttpClientManager:
                 )
 
             logger.debug(f"LLMHttpClientManager: 为密钥 {key} 创建新的 LLMHttpClient")
-            http_client_config = HttpClientConfig(
-                timeout=provider_config.timeout, proxy=provider_config.proxy
-            )
+            http_client_config = HttpClientConfig(timeout=provider_config.timeout)
             new_client = LLMHttpClient(config=http_client_config)
             self._clients[key] = new_client
             return new_client
@@ -185,10 +181,9 @@ http_client_manager = LLMHttpClientManager()
 
 async def create_llm_http_client(
     timeout: int = 180,
-    proxy: str | None = None,
 ) -> LLMHttpClient:
     """创建LLM HTTP客户端"""
-    config = HttpClientConfig(timeout=timeout, proxy=proxy)
+    config = HttpClientConfig(timeout=timeout)
     return LLMHttpClient(config)
 
 
@@ -560,8 +555,7 @@ class HealthManager:
         else:
             log_level = "debug"
             log_message = (
-                "API请求发生服务异常，已交由L7路由接管熔断，不冷却密钥本身: "
-                f"{key_id}"
+                f"API请求发生服务异常，已交由L7路由接管熔断，不冷却密钥本身: {key_id}"
             )
 
         async with self._lock:

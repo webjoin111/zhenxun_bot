@@ -9,7 +9,6 @@ from .hitl import HITLController
 from .models import (
     AgentRunResult,
     CancellationToken,
-    ExecutionConfig,
     StreamedRunResult,
     Task,
 )
@@ -19,7 +18,6 @@ __all__ = [
     "AgentRunResult",
     "BlackboardManager",
     "CancellationToken",
-    "ExecutionConfig",
     "HITLController",
     "Hidden",
     "Inject",

@@ -172,15 +172,15 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
 
             return self._build_result(initial_input, safe_context, final_output)
 
-        except Exception as e:
-            from zhenxun.services.ai.core.exceptions import ControlFlowException
+        except BaseException as e:
+            from zhenxun.services.ai.core.exceptions import ControlFlowExit
 
-            if isinstance(e, ControlFlowException):
+            if isinstance(e, ControlFlowExit):
                 logger.info(f"⏭️ 工作流执行被业务控制流安全中止: {e}")
                 dummy_output = StepOutput(content=str(e), success=False)
                 return self._build_result(initial_input, safe_context, dummy_output)
 
-            logger.error(f"Workflow '{self.name}' 执行崩溃: {e}", e=e)
+            logger.error(f"Workflow '{self.name}' 执行崩溃: {e}")
 
             raise e
 

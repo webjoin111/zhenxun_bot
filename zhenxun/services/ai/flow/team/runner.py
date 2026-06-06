@@ -3,8 +3,7 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from zhenxun.services.ai.core.exceptions import (
-    ControlFlowException,
-    HandoffException,
+    ControlFlowExit,
 )
 from zhenxun.services.ai.core.messages import UsageInfo
 from zhenxun.services.ai.flow.team.capabilities import TeamRoutingCapability
@@ -78,7 +77,6 @@ class TeamRunner:
         logger.debug(f"🚀 **专员 👨💼`{target_agent.name}`** 开始执行子任务...")
 
         agent_res = None
-        handoff_exc = None
 
         try:
             async with target_agent.run_stream(
@@ -92,9 +90,7 @@ class TeamRunner:
                         agent_res = event.result
                     else:
                         await queue.put(("yield_event", event))
-        except HandoffException as he:
-            handoff_exc = he
-        except ControlFlowException as cfe:
+        except ControlFlowExit as cfe:
             from zhenxun.services.ai.core.exceptions import AbortException
 
             if isinstance(cfe, AbortException):
@@ -125,24 +121,17 @@ class TeamRunner:
 
             agent_res = AgentRunResult(output=f"Error: {e}", usage=UsageInfo())
 
-        if handoff_exc:
-            target_name = handoff_exc.target
-            reason = (
-                handoff_exc.payload.get("reason", "") if handoff_exc.payload else ""
-            )
-            ctx_data = (
-                handoff_exc.payload.get("context_data", "")
-                if handoff_exc.payload
-                else ""
-            )
+
+
+        if agent_res and agent_res.handoff:
+            target_name = agent_res.handoff.target
+            reason = agent_res.handoff.reason
+            ctx_data = agent_res.handoff.context_data
 
             logger.info(
                 f"🛣️ **路由决策**: 委派给专员 👨💼`{target_name}` (理由: {reason})"
             )
-            agent_res = AgentRunResult(
-                output=f"__HANDOFF__:{target_name}|{reason}|{ctx_data}",
-                usage=UsageInfo(),
-            )
+            agent_res.output = f"__HANDOFF__:{target_name}|{reason}|{ctx_data}"
 
         if not agent_res:
             agent_res = AgentRunResult(

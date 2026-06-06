@@ -19,7 +19,7 @@ from zhenxun.services.ai.core.configs import (
     LLMEmbeddingConfig,
     TTSConfig,
 )
-from zhenxun.services.ai.core.engine.token_estimator import parse_usage_info
+from zhenxun.services.ai.core.engine.token_counter import parse_usage_info
 from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
 from zhenxun.services.ai.core.messages import (
     AudioResponse,

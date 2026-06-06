@@ -333,7 +333,10 @@ class GeminiDeepRefInlineTransformer(BaseSchemaTransformer):
                     ref_name = ref_path.split("/")[-1]
                     if ref_name in defs:
                         if ref_name in visited:
-                            return {"type": "string", "description": "Cyclic reference omitted"}
+                            return {
+                                "type": "string",
+                                "description": "Cyclic reference omitted",
+                            }
 
                         new_visited = visited | {ref_name}
                         resolved = _resolve_refs(defs[ref_name], new_visited)

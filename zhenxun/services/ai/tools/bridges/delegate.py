@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from zhenxun.services.ai.core.exceptions import ControlFlowException
+from zhenxun.services.ai.core.exceptions import ControlFlowExit
 from zhenxun.services.ai.run import RunContext
 from zhenxun.services.ai.tools.core.tool import BaseTool
 from zhenxun.services.ai.tools.models import ToolResult
@@ -146,7 +146,7 @@ class DelegateTool(BaseTool):
                 output=final_output,
                 usage=usage,
             ).show_to_user(f"🧠 实体 {self.name} 执行完毕")
-        except ControlFlowException as e:
+        except ControlFlowExit as e:
             raise e
         except Exception as e:
             logger.error(f"委派实体 {self.name} 执行失败: {e}", e=e)

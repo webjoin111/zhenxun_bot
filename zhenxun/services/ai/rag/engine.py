@@ -4,12 +4,12 @@ from typing import Any
 from zhenxun.services.ai.rag.backends import (
     StorageBackend,
 )
+from zhenxun.services.ai.rag.configs import RAGConfig
 from zhenxun.services.ai.rag.indexing import (
     IndexPipeline,
 )
 from zhenxun.services.ai.rag.models import (
     BaseRecord,
-    RAGConfig,
     SearchResult,
 )
 from zhenxun.services.ai.rag.retrieval import (

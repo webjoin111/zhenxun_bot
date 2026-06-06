@@ -111,7 +111,7 @@ class ContextCompressionConfig(BaseModel):
     threshold: float | None = Field(default=None)
     """(局部重写) 触发记忆压缩的 Token 阈值"""
     max_history_turns: int | None = Field(default=None)
-    """(局部重写) 触发记忆压缩的对话轮数上限"""
+    """(局部重写) 触发记忆压缩的对话轮数上限。设为 0 表示不限制轮数。"""
     vision_window: int | None = Field(default=None)
     """多模态滑动窗口大小。0表示关闭该功能，>0表示仅保留最近N轮包含多模态数据的消息，None表示跟随全局配置。"""
     policy: list[BaseMemoryReducer] | None = Field(default=None)

@@ -4,7 +4,7 @@ import uuid
 from zhenxun.services.ai.core.configs import GenerationConfig
 from zhenxun.services.ai.core.messages import LLMMessage
 from zhenxun.services.ai.flow.agent.engine.builders import ContextBuilder, ToolBuilder
-from zhenxun.services.ai.flow.agent.models import AgentLoopConfig, AgentLoopContext
+from zhenxun.services.ai.flow.agent.models import AgentEngineConfig, AgentLoopContext
 from zhenxun.services.ai.memory.engine import MemoryReader, MemoryWriter
 from zhenxun.services.ai.memory.models import (
     MemoryConfig,
@@ -16,7 +16,7 @@ from zhenxun.services.ai.protocols.capabilities import (
     CombinedCapability,
     DynamicCapability,
 )
-from zhenxun.services.ai.run import ExecutionConfig, RunContext
+from zhenxun.services.ai.run import RunContext
 from zhenxun.services.ai.tools.engine.global_capabilities import GLOBAL_CAPABILITIES
 from zhenxun.utils.pydantic_compat import model_copy
 
@@ -68,7 +68,7 @@ class AgentHarness:
         context: RunContext | None = None,
         message_history: list[LLMMessage] | None = None,
         tool_filter: Any = None,
-        config: ExecutionConfig | None = None,
+        config: AgentEngineConfig | None = None,
         memory: bool | MemoryConfig | Any | None = None,
         generation_config: GenerationConfig | None = None,
         cancellation_token: Any = None,
@@ -76,7 +76,8 @@ class AgentHarness:
         capabilities: list[Any] | None = None,
     ) -> tuple[
         AgentLoopContext,
-        AgentLoopConfig,
+        AgentEngineConfig,
+        GenerationConfig,
         MemoryWriter,
         list[Any],
         CombinedCapability,
@@ -264,7 +265,13 @@ class AgentHarness:
         if generation_config:
             final_gen_config = final_gen_config.merge_with(generation_config)
 
-        exec_config = config or ExecutionConfig()
+        if config is None:
+            from zhenxun.services.ai.config import get_llm_config
+            global_agent_settings = get_llm_config().agent_settings
+            from zhenxun.utils.pydantic_compat import model_dump
+            exec_config = AgentEngineConfig(**model_dump(global_agent_settings))
+        else:
+            exec_config = config
 
         if tool_payload.injected_prompts:
             static_prompt += "\n\n--- 工具箱专属使用说明 ---\n\n"
@@ -308,19 +315,10 @@ class AgentHarness:
             dynamic_system_prompt=dynamic_prompt,
         )
 
-        loop_config = AgentLoopConfig(
-            model_name=context.run.current_model,
-            generation_config=final_gen_config,
-            max_cycles=exec_config.max_cycles,
-            reflexion_retries=exec_config.reflexion_retries,
-            enable_fallback_summary=exec_config.enable_fallback_summary,
-            cancellation_token=cancellation_token,
-            event_streamer=event_streamer,
-        )
-
         return (
             loop_ctx,
-            loop_config,
+            exec_config,
+            final_gen_config,
             writer,
             tool_payload.toolkits,
             run_scoped_cap,
@@ -357,4 +355,5 @@ class AgentHarness:
             messages=new_msgs,
             structured_data=getattr(raw_result, "structured_data", None),
             usage=getattr(raw_result, "usage", None) or UsageInfo(),
+            handoff=getattr(raw_result, "handoff", None),
         )

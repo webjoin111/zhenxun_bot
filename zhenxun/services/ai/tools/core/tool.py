@@ -285,9 +285,9 @@ class BaseTool:
         try:
             return await self._core_execution(context_to_pass, **kwargs)
         except Exception as e:
-            from zhenxun.services.ai.core.exceptions import ControlFlowException
+            from zhenxun.services.ai.core.exceptions import ControlFlowExit
 
-            if not isinstance(e, ControlFlowException):
+            if not isinstance(e, ControlFlowExit):
                 logger.error(f"工具 {self.name} 执行抛出异常，将交由底层引擎处理: {e}")
             raise
 

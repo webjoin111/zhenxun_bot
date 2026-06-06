@@ -522,7 +522,6 @@ async def get_model_instance(
         api_key=provider_config_found.api_key,
         models=provider_config_found.models,
         timeout=default_timeout,
-        proxy=client_settings.proxy,
         api_base=provider_config_found.api_base,
         api_type=provider_config_found.api_type,
         openai_compat=provider_config_found.openai_compat,
