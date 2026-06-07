@@ -15,19 +15,9 @@ from nonebot_plugin_uninfo import Uninfo
 from zhenxun.configs.utils import PluginExtraData
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.user_console import UserConsole
-from zhenxun.services.auth_observability import (
-    append_auth_decision_log,
-    append_runtime_backpressure_log,
-    build_auth_observability_report,
-)
 from zhenxun.services.cache.cache_containers import CacheDict
-from zhenxun.services.cache.runtime_cache import (
-    PluginInfoMemoryCache,
-    PluginLimitMemoryCache,
-)
-from zhenxun.services.data_access import DataAccess
 from zhenxun.services.log import logger
-from zhenxun.services.message_load import is_overloaded, signal_overload
+from zhenxun.services.message_load import signal_overload
 from zhenxun.utils.enum import GoldHandle, PluginType
 from zhenxun.utils.exception import InsufficientGold
 from zhenxun.utils.platform import PlatformUtils
@@ -48,6 +38,7 @@ from .auth.context import (
     set_route_modules,
     store_permission_context,
 )
+from .auth.data_provider import DEFAULT_PERMISSION_DATA_PROVIDER
 from .auth.exception import (
     IsSuperuserException,
     PermissionExemption,
@@ -55,7 +46,6 @@ from .auth.exception import (
 )
 from .auth_activation import (
     ActivationContext,
-    ActivationResult,
     HandlerActivationIndex,
     classify_matcher_lane,
     extract_matcher_alconna_shortcuts,
@@ -147,9 +137,7 @@ _ROUTE_COMMAND_MAP: dict[str, set[str]] = {}
 _ROUTE_PREFIX_MAP: dict[str, set[str]] = {}
 _ROUTE_MODULES_WITH_COMMANDS: set[str] = set()
 MATCHER_ROUTE_PREFILTER_TTL = AUTH_DISPATCH_RUNTIME_CONFIG.matcher_route_prefilter_ttl
-PREFILTER_STATS_LOG_INTERVAL = AUTH_DISPATCH_RUNTIME_CONFIG.prefilter_stats_log_interval
 CACHE_SWEEP_INTERVAL = AUTH_DISPATCH_RUNTIME_CONFIG.cache_sweep_interval
-DISPATCH_STATS_LOG_INTERVAL = AUTH_DISPATCH_RUNTIME_CONFIG.dispatch_stats_log_interval
 
 # 全局信号量与计数器
 HOOKS_ACTIVE_COUNT = 0
@@ -182,56 +170,6 @@ _CHECK_MATCHER_ROUTE_CACHE = CacheDict(
 )
 
 
-_PREFILTER_STATS = {
-    "checked": 0,
-    "skipped": 0,
-    "before_task_checked": 0,
-    "before_task_skipped": 0,
-    "inside_task_checked": 0,
-    "inside_task_skipped": 0,
-    "type_miss": 0,
-    "route_miss": 0,
-    "command_miss": 0,
-    "empty_text": 0,
-}
-_PREFILTER_LAST_LOG = 0.0
-_DISPATCH_SELECTED = 0
-_DISPATCH_SKIPPED = 0
-_DISPATCH_SELECTED_BY_LANE: dict[str, int] = {
-    "command_exact": 0,
-    "command_shortcut": 0,
-    "command_regex": 0,
-    "system": 0,
-    "passive_light": 0,
-    "passive_db": 0,
-    "passive_http": 0,
-    "passive_ai": 0,
-    "passive_render": 0,
-}
-_DISPATCH_SKIPPED_BY_LANE: dict[str, int] = {
-    "command_exact": 0,
-    "command_shortcut": 0,
-    "command_regex": 0,
-    "system": 0,
-    "passive_light": 0,
-    "passive_db": 0,
-    "passive_http": 0,
-    "passive_ai": 0,
-    "passive_render": 0,
-}
-_DISPATCH_LANE_WAIT_MS: dict[str, float] = {
-    "command_exact": 0.0,
-    "command_shortcut": 0.0,
-    "command_regex": 0.0,
-    "system": 0.0,
-    "passive_light": 0.0,
-    "passive_db": 0.0,
-    "passive_http": 0.0,
-    "passive_ai": 0.0,
-    "passive_render": 0.0,
-}
-_DISPATCH_LAST_LOG = 0.0
-_DISPATCH_SHADOW_LAST_LOG = 0.0
 _CACHE_SWEEP_TASK: asyncio.Task | None = None
 _BOT_WAKE_COMMAND_PATTERN = re.compile(r"^bot醒来(?:\s+\S+)?$", re.IGNORECASE)
 _BOT_WAKE_CANONICAL_PATTERN = re.compile(
@@ -365,12 +303,6 @@ def _is_bot_wake_command(module: str, text: str | None) -> bool:
         _BOT_WAKE_COMMAND_PATTERN.match(normalized) is not None
         or _BOT_WAKE_CANONICAL_PATTERN.match(normalized) is not None
     )
-
-
-def _debug_log(message: str, *args, **kwargs) -> None:
-    if is_overloaded():
-        return
-    logger.debug(message, *args, **kwargs)
 
 
 def _is_command_matcher_class(matcher_cls: type[Matcher]) -> bool:
@@ -728,41 +660,6 @@ def _activation_context_from_dispatch(
     )
 
 
-def _record_dispatch_selection(lane: str, selected: bool, wait_ms: float = 0.0) -> None:
-    global _DISPATCH_LAST_LOG, _DISPATCH_SELECTED, _DISPATCH_SKIPPED
-    if lane == "command":
-        lane = "command_exact"
-    lane = lane if lane in _DISPATCH_SELECTED_BY_LANE else "passive_light"
-    if selected:
-        _DISPATCH_SELECTED += 1
-        _DISPATCH_SELECTED_BY_LANE[lane] += 1
-        _DISPATCH_LANE_WAIT_MS[lane] += wait_ms
-    else:
-        _DISPATCH_SKIPPED += 1
-        _DISPATCH_SKIPPED_BY_LANE[lane] += 1
-
-    now = time.monotonic()
-    if now - _DISPATCH_LAST_LOG < DISPATCH_STATS_LOG_INTERVAL or is_overloaded():
-        return
-    _DISPATCH_LAST_LOG = now
-    wait_snapshot = {
-        lane: round(wait, 2) for lane, wait in _DISPATCH_LANE_WAIT_MS.items()
-    }
-    lane_snapshot = " ".join(
-        f"{lane}={count}" for lane, count in _DISPATCH_SELECTED_BY_LANE.items()
-    )
-    _debug_log(
-        (
-            "dispatch stats: "
-            f"selected={_DISPATCH_SELECTED} "
-            f"skipped={_DISPATCH_SKIPPED} "
-            f"{lane_snapshot} "
-            f"wait_ms={wait_snapshot}"
-        ),
-        LOGGER_COMMAND,
-    )
-
-
 def _new_dispatch_budget() -> dict[str, int]:
     return dict(_DISPATCH_LANE_LIMITS)
 
@@ -773,52 +670,6 @@ def _merge_dispatch_budget(
 ) -> None:
     for lane in _DISPATCH_BUDGET_LANES:
         target[lane] = source.get(lane, target.get(lane, 0))
-
-
-def _record_activation_result(activation_result: ActivationResult) -> None:
-    for lane, count in activation_result.skipped_by_lane.items():
-        for _ in range(count):
-            _record_dispatch_selection(lane, False)
-
-
-def _compact_counter(counter: dict[str, int], limit: int = 6) -> str:
-    if not counter:
-        return "-"
-    items = sorted(counter.items(), key=lambda item: item[1], reverse=True)[:limit]
-    return ",".join(f"{key}={value}" for key, value in items)
-
-
-def _debug_activation_shadow(
-    *,
-    priority: int,
-    activation_result: ActivationResult,
-    context: EventDispatchContext,
-) -> None:
-    global _DISPATCH_SHADOW_LAST_LOG
-    if is_overloaded():
-        return
-    now = time.monotonic()
-    if now - _DISPATCH_SHADOW_LAST_LOG < DISPATCH_STATS_LOG_INTERVAL:
-        return
-    _DISPATCH_SHADOW_LAST_LOG = now
-    text_hint = (context.plain_text or context.trie_raw_command or "")[:48]
-    _debug_log(
-        (
-            "dispatch shadow: "
-            f"priority={priority} "
-            f"event={context.event_type} "
-            f"selected={activation_result.candidate_count}/"
-            f"{activation_result.total_descriptors} "
-            f"selected_lane={_compact_counter(activation_result.selected_by_lane)} "
-            f"skipped_lane={_compact_counter(activation_result.skipped_by_lane)} "
-            f"selected_reason="
-            f"{_compact_counter(activation_result.selected_by_reason)} "
-            f"skipped_reason="
-            f"{_compact_counter(activation_result.skipped_by_reason)} "
-            f"text={text_hint!r}"
-        ),
-        LOGGER_COMMAND,
-    )
 
 
 def _auth_scope_key(context: EventContext) -> str:
@@ -876,7 +727,6 @@ async def _dispatch_lane_section(lane: str):
     wait_ms = (time.perf_counter() - started) * 1000
     if wait_ms >= AUTH_OVERLOAD_LANE_WAIT_MS:
         signal_overload(2.0)
-    _record_dispatch_selection(lane, True, wait_ms=wait_ms)
     try:
         yield
     finally:
@@ -891,11 +741,6 @@ def get_dispatch_snapshot() -> dict[str, object]:
         value = getattr(semaphore, "_value", limit)
         lane_active[lane] = max(limit - int(value), 0)
     return {
-        "selected": _DISPATCH_SELECTED,
-        "skipped": _DISPATCH_SKIPPED,
-        "selected_by_lane": dict(_DISPATCH_SELECTED_BY_LANE),
-        "skipped_by_lane": dict(_DISPATCH_SKIPPED_BY_LANE),
-        "lane_wait_ms": dict(_DISPATCH_LANE_WAIT_MS),
         "lane_active": lane_active,
         "lane_limits": dict(_DISPATCH_LANE_LIMITS),
     }
@@ -975,58 +820,6 @@ async def _run_selected_matcher(
         )
 
 
-def _record_prefilter_stats(
-    skipped: bool,
-    reason: str | None,
-    stage: str = "inside_task",
-) -> None:
-    global _PREFILTER_LAST_LOG
-    _PREFILTER_STATS["checked"] += 1
-    if skipped:
-        _PREFILTER_STATS["skipped"] += 1
-    if stage == "before_task":
-        _PREFILTER_STATS["before_task_checked"] += 1
-        if skipped:
-            _PREFILTER_STATS["before_task_skipped"] += 1
-    else:
-        _PREFILTER_STATS["inside_task_checked"] += 1
-        if skipped:
-            _PREFILTER_STATS["inside_task_skipped"] += 1
-    if reason == "type_miss":
-        _PREFILTER_STATS["type_miss"] += 1
-    elif reason == "route_miss":
-        _PREFILTER_STATS["route_miss"] += 1
-    elif reason == "command_miss":
-        _PREFILTER_STATS["command_miss"] += 1
-    elif reason == "empty_text":
-        _PREFILTER_STATS["empty_text"] += 1
-
-    if _PREFILTER_STATS["checked"] % 1024 == 0:
-        with contextlib.suppress(Exception):
-            _ = len(_CHECK_MATCHER_ROUTE_CACHE)
-
-    now = time.monotonic()
-    if now - _PREFILTER_LAST_LOG < PREFILTER_STATS_LOG_INTERVAL or is_overloaded():
-        return
-    _PREFILTER_LAST_LOG = now
-    _debug_log(
-        (
-            "matcher prefilter stats: "
-            f"checked={_PREFILTER_STATS['checked']} "
-            f"skipped={_PREFILTER_STATS['skipped']} "
-            f"before_task={_PREFILTER_STATS['before_task_skipped']}/"
-            f"{_PREFILTER_STATS['before_task_checked']} "
-            f"inside_task={_PREFILTER_STATS['inside_task_skipped']}/"
-            f"{_PREFILTER_STATS['inside_task_checked']} "
-            f"type_miss={_PREFILTER_STATS['type_miss']} "
-            f"route_miss={_PREFILTER_STATS['route_miss']} "
-            f"command_miss={_PREFILTER_STATS['command_miss']} "
-            f"empty_text={_PREFILTER_STATS['empty_text']}"
-        ),
-        LOGGER_COMMAND,
-    )
-
-
 _MAX_MATCHER_CACHE = 512
 
 
@@ -1038,8 +831,6 @@ _SELECTOR_DEPS = HandleEventSelectorDependencies(
     activation_context_from_dispatch=_activation_context_from_dispatch,
     new_dispatch_budget=_new_dispatch_budget,
     dispatch_lane_for_matcher=_dispatch_lane_for_matcher,
-    record_activation_result=_record_activation_result,
-    debug_activation_shadow=_debug_activation_shadow,
     merge_dispatch_budget=_merge_dispatch_budget,
     build_matcher_state=_build_matcher_state,
     run_selected_matcher=_run_selected_matcher,
@@ -1066,15 +857,6 @@ async def _get_route_context(text: str, event_cache: dict | None) -> set[str]:
     if event_cache is not None:
         event_cache["route_modules"] = matched
     return matched
-
-
-def _get_auth_route_precheck_deps() -> dict:
-    return {
-        "route_modules_with_commands": _ROUTE_MODULES_WITH_COMMANDS,
-        "get_route_context": _get_route_context,
-        "is_command_matcher_class": _is_command_matcher_class,
-        "matcher_has_alconna_shortcuts": _matcher_has_alconna_shortcuts,
-    }
 
 
 async def _cache_sweep_loop() -> None:
@@ -1145,7 +927,8 @@ async def _has_limits_cached(
         if event_cache is not None:
             event_cache.setdefault("module_limits_ready", {})[module] = True
         return has_limits
-    limit_entries = PluginLimitMemoryCache.get_limits_if_ready(module)
+    provider = DEFAULT_PERMISSION_DATA_PROVIDER
+    limit_entries = provider.get_module_limits_if_ready(module)
     if limit_entries is not None:
         has_limits = bool(limit_entries)
         module_limit_cache[module] = has_limits
@@ -1278,16 +1061,17 @@ async def _get_plugin_cache_first(
     *,
     allow_cache_load: bool,
 ) -> tuple[PluginInfo | None, bool]:
+    provider = DEFAULT_PERMISSION_DATA_PROVIDER
     plugin = None
     if event_cache is not None:
         plugin_cache = event_cache.setdefault("plugin_cache", {})
         if module in plugin_cache:
             return cast(PluginInfo | None, plugin_cache[module]), False
 
-    plugin = PluginInfoMemoryCache.get_by_module_if_ready(module)
-    cache_miss = plugin is None and not PluginInfoMemoryCache.is_loaded()
+    plugin = provider.get_plugin_if_ready(module)
+    cache_miss = plugin is None and not provider.plugin_cache_loaded()
     if plugin is None and allow_cache_load:
-        plugin = await PluginInfoMemoryCache.get_by_module(module)
+        plugin = await provider.get_plugin(module)
         cache_miss = False
     if event_cache is not None:
         event_cache.setdefault("plugin_cache", {})[module] = plugin
@@ -1351,7 +1135,6 @@ async def reserve_gold(
         )
     except InsufficientGold:
         raise
-    await DataAccess(UserConsole).clear_cache(user_id=user_id)
     logger.debug(f"预扣功能花费金币: {cost_gold}", LOGGER_COMMAND, session=session)
     return reservation
 
@@ -1384,14 +1167,12 @@ async def _record_backpressure(
     action: str,
     duration_ms: float = 0.0,
 ) -> None:
-    await append_runtime_backpressure_log(
-        scope_key=lane_context.scope_key,
-        reason=reason,
-        lane=lane_context.lane,
-        action=action,
-        queue_size=lane_context.queue_size,
-        active_count=HOOKS_ACTIVE_COUNT,
-        duration_ms=duration_ms,
+    logger.debug(
+        "auth backpressure: "
+        f"scope={lane_context.scope_key}, lane={lane_context.lane}, "
+        f"reason={reason}, action={action}, queue={lane_context.queue_size}, "
+        f"active={HOOKS_ACTIVE_COUNT}, duration_ms={duration_ms:.1f}",
+        LOGGER_COMMAND,
     )
 
 
@@ -1437,7 +1218,6 @@ async def _prepare_auth_state(
     context: EventContext,
     bot: Bot,
     event_cache: dict | None,
-    route_skip_checks: bool,
     skip_ban: bool,
     hook_recorder: HookTraceRecorder,
     state: dict | None,
@@ -1502,7 +1282,6 @@ async def _prepare_auth_state(
 
     policy_context = PolicyContext(
         snapshot=snapshot,
-        route_skip_checks=route_skip_checks,
         allow_sleep_bypass=_is_bot_wake_command(module, context.plain_text),
         allow_group_sleep_bypass=_is_group_wake_command(plugin, context.plain_text),
     )
@@ -1522,7 +1301,6 @@ async def _prepare_auth_state_with_fallback(
     context: EventContext,
     bot: Bot,
     event_cache: dict | None,
-    route_skip_checks: bool,
     skip_ban: bool,
     hook_recorder: HookTraceRecorder,
     state: dict | None,
@@ -1533,7 +1311,6 @@ async def _prepare_auth_state_with_fallback(
         context=context,
         bot=bot,
         event_cache=event_cache,
-        route_skip_checks=route_skip_checks,
         skip_ban=skip_ban,
         hook_recorder=hook_recorder,
         state=state,
@@ -1548,7 +1325,6 @@ async def _prepare_auth_state_with_fallback(
         context=context,
         bot=bot,
         event_cache=event_cache,
-        route_skip_checks=route_skip_checks,
         skip_ban=skip_ban,
         hook_recorder=hook_recorder,
         state=state,
@@ -1614,16 +1390,26 @@ async def _reserve_limit_side_effect(
 async def _resolve_cost_gold(
     *,
     prep: AuthPreparation,
-    route_skip_checks: bool,
     hook_recorder: HookTraceRecorder,
     session: Uninfo,
 ) -> int:
     plugin = prep.plugin
-    if route_skip_checks or prep.profile.cost_gold <= 0:
+    if prep.profile.cost_gold <= 0:
         hook_recorder.set("cost_gold", "skipped")
         return 0
     cost_start = time.time()
     try:
+        if prep.user is None:
+            user_start = time.time()
+            prep.user = await with_timeout(
+                UserConsole.get_user(
+                    prep.permission_context.user_id,
+                    PlatformUtils.get_platform(session),
+                ),
+                name="get_cost_user",
+            )
+            prep.permission_context.user = prep.user
+            hook_recorder.set("get_cost_user", f"{time.time() - user_start:.3f}s")
         cost_gold = await with_timeout(
             get_plugin_cost(
                 prep.user,
@@ -1649,7 +1435,6 @@ async def _run_auth_hooks(
     prep: AuthPreparation,
     session: Uninfo,
     event_cache: dict | None,
-    route_skip_checks: bool,
     lane_context: AuthLaneContext,
     hook_recorder: HookTraceRecorder,
     side_effect_commit: SideEffectCommit,
@@ -1660,26 +1445,23 @@ async def _run_auth_hooks(
     await _enter_hooks_section(lane_context)
     hook_tasks = []
     try:
-        if not route_skip_checks:
-            has_limits = await _has_limits_cached(
-                profile.module,
-                event_cache,
-                known=profile.has_limit,
-            )
-            if has_limits:
-                hook_tasks.append(
-                    time_hook(
-                        _reserve_limit_side_effect(
-                            prep=prep,
-                            session=session,
-                            side_effect_commit=side_effect_commit,
-                        ),
-                        "auth_limit",
-                        hook_recorder,
-                    )
+        has_limits = await _has_limits_cached(
+            profile.module,
+            event_cache,
+            known=profile.has_limit,
+        )
+        if has_limits:
+            hook_tasks.append(
+                time_hook(
+                    _reserve_limit_side_effect(
+                        prep=prep,
+                        session=session,
+                        side_effect_commit=side_effect_commit,
+                    ),
+                    "auth_limit",
+                    hook_recorder,
                 )
-            else:
-                hook_recorder.set("auth_limit", "skipped")
+            )
         else:
             hook_recorder.set("auth_limit", "skipped")
 
@@ -1703,13 +1485,6 @@ async def _run_auth_hooks(
     return time.time() - hooks_start
 
 
-async def build_auth_decision_backpressure_report(
-    *,
-    hours: float = 24.0,
-) -> dict:
-    return await build_auth_observability_report(hours=hours)
-
-
 _AUTH_PIPELINE_DEPS = AuthPipelineDependencies(
     route_modules_with_commands=_ROUTE_MODULES_WITH_COMMANDS,
     get_route_context=_get_route_context,
@@ -1726,7 +1501,6 @@ _AUTH_PIPELINE_DEPS = AuthPipelineDependencies(
     run_auth_hooks=_run_auth_hooks,
     bot_filter=bot_filter,
     reserve_gold=reserve_gold,
-    append_auth_decision_log=append_auth_decision_log,
     insufficient_gold_error=InsufficientGold,
     logger=logger,
     log_command=LOGGER_COMMAND,

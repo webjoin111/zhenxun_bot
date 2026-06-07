@@ -30,7 +30,7 @@ async def _(bot: Bot):
     参数:
         bot: Bot
     """
-    if PlatformUtils.get_platform(bot) != "qq":
+    if PlatformUtils.get_platform_scope(bot) != "qq_client":
         return
 
     logger.debug(f"更新Bot: {bot.self_id} 的群认证...", "群认证同步")
@@ -43,6 +43,13 @@ async def _(bot: Bot):
             "群认证同步",
         )
         return
+
+    if not current_group_list:
+        logger.warning(
+            f"Bot: {bot.self_id} 未获取到任何群组，"
+            "本次不会创建群认证；后续群消息将尝试按事件自愈。",
+            "群认证同步",
+        )
 
     db_group_list: list[str] = await GroupConsole.all().values_list(
         "group_id", flat=True
