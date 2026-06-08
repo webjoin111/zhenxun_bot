@@ -411,6 +411,7 @@ def list_available_models() -> list[dict[str, Any]]:
                 "api_base": provider.api_base,
                 "is_available": model_detail.is_available,
                 "is_embedding_model": caps.is_embedding_model,
+                "max_input_tokens": caps.max_input_tokens,
                 "available_identifiers": _get_model_identifiers(
                     provider.name, model_detail
                 ),

@@ -75,3 +75,50 @@ class SessionMetadata(BaseModel):
 
     def __str__(self) -> str:
         return self.session_id
+
+
+class MemoryQuery(BaseModel):
+    """领域驱动：记忆查询与清理的统一条件实体"""
+
+    base_prefix: str | None = None
+    """基础路径前缀。"""
+    session_id: str | None = None
+    """特定的会话 ID，如指定则绕过前缀拼接，直接作为统一路径。"""
+    platform: str | None = None
+    """目标平台标识（如 'qq'）。"""
+    group_id: str | None = None
+    """目标群组 ID。"""
+    user_id: str | None = None
+    """目标用户 ID。"""
+    namespace: str | None = None
+    """插件命名空间标识。"""
+    agent_name: str | None = None
+    """具体智能体标识。"""
+
+
+    def get_scope_parts(self) -> list[str]:
+        """获取标准化的路径分段"""
+        parts = []
+        if self.base_prefix:
+            clean = self.base_prefix.strip("/")
+            if clean:
+                parts.append(clean)
+        if self.platform:
+            parts.append(f"p_{self.platform}")
+        if self.group_id:
+            parts.append(f"g_{self.group_id}")
+        if self.user_id:
+            parts.append(f"u_{self.user_id}")
+        if self.namespace:
+            parts.append(f"ns_{self.namespace}")
+        if self.agent_name:
+            parts.append(f"ag_{self.agent_name}")
+        return parts
+
+    @property
+    def scope_prefix(self) -> str:
+        """统一的路径生成逻辑"""
+        if self.session_id:
+            return self.session_id
+        parts = self.get_scope_parts()
+        return "/" + "/".join(parts) if parts else "/"

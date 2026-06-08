@@ -1,7 +1,6 @@
 from .agent import Agent
 from .models import (
     AgentEngineConfig,
-    AgentLoopContext,
     AgentRuntimeConfig,
     Persona,
 )
@@ -9,7 +8,6 @@ from .models import (
 __all__ = [
     "Agent",
     "AgentEngineConfig",
-    "AgentLoopContext",
     "AgentRuntimeConfig",
     "Persona",
 ]

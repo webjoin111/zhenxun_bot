@@ -18,24 +18,7 @@ require("nonebot_plugin_htmlrender")
 require("nonebot_plugin_uninfo")
 require("nonebot_plugin_waiter")
 
-from .ai.chat_session import ChatSession
-from .ai.llm import (
-    IntentBuilder,
-    LLMException,
-    LLMMessage,
-    chat,
-    embed,
-    generate,
-    generate_structured,
-)
-from .ai.llm.manager import (
-    clear_model_cache,
-    get_cache_stats,
-    get_model_instance,
-    list_available_models,
-    list_embedding_models,
-    get_default_model,
-)
+from .ai import chat
 from .avatar_service import avatar_service
 from .db_context import Model, disconnect, with_db_timeout
 from .group_settings_service import group_settings_service
@@ -50,11 +33,7 @@ from .scheduler import (
 )
 
 __all__ = [
-    "ChatSession",
     "ExecutionPolicy",
-    "IntentBuilder",
-    "LLMException",
-    "LLMMessage",
     "Model",
     "PluginInit",
     "PluginInitManager",
@@ -62,19 +41,10 @@ __all__ = [
     "Trigger",
     "avatar_service",
     "chat",
-    "clear_model_cache",
     "disconnect",
-    "embed",
-    "generate",
-    "generate_structured",
-    "get_cache_stats",
-    "get_model_instance",
     "group_settings_service",
-    "list_available_models",
-    "list_embedding_models",
     "logger",
     "renderer_service",
     "scheduler_manager",
-    "get_default_model",
     "with_db_timeout",
 ]

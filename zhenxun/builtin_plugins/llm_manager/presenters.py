@@ -93,15 +93,12 @@ class Presenters:
         md.head("模型详情", 2)
 
         temp_value = model.temperature or provider.temperature or "未设置"
-        token_value = (
-            model.generation_max_tokens
-            or provider.generation_max_tokens
-            or "未设置"
-        )
+        input_tokens = caps.max_input_tokens
+        context_window = f"{int(input_tokens / 1000)}K" if input_tokens >= 1000 else str(input_tokens)
 
         md.text(f"- **名称**: {model.model_name}")
         md.text(f"- **默认温度**: {temp_value}")
-        md.text(f"- **最大Token**: {token_value}")
+        md.text(f"- **上下文窗口**: {context_window}")
         md.text(f"- **核心能力**: {', '.join(cap_list) or '纯文本'}")
 
         return await renderer_service.render(md.with_style("light"))

@@ -138,6 +138,93 @@ class MessageDropper(BaseMemoryReducer):
         return new_messages, changed, current_tokens
 
 
+class ToolPrunerReducer(BaseMemoryReducer):
+    """工具结果修剪器：纯粹计算工具输出的 Token 和轮数，超标时剔除老旧工具返回结果"""
+
+    def __init__(
+        self,
+        keep_recent_turns: int = 3,
+        trigger_tokens: int = 4000,
+        max_turns: int = 0,
+    ):
+        self.keep_recent_turns = keep_recent_turns
+        self.trigger_tokens = trigger_tokens
+        self.max_turns = max_turns
+
+    async def reduce(self, messages, current_tokens, model_name, base_overhead=0):
+        tool_msgs = [m for m in messages if m.role == "tool"]
+        tool_turns = len(tool_msgs)
+
+        if tool_turns == 0:
+            return messages, False, current_tokens
+
+        tool_tokens = sum(token_counter.count_message(m, model_name) for m in tool_msgs)
+
+        is_token_exceeded = tool_tokens > self.trigger_tokens
+        is_turn_exceeded = self.max_turns > 0 and tool_turns > self.max_turns
+
+        if not (is_token_exceeded or is_turn_exceeded):
+            return messages, False, current_tokens
+
+        reasons = []
+        if is_token_exceeded:
+            reasons.append(f"工具Token超标 ({tool_tokens} > {self.trigger_tokens})")
+        if is_turn_exceeded:
+            reasons.append(f"工具调用轮数超限 ({tool_turns} > {self.max_turns})")
+
+        logger.info(
+            f"✂️ [MemoryCompression] 触发工具结果修剪策略 | 原因: {' 且 '.join(reasons)}"
+        )
+
+        from zhenxun.services.ai.core.messages import ToolReturnPart
+
+        new_messages = []
+        tools_kept = 0
+        changed = False
+
+        for msg in reversed(messages):
+            if msg.role != "tool":
+                new_messages.append(msg)
+                continue
+
+            if tools_kept < self.keep_recent_turns:
+                tools_kept += 1
+                new_messages.append(msg)
+                continue
+
+            new_content = []
+            part_changed = False
+            for p in msg.content:
+                if isinstance(p, ToolReturnPart):
+                    old_len = len(str(p.output))
+                    new_p = model_copy(
+                        p,
+                        update={
+                            "output": f"[数据过载自动截断 - 原长度: {old_len} 字符]"
+                        },
+                    )
+                    new_content.append(new_p)
+                    part_changed = True
+                    changed = True
+                else:
+                    new_content.append(p)
+
+            if part_changed:
+                new_msg = model_copy(
+                    msg, update={"content": new_content, "token_cost": None}
+                )
+                new_messages.append(new_msg)
+            else:
+                new_messages.append(msg)
+
+        if not changed:
+            return messages, False, current_tokens
+
+        new_messages.reverse()
+        new_total = token_counter.count_context(new_messages, model_name, base_overhead)
+        return new_messages, True, new_total
+
+
 class LLMSummarizerReducer(BaseMemoryReducer):
     """大模型总结压缩器：将较早的历史对话记录通过 LLM 压缩合并为一段文本摘要。"""
 

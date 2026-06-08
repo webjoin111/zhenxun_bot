@@ -167,7 +167,12 @@ def register_llm_configs():
             "    - summarization_model: 指定用于总结的大模型名称\n"
             "    - summarization_prompt: 指导大模型总结的系统提示词\n"
             "    - keep_recent_turns: 总结外强制原样保留的最近对话轮数\n"
-            "  - vision_window_size: 多模态滑动窗口大小。0表示无限制，>0表示仅保留最近N轮包含多模态真实数据的消息，超过则自动降级为占位符"  # noqa: E501
+            "  - vision_window_size: 多模态滑动窗口大小。0表示无限制，>0表示仅保留最近N轮包含多模态真实数据的消息，超过则自动降级为占位符\n"  # noqa: E501
+            "  - tool_pruning: 工具结果过载修剪策略配置\n"
+            "    - enable: 是否开启长工具输出结果的自动修剪\n"
+            "    - trigger_threshold: 触发修剪的工具纯 Token 阈值。<=1.0为比例，>1.0为绝对 Token 数\n"  # noqa: E501
+            "    - max_history_turns: 触发修剪的最大工具消息轮数。设为 0 表示不限制轮数\n"  # noqa: E501
+            "    - keep_recent_turns: 修剪时强制原样保留的最新的工具消息轮数"
         ),
         type=dict,
     )
@@ -193,7 +198,8 @@ def register_llm_configs():
             "包含: max_cycles(最大工具循环数), enable_parallel_calls(允许并行), "
             "reflexion_retries(反思重试次数), "
             "enable_fallback_summary(达到最大循环时兜底总结), "
-            "enable_hitl(是否允许智能体主动向用户求助)"
+            "enable_hitl(是否允许智能体主动向用户求助), "
+            "mcp_cleanup_timeout(MCP 闲置回收时间)"
         ),
         type=dict,
     )

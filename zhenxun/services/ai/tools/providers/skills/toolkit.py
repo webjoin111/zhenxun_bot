@@ -253,7 +253,10 @@ class SkillStaticToolkit(BaseToolkit, SkillSandboxExecutionMixin):
 
                 def make_func(filepath=script_file, code=code_content):
                     async def run_script(
-                        args: str = "", context: RunContext | None = None, sandbox: Inject.Sandbox = None, **kwargs
+                        args: str = "",
+                        context: RunContext | None = None,
+                        sandbox: Inject.Sandbox = None,
+                        **kwargs,
                     ) -> ToolResult:
                         if sandbox is None and context is not None:
                             sandbox = Inject._providers["sandbox"]["global"](context)
@@ -378,9 +381,14 @@ class SkillMetaToolkit(BaseToolkit, SkillSandboxExecutionMixin):
         "   - **终端执行**：若指南中提供的是纯命令行终端指令"
         "（例如 `curl`, `infsh`, `gh` 等），请调用 "
         "`execute_skill_command` 在技能专属沙箱中直接执行该命令。\n"
-        "   - **智能自愈 (Agentic Healing)**：如果执行脚本或命令时失败（如 Exit Code 非 0），"
-        "你必须自主阅读输出日志 (Stderr/Stdout)，分析报错原因（如缺少依赖、命令不存在、代码逻辑错误等）。\n"
-        "     - 如果是缺少依赖，请主动调用 `execute_skill_command` 使用相应的包管理器（如 `uv pip install <pkg>` 或 `npm install <pkg>`）安装缺失的依赖，安装成功后再次重试目标任务。\n"
+        "   - **智能自愈 (Agentic Healing)**："
+        "如果执行脚本或命令时失败（如 Exit Code 非 0），"
+        "你必须自主阅读输出日志 (Stderr/Stdout)，"
+        "分析报错原因（如缺少依赖、命令不存在、代码逻辑错误等）。\n"
+        "     - 如果是缺少依赖，请主动调用 `execute_skill_command` "
+        "使用相应的包管理器"
+        "（如 `uv pip install <pkg>` 或 `npm install <pkg>`）"
+        "安装缺失的依赖，安装成功后再次重试目标任务。\n"
         "     - 如果是其他错误，请结合技能指南调整参数或操作流程后重试。\n"
         "4. 如需阅读参考文档，请参考 `<available_references>` 节点并调用 "
         "`read_skill_file`。"
@@ -473,7 +481,11 @@ class SkillMetaToolkit(BaseToolkit, SkillSandboxExecutionMixin):
     )
     @silent()
     async def read_skill_file(
-        self, skill_name: str, file_path: str, context: RunContext | None = None, sandbox: Inject.Sandbox = None
+        self,
+        skill_name: str,
+        file_path: str,
+        context: RunContext | None = None,
+        sandbox: Inject.Sandbox = None,
     ) -> ToolResult:
         skill = await self._get_skill(skill_name)
         if not skill:

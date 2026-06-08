@@ -5,6 +5,7 @@ import uuid
 import numpy as np
 from tortoise import fields
 
+from zhenxun.services.ai.memory.types import MemoryQuery
 from zhenxun.services.ai.rag.models import BaseRecord, QueryRequest, SearchResult
 from zhenxun.services.ai.rag.retrieval import FilterEvaluator
 from zhenxun.services.db_context import Model
@@ -32,6 +33,10 @@ class StorageBackend(Protocol):
         self, record_ids: list[str] | None = None, scope_prefix: str | None = None
     ) -> int:
         """删除数据块"""
+        ...
+
+    async def clear_by_query(self, query: MemoryQuery) -> int:
+        """根据统一领域查询对象清理数据块（在各实现中回退到 delete）"""
         ...
 
     async def get_all(self, scope_prefix: str | None = None) -> list[BaseRecord]:
@@ -155,6 +160,9 @@ class DictStorageBackend(StorageBackend):
             del self._records[r_id]
             self._vectors.pop(r_id, None)
         return len(to_delete)
+
+    async def clear_by_query(self, query: MemoryQuery) -> int:
+        return await self.delete(scope_prefix=query.scope_prefix)
 
     async def get_all(self, scope_prefix: str | None = None) -> list[BaseRecord]:
         res = []
@@ -313,6 +321,9 @@ class TortoiseStorageBackend(StorageBackend):
 
         return await query.delete()
 
+    async def clear_by_query(self, query: MemoryQuery) -> int:
+        return await self.delete(scope_prefix=query.scope_prefix)
+
     async def get_all(self, scope_prefix: str | None = None) -> list[BaseRecord]:
         query = self.model_class.all()
         if scope_prefix and scope_prefix != "/":
@@ -467,6 +478,9 @@ class QdrantStorageBackend(StorageBackend):
             )
         return 1
 
+    async def clear_by_query(self, query: MemoryQuery) -> int:
+        return await self.delete(scope_prefix=query.scope_prefix)
+
     async def get_all(self, scope_prefix: str | None = None) -> list[BaseRecord]:
         if not await self.client.collection_exists(self.collection_name):
             return []
@@ -580,6 +594,9 @@ class LanceDBStorageBackend(StorageBackend):
         self, record_ids: list[str] | None = None, scope_prefix: str | None = None
     ) -> int:
         return 0
+
+    async def clear_by_query(self, query: MemoryQuery) -> int:
+        return await self.delete(scope_prefix=query.scope_prefix)
 
     async def get_all(self, scope_prefix: str | None = None) -> list[BaseRecord]:
         if self.table_name not in self.db.table_names():

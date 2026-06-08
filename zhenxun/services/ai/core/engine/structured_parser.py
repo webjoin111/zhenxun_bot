@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, ValidationError, create_model
 
 from zhenxun.services.ai.core.exceptions import (
     ControlFlowExit,
-    GuardrailViolationError,
+    ModelRetry,
     SchemaParseError,
 )
 from zhenxun.services.ai.core.models import ToolDefinition
@@ -97,9 +97,7 @@ class BaseOutputProcessor(Generic[OutputDataT]):
             return type_validate_json(self.target_model, text)
         except (ValidationError, ValueError) as e:
             try:
-                logger.warning(
-                    f"标准JSON解析失败，尝试使用json_repair修复: {e}"
-                )
+                logger.warning(f"标准JSON解析失败，尝试使用json_repair修复: {e}")
                 repaired_obj = json_repair.loads(text, skip_json_loads=True)
                 return model_validate(self.target_model, repaired_obj)
             except Exception as repair_error:
@@ -108,8 +106,7 @@ class BaseOutputProcessor(Generic[OutputDataT]):
                     e=repair_error,
                 )
                 raise SchemaParseError(
-                    "JSON格式损坏或字段不匹配，"
-                    f"未能通过Schema验证: {repair_error}"
+                    f"JSON格式损坏或字段不匹配，未能通过Schema验证: {repair_error}"
                 )
         except Exception as e:
             logger.error(f"解析LLM结构化输出时发生未知错误: {e}", e=e)
@@ -179,18 +176,19 @@ class SubmitFinalResultExecutable(ToolExecutable):
             final_obj = await self.output_processor.validate_and_parse(
                 json_str, context=context
             )
-            failed_feedbacks = []
-            for v in self.guardrails:
-                v_res = await v.validate(json_str, final_obj, context)
-                if not v_res.success:
-                    failed_feedbacks.append(v_res.feedback or "未知校验失败")
+            from zhenxun.services.ai.core.guardrails import GuardrailPipeline
 
-            if failed_feedbacks:
-                raise GuardrailViolationError("\n".join(failed_feedbacks))
+            pipeline = GuardrailPipeline(self.guardrails)
+            json_str, final_obj = await pipeline.run_output_pipeline(
+                json_str, final_obj, context
+            )
 
             from zhenxun.services.ai.tools.models import StructuredSubmitResult
+
             return StructuredSubmitResult(output=final_obj)
         except ControlFlowExit as e:
+            raise e
+        except ModelRetry as e:
             raise e
         except Exception as e:
             error_msg = f"系统捕获到解析异常：\n{e}"

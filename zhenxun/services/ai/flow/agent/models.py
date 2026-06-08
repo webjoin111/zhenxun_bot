@@ -42,7 +42,9 @@ class AgentRuntimeConfig(BaseRuntimeConfig):
     """智能体运行时行为与工作流配置"""
 
     enable_hitl: bool | None = Field(default=None)
-    """是否允许智能体主动挂起任务，向用户求助 (Human-in-the-Loop)。若为 None 则跟随全局设置。"""
+    """是否允许智能体主动挂起任务，向用户求助 (Human-in-the-Loop)。
+    若为 None 则跟随全局设置。
+    """
 
 
 class CapabilitySpec(BaseModel):

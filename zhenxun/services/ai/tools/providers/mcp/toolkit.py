@@ -129,6 +129,17 @@ class MCPRemoteTool(BaseTool):
         meta.update(toolkit.tool_metadata.get(name, {}))
         self.metadata = meta
 
+    @property
+    def effective_ttl(self) -> float:
+        """动态获取当前最新的 TTL 配置，支持无缝热重载"""
+        try:
+            from zhenxun.services.ai.config import get_llm_config
+
+            mcp_ttl = get_llm_config().agent_settings.mcp_cleanup_timeout
+            return 31536000.0 if mcp_ttl <= 0 else float(mcp_ttl)
+        except Exception:
+            return 31536000.0 if self.toolkit.ttl <= 0 else float(self.toolkit.ttl)
+
     async def get_definition(
         self, context: RunContext | None = None
     ) -> ToolDefinition | None:
@@ -159,10 +170,12 @@ class MCPRemoteTool(BaseTool):
         for attempt in range(max_retries):
             if self.toolkit.isolation == "per_session" and context:
                 sid = context.session_id or f"temp_{id(context)}"
-                await self.toolkit.lifespan_manager.touch(sid, float(self.toolkit.ttl))
+                await self.toolkit.lifespan_manager.touch(
+                    sid, self.toolkit.effective_ttl
+                )
             else:
                 await self.toolkit.lifespan_manager.touch(
-                    self.toolkit.server_name, float(self.toolkit.ttl)
+                    self.toolkit.server_name, self.toolkit.effective_ttl
                 )
 
             session = await self.toolkit.get_session(context)
@@ -296,6 +309,17 @@ class MCPToolkit(BaseToolkit):
         self._ready_events: dict[str, asyncio.Event] = {"shared": asyncio.Event()}
         self._init_exceptions: dict[str, Exception] = {}
 
+    @property
+    def effective_ttl(self) -> float:
+        """动态获取当前最新的 TTL 配置，支持无缝热重载"""
+        try:
+            from zhenxun.services.ai.config import get_llm_config
+
+            mcp_ttl = get_llm_config().agent_settings.mcp_cleanup_timeout
+            return 31536000.0 if mcp_ttl <= 0 else float(mcp_ttl)
+        except Exception:
+            return 31536000.0 if self.ttl <= 0 else float(self.ttl)
+
     async def _run_install_command(self, force: bool = False):
         """执行环境预安装（热加载依赖）"""
         if not self.install_command or not self.cwd:
@@ -355,8 +379,7 @@ class MCPToolkit(BaseToolkit):
     async def exit_session(self, session_id: str) -> None:
         """会话隔离级别的生命周期出口"""
         await super().exit_session(session_id)
-        if self.isolation == "per_session" and self.ttl <= 0:
-            await self.close_session(session_id)
+        pass
 
     async def get_session(
         self, context: RunContext | None = None
@@ -364,7 +387,7 @@ class MCPToolkit(BaseToolkit):
         if self.isolation == "shared":
             await self.lifespan_manager.register(
                 self.server_name,
-                ttl=float(self.ttl),
+                ttl=self.effective_ttl,
                 cleanup_callback=self.release_resource,
             )
             if not self._is_initialized:
@@ -378,7 +401,9 @@ class MCPToolkit(BaseToolkit):
 
             session_id = context.session_id or f"temp_{id(context)}"
             await self.lifespan_manager.register(
-                session_id, ttl=float(self.ttl), cleanup_callback=self.release_resource
+                session_id,
+                ttl=self.effective_ttl,
+                cleanup_callback=self.release_resource,
             )
 
             if not self._is_initialized:
@@ -625,7 +650,7 @@ class MCPToolkit(BaseToolkit):
     async def get_tools(self, context: RunContext | None = None) -> dict[str, BaseTool]:
         await self.lifespan_manager.register(
             self.server_name,
-            ttl=float(self.ttl),
+            ttl=self.effective_ttl,
             cleanup_callback=self.release_resource,
         )
         if not self._is_initialized:
@@ -664,10 +689,18 @@ class MCPToolkit(BaseToolkit):
         self._init_exceptions.pop(session_id, None)
 
     async def close(self):
-        await self.lifespan_manager.stop()
         current_task = asyncio.current_task()
 
+        if (
+            self.lifespan_manager._watchdog_task
+            and self.lifespan_manager._watchdog_task is not current_task
+        ):
+            await self.lifespan_manager.stop()
+
         self._stop_events["shared"].set()
+        self._is_initialized = False
+        self._shared_session = None
+        self._tools.clear()
 
         if (
             self._shared_task
@@ -682,10 +715,6 @@ class MCPToolkit(BaseToolkit):
                 )
                 self._shared_task.cancel()
         self._shared_task = None
-
-        self._shared_session = None
-        self._is_initialized = False
-        self._tools.clear()
 
         for sid in list(self._session_pool.keys()):
             await self.close_session(sid)

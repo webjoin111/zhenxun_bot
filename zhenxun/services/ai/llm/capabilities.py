@@ -15,14 +15,20 @@ PATTERNS_GEMINI_2_5_FLASH = [
 ]
 PATTERNS_GEMINI_2_5_PRO = ["gemini-2.5-pro*"]
 PATTERNS_GEMINI_3 = ["gemini-3*"]
-PATTERNS_OPENAI_REASONING = ["o1-*", "o3-*", "deepseek-r1*", "deepseek-reasoner"]
-PATTERNS_DEEPSEEK_V4 = ["deepseek-v4*"]
+PATTERNS_OPENAI_REASONING = ["o1-*", "o3-*"]
+PATTERNS_DEEPSEEK_PRO = ["deepseek-v4-pro*"]
+PATTERNS_DEEPSEEK_FLASH = ["deepseek-v4-flash*"]
 PATTERNS_MINIMAX_REASONING = ["*MiniMax-M2*", "*minimax-m2*"]
 PATTERNS_GEMINI_IMAGE = ["*gemini*image*"]
 PATTERNS_GEMINI_EMBEDDING_2 = ["gemini-embedding-2*"]
 PATTERNS_JINA_EMBEDDING = ["jina-embeddings-*"]
 PATTERNS_JINA_V5_OMNI = ["jina-embeddings-v5-omni*"]
 PATTERNS_JINA_RERANKER = ["jina-reranker-*", "jina-colbert-*"]
+
+PATTERNS_1M_MODELS = [
+    "mimo-v2.5*", "mimo-v2-pro*",
+    "*MiniMax-M3*"
+]
 
 CAP_MULTIMODAL_EMBEDDING = ModelCapabilities(
     input_modalities={
@@ -154,9 +160,8 @@ DEFAULT_PERMISSIVE_CAPABILITIES = ModelCapabilities(
 )
 
 MODEL_ALIAS_MAPPING: dict[str, str] = {
-    "deepseek-v3*": "deepseek-chat",
-    "deepseek-ai/DeepSeek-V3": "deepseek-chat",
-    "deepseek-r1*": "deepseek-reasoner",
+    "*DeepSeek-V4-Pro*": "deepseek-v4-pro",
+    "*DeepSeek-V4-Flash*": "deepseek-v4-flash",
 }
 
 
@@ -175,61 +180,27 @@ def _build_registry() -> dict[str, ModelCapabilities]:
             else:
                 registry[pattern] = cap
 
-    ctx_1m_64k = {
-        "max_input_tokens": 1048576,
-        "max_output_tokens": 65536,
-        "max_thinking_tokens": 0,
-    }
-    ctx_1m_64k_flash = {
-        "max_input_tokens": 1048576,
-        "max_output_tokens": 65536,
-        "max_thinking_tokens": 24576,
-    }
-    ctx_1m_64k_pro = {
-        "max_input_tokens": 1048576,
-        "max_output_tokens": 65536,
-        "max_thinking_tokens": 32768,
-    }
-    ctx_128k_32k = {"max_input_tokens": 128000, "max_output_tokens": 32768}  # noqa: F841
-    ctx_200k_100k = {"max_input_tokens": 200000, "max_output_tokens": 100000}  # noqa: F841
-    ctx_128k_64k = {"max_input_tokens": 128000, "max_output_tokens": 65536}
-    ctx_128k_8k = {"max_input_tokens": 128000, "max_output_tokens": 8192}
-    ctx_8k_4k = {"max_input_tokens": 8192, "max_output_tokens": 4096}
+    ctx_1m = {"max_input_tokens": 1000000}
+    ctx_200k = {"max_input_tokens": 204800}
+    ctx_128k = {"max_input_tokens": 128000}
+    ctx_8k = {"max_input_tokens": 8192}
 
-    register_family(
-        PATTERNS_GEMINI_IMAGE,
-        CAP_GEMINI_IMAGE,
-        {"max_input_tokens": 128000, "max_output_tokens": 16384},
-    )
-    register_family(PATTERNS_GEMINI_3, CAP_GEMINI_3, ctx_1m_64k)
-    register_family(PATTERNS_GEMINI_2_5_FLASH, CAP_GEMINI_2_5, ctx_1m_64k_flash)
-    register_family(PATTERNS_GEMINI_2_5_PRO, CAP_GEMINI_2_5, ctx_1m_64k_pro)
-    register_family(PATTERNS_OPENAI_REASONING, CAP_OPENAI_REASONING, ctx_128k_64k)
-    register_family(
-        ["gpt-4o*"],
-        CAP_GEMINI_2_5,
-        {"max_input_tokens": 128000, "max_output_tokens": 16384},
-    )
-    register_family(["gpt-4-*", "gpt-5*"], STANDARD_TEXT_TOOL_CAPABILITIES, ctx_8k_4k)
-    register_family(PATTERNS_DEEPSEEK_V4, CAP_DEEPSEEK_V4, ctx_128k_8k)
-    register_family(
-        PATTERNS_MINIMAX_REASONING,
-        CAP_MINIMAX_REASONING,
-        {"max_input_tokens": 204800, "max_output_tokens": 8192},
-    )
-    register_family(
-        ["deepseek-chat", "deepseek-v3*"], STANDARD_TEXT_TOOL_CAPABILITIES, ctx_128k_8k
-    )
+    register_family(PATTERNS_GEMINI_IMAGE, CAP_GEMINI_IMAGE, ctx_128k)
+    register_family(PATTERNS_GEMINI_3, CAP_GEMINI_3, ctx_1m)
+    register_family(PATTERNS_GEMINI_2_5_FLASH, CAP_GEMINI_2_5, ctx_1m)
+    register_family(PATTERNS_GEMINI_2_5_PRO, CAP_GEMINI_2_5, ctx_1m)
+    register_family(PATTERNS_OPENAI_REASONING, CAP_OPENAI_REASONING, ctx_128k)
+    register_family(["gpt-4o*"], CAP_GEMINI_2_5, ctx_128k)
+    register_family(["gpt-4-*", "gpt-5*"], STANDARD_TEXT_TOOL_CAPABILITIES, ctx_8k)
+    register_family(PATTERNS_DEEPSEEK_PRO, CAP_DEEPSEEK_V4, ctx_128k)
+    register_family(PATTERNS_DEEPSEEK_FLASH, STANDARD_TEXT_TOOL_CAPABILITIES, ctx_128k)
+    register_family(PATTERNS_MINIMAX_REASONING, CAP_MINIMAX_REASONING, ctx_200k)
+    register_family(PATTERNS_1M_MODELS, DEFAULT_PERMISSIVE_CAPABILITIES, ctx_1m)
+
     register_family(["*reranker*", "*rerank*", "bge-m3*"], CAP_RERANK_ONLY)
 
-    register_family(
-        PATTERNS_GEMINI_EMBEDDING_2,
-        CAP_MULTIMODAL_EMBEDDING,
-        {"max_input_tokens": 8192},
-    )
-    register_family(
-        PATTERNS_JINA_V5_OMNI, CAP_MULTIMODAL_EMBEDDING, {"max_input_tokens": 8192}
-    )
+    register_family(PATTERNS_GEMINI_EMBEDDING_2, CAP_MULTIMODAL_EMBEDDING, ctx_8k)
+    register_family(PATTERNS_JINA_V5_OMNI, CAP_MULTIMODAL_EMBEDDING, ctx_8k)
 
     register_family(
         PATTERNS_JINA_EMBEDDING,
@@ -238,10 +209,10 @@ def _build_registry() -> dict[str, ModelCapabilities]:
             is_embedding_model=True,
             supports_tool_calling=False,
         ),
-        {"max_input_tokens": 8192},
+        ctx_8k,
     )
 
-    register_family(PATTERNS_JINA_RERANKER, CAP_RERANK_ONLY, {"max_input_tokens": 8192})
+    register_family(PATTERNS_JINA_RERANKER, CAP_RERANK_ONLY, ctx_8k)
 
     return registry
 

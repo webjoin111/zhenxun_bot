@@ -24,5 +24,8 @@ class PromptTemplate:
             logger.debug(f"模板渲染成功: {rendered_string}")
             return rendered_string
         except Exception as e:
-            logger.warning(f"Jinja2 模板渲染失败: {e}, 模板原内容: {self.template_string}", e=e)
+            logger.warning(
+                f"Jinja2 模板渲染失败: {e}, 模板原内容: {self.template_string}",
+                e=e,
+            )
             return self.template_string

@@ -203,7 +203,9 @@ class BaseTool:
                 new_props = {
                     "_intent": {
                         "type": "string",
-                        "description": "调用此工具前，必须在此字段简述你的意图、目的或思考过程"
+                        "description": (
+                            "调用此工具前，必须在此字段简述你的意图、目的或思考过程"
+                        ),
                     }
                 }
                 new_props.update(schema["properties"])

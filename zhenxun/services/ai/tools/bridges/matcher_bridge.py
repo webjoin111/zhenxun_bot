@@ -222,11 +222,13 @@ class AlconnaAdapter(MatcherAdapter):
             )
             if unconsumed_keys:
                 schema_hint += (
-                    f"\n\n⚠️ [参数吸收警告] 字段 {unconsumed_keys} 未能被底层的 Alconna 命令树成功接收！\n"
-                    f"👉 这通常意味着 Schema 的字段名与实际命令的选项名(dest)不匹配。"
+                    f"\n\n⚠️ [参数吸收警告] 字段 {unconsumed_keys} "
+                    "未能被底层的 Alconna 命令树成功接收！\n"
+                    "👉 这通常意味着 Schema 的字段名与实际命令的选项名(dest)不匹配。"
                 )
             raise ToolRetryError(
-                f"Alconna 内部解析失败: {error_info}。请检查参数是否遗漏或名称对不齐。{schema_hint}"
+                f"Alconna 内部解析失败: {error_info}。"
+                f"请检查参数是否遗漏或名称对不齐。{schema_hint}"
             )
 
         cmd_result = CommandResult(result=arp, output=None)
@@ -298,7 +300,8 @@ class NativeCommandAdapter(MatcherAdapter):
 class MatcherTool(BaseTool):
     """
     通用状态机穿透工具。
-    将原有的 nonebot 指令（on_alconna, on_command 等）无缝包装为大模型可调用的结构化工具。
+    将原有的 nonebot 指令（on_alconna, on_command 等）
+    无缝包装为大模型可调用的结构化工具。
     """
 
     def __init__(
@@ -421,7 +424,8 @@ def bind_matcher(
         args_schema: 描述 LLM 需要填写的参数 Pydantic Schema。可以为 None
         terminal: 是否为"终端工具" (默认为 True，执行完毕后立即中断大模型思考循环)
         auto_register: 是否自动注册到系统的全局工具库中
-        command_formatter: 可选的格式化器。对于原生 on_command，如果不传，则直接使用 kwargs values 拼接为空格字符串。
+        command_formatter: 可选的格式化器。对于原生 on_command，如果不传，
+            则直接使用 kwargs values 拼接为空格字符串。
     """
 
     is_alconna = (

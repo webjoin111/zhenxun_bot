@@ -4,6 +4,7 @@ from zhenxun.services.ai.memory.compression import (
     CondenserPipeline,
     MemoryPolicy,
     MultimodalPlaceholderReducer,
+    ToolPrunerReducer,
 )
 from zhenxun.services.ai.memory.manager import memory_manager
 from zhenxun.services.ai.memory.models import MemoryConfig
@@ -111,6 +112,10 @@ class MemoryReader:
             config = get_llm_config().context_settings
             pipeline_reducers = []
 
+            from zhenxun.services.ai.llm.capabilities import get_model_capabilities
+
+            caps = get_model_capabilities(model_name)
+
             vw = config.vision_window_size
             if (
                 self.memory_config
@@ -119,6 +124,21 @@ class MemoryReader:
                 vw = self.memory_config.compression.vision_window
             if vw > 0:
                 pipeline_reducers.append(MultimodalPlaceholderReducer(window_size=vw))
+
+            tp = config.tool_pruning
+            if tp.enable:
+                tp_limit = (
+                    int(caps.max_input_tokens * tp.trigger_threshold)
+                    if tp.trigger_threshold <= 1.0
+                    else int(tp.trigger_threshold)
+                )
+                pipeline_reducers.append(
+                    ToolPrunerReducer(
+                        keep_recent_turns=tp.keep_recent_turns,
+                        trigger_tokens=tp_limit,
+                        max_turns=tp.max_history_turns,
+                    )
+                )
 
             policy = (
                 self.memory_config.compression.policy if self.memory_config else None
@@ -133,9 +153,6 @@ class MemoryReader:
                 ):
                     threshold = self.memory_config.compression.threshold
 
-                from zhenxun.services.ai.llm.capabilities import get_model_capabilities
-
-                caps = get_model_capabilities(model_name)
                 limit = (
                     int(caps.max_input_tokens * threshold)
                     if threshold <= 1.0

@@ -21,7 +21,9 @@ class HandoffTool(BaseTool):
     ):
         super().__init__(
             name=f"transfer_to_{target_name}",
-            description=f"将对话控制权移交给 {target_name}。专长/职责：{target_description}",
+            description=(
+                f"将对话控制权移交给 {target_name}。专长/职责：{target_description}"
+            ),
         )
         self.target_name = target_name
 
@@ -68,7 +70,7 @@ class HandoffTool(BaseTool):
             context_data = kwargs
 
         from zhenxun.services.ai.tools.models import HandoffResult
-        
+
         return HandoffResult(
             target=self.target_name,
             reason=reason,

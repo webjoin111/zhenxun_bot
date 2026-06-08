@@ -23,7 +23,8 @@ class ToolExecutionPolicy:
         """
         计算当前工具的绝对最大重试次数。
         优先使用工具级配置 (ToolOptions.max_retries)，如果未设置，则使用全局配置。
-        由于重试机制是保证 Agent 稳定性的防线，即使全局为 0，底层默认也会给予至少 1 次的机会。
+        由于重试机制是保证 Agent 稳定性的防线，
+        即使全局为 0，底层默认也会给予至少 1 次的机会。
         """
         tool_retries = getattr(self.settings, "max_retries", None)
         if tool_retries is not None:

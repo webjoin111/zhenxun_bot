@@ -23,7 +23,12 @@ from zhenxun.services.ai.memory.interfaces import (
     BaseChatContext,
     BaseSlotContext,
 )
-from zhenxun.services.ai.memory.types import MemorySlot, SessionMetadata, SlotScope
+from zhenxun.services.ai.memory.types import (
+    MemoryQuery,
+    MemorySlot,
+    SessionMetadata,
+    SlotScope,
+)
 from zhenxun.services.ai.rag.models import BaseRecord, SearchResult
 from zhenxun.services.db_context import Model
 from zhenxun.utils.pydantic_compat import model_dump
@@ -198,6 +203,15 @@ class InMemoryChatContext(BaseChatContext):
     async def clear(self, session: SessionMetadata) -> None:
         self._messages.pop(session.session_id, None)
 
+    async def clear_by_query(self, query: MemoryQuery) -> None:
+        """内存级：前缀匹配清理所有符合要求的短期会话"""
+        scope_prefix = query.scope_prefix
+        keys_to_delete = [
+            sid for sid in self._messages.keys() if sid.startswith(scope_prefix)
+        ]
+        for sid in keys_to_delete:
+            self._messages.pop(sid, None)
+
 
 class InMemorySlotContext(BaseSlotContext):
     """内存级记忆槽存储 (主要用于测试或无状态容器)"""
@@ -252,6 +266,18 @@ class InMemorySlotContext(BaseSlotContext):
                 merged[label] = slot
 
         return [s for s in merged.values() if s.pinned and s.content.strip()]
+
+    async def clear_by_query(self, query: MemoryQuery) -> None:
+        """内存级：前缀匹配清理槽位。同时处理无用户的 global_s_ 前缀回退数据。"""
+        scope_prefix = query.scope_prefix
+        keys_to_delete = [
+            sid
+            for sid in self._slots.keys()
+            if sid.startswith(scope_prefix)
+            or sid.startswith(f"global_s_{scope_prefix}")
+        ]
+        for sid in keys_to_delete:
+            self._slots.pop(sid, None)
 
 
 class AbstractMemoryRecord(Model):
@@ -424,6 +450,11 @@ class TortoiseChatContext(BaseChatContext):
     async def clear(self, session: SessionMetadata) -> None:
         await self.model_class.filter(session_id=session.session_id).delete()
 
+    async def clear_by_query(self, query: MemoryQuery) -> None:
+        """ORM 级：利用数据库 startswith 原生语法批量级联删除短期记忆"""
+        scope_prefix = query.scope_prefix
+        await self.model_class.filter(session_id__startswith=scope_prefix).delete()
+
 
 def get_orm_chat_context(
     model_class: type[AbstractMemoryRecord],
@@ -537,6 +568,16 @@ class TortoiseSlotContext(BaseSlotContext):
                 merged[row.label] = self._row_to_slot(row)
 
         return [s for s in merged.values() if s.content.strip()]
+
+    async def clear_by_query(self, query: MemoryQuery) -> None:
+        """ORM 级：利用数据库 startswith 原生语法批量级联删除槽位"""
+        scope_prefix = query.scope_prefix
+        from tortoise.expressions import Q
+
+        await self.model_class.filter(
+            Q(session_id__startswith=scope_prefix)
+            | Q(session_id__startswith=f"global_s_{scope_prefix}")
+        ).delete()
 
 
 def get_orm_slot_context(model_class: type[AbstractSlotRecord]) -> TortoiseSlotContext:

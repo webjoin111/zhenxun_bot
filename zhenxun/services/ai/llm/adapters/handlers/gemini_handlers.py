@@ -127,11 +127,7 @@ class GeminiConfigMapper(ConfigMapper):
                     lvl = "low"
                 thinking_config["thinkingLevel"] = lvl
             elif mode == "budget":
-                max_budget = (
-                    capabilities.max_thinking_tokens
-                    if capabilities and capabilities.max_thinking_tokens > 0
-                    else 24576
-                )
+                max_budget = 32768 if "pro" in model_name else 24576
                 b_tokens = config.gemini_options.thinking_budget
 
                 if b_tokens is None and config.gemini_options.thinking_level:
@@ -710,7 +706,8 @@ class GeminiTextHandler(BaseTextHandler):
                 if has_function_tools or is_structured:
                     reason_desc = "工具调用" if has_function_tools else "结构化输出"
                     logger.debug(
-                        f"检测到{reason_desc}，自动为模型 {model.model_name} 开启思维链增强"
+                        f"检测到{reason_desc}，自动为模型 "
+                        f"{model.model_name} 开启思维链增强"
                     )
                 else:
                     logger.debug(

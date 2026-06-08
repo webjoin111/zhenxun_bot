@@ -52,19 +52,26 @@ class ChatSession:
         return ctx.session_id
 
     async def clear_memory(self, session_id: str | None = None) -> None:
-        """清空当前用户的历史记忆"""
+        """
+        清空当前会话用户的历史短期记忆。
+        """
         sid = self._get_implicit_session_id(session_id)
         if sid and self.agent.memory_config:
             from zhenxun.services.ai.memory.manager import memory_manager
-            chat_ctx = memory_manager.get_chat_context(self.agent.memory_config)
-            if chat_ctx:
-                await chat_ctx.clear(SessionMetadata(session_id=sid))
+
+            await (
+                memory_manager.cleaner()
+                .session(sid)
+                .config(self.agent.memory_config)
+                .clear_short_term()
+            )
 
     async def get_history(self, session_id: str | None = None) -> list[LLMMessage]:
         """获取当前用户的历史记忆"""
         sid = self._get_implicit_session_id(session_id)
         if sid and self.agent.memory_config:
             from zhenxun.services.ai.memory.manager import memory_manager
+
             chat_ctx = memory_manager.get_chat_context(self.agent.memory_config)
             if chat_ctx:
                 return await chat_ctx.get_messages(SessionMetadata(session_id=sid))

@@ -40,7 +40,7 @@ class LLMSummaryConfig(BaseModel):
     """触发压缩的 Token 阈值。<=1.0 为比例，>1.0 为绝对 Token 数"""
     max_history_turns: int = 0
     """触发压缩的最大历史对话轮数。设为 0 表示不限制轮数（仅受 Token 阈值控制）。"""
-    summarization_model: str | None = "Gemini/gemini-3.5-flash"
+    summarization_model: str | None = "DeepSeek/deepseek-v4-flash"
     """指定用于执行总结任务的大模型名称，为空则使用全局默认"""
     summarization_prompt: str = (
         "请以客观、精炼的语言概括以下对话内容。重点保留："
@@ -53,6 +53,19 @@ class LLMSummaryConfig(BaseModel):
     """在总结之外，强制原样保留的最近对话轮数"""
 
 
+class ToolPruningConfig(BaseModel):
+    """工具结果修剪策略配置"""
+
+    enable: bool = False
+    """是否开启长工具输出结果的自动修剪"""
+    trigger_threshold: float = 0.6
+    """触发修剪的工具纯 Token 阈值。<=1.0 为比例，>1.0 为绝对 Token 数"""
+    max_history_turns: int = 15
+    """触发修剪的最大工具消息轮数。设为 0 表示不限制轮数。"""
+    keep_recent_turns: int = 3
+    """修剪时强制原样保留的最新的工具消息轮数，确保当下反思不受影响"""
+
+
 class ContextManagementSettings(BaseModel):
     """智能上下文管理与压缩算法设置"""
 
@@ -61,6 +74,9 @@ class ContextManagementSettings(BaseModel):
 
     vision_window_size: int = Field(default=3)
     """多模态滑动窗口大小。0表示无限制，>0表示仅保留最近N轮包含多模态真实数据的消息，超龄则自动降级为占位符"""
+
+    tool_pruning: ToolPruningConfig = Field(default_factory=ToolPruningConfig)
+    """工具结果过载修剪策略"""
 
 
 class ProviderConfig(BaseModel):
@@ -108,6 +124,8 @@ class AgentEngineSettings(BaseModel):
     """达到最大循环次数时，是否触发大模型兜底总结（而不是直接报错）"""
     enable_hitl: bool = True
     """是否允许智能体主动挂起任务，向用户求助 (Human-in-the-Loop)"""
+    mcp_cleanup_timeout: int = 900
+    """MCP 服务自动清理的闲置超时时间(秒)。0表示关闭自动清理机制（永久驻留）"""
 
 
 class LLMConfig(BaseModel):

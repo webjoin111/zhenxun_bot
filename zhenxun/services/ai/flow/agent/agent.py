@@ -49,7 +49,6 @@ from zhenxun.services.ai.run.models import (
 )
 from zhenxun.services.ai.tools.core.tool import BaseTool
 from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
-from zhenxun.services.ai.tools.engine.global_capabilities import ReflexionCapability
 from zhenxun.services.ai.tools.models import (
     GlobalToolFilter,
 )
@@ -169,7 +168,10 @@ class Agent(
 
         if self.runtime_config.enable_hitl is None:
             from zhenxun.services.ai.config import get_llm_config
-            self.runtime_config.enable_hitl = get_llm_config().agent_settings.enable_hitl
+
+            self.runtime_config.enable_hitl = (
+                get_llm_config().agent_settings.enable_hitl
+            )
 
         self.runtime_config.stateless = not self.memory_config.short_term.enable
 
@@ -183,13 +185,10 @@ class Agent(
                     self.capabilities.append(cap)
                 elif callable(cap):
                     self.capabilities.append(DynamicCapability(cap))
-
         if self.runtime_config.enable_hitl:
             from zhenxun.services.ai.tools.providers.builtin.hitl import HITLToolkit
 
             self.tool_definitions.append(HITLToolkit())
-
-        self.capabilities.append(ReflexionCapability())
 
     def tool(
         self,
@@ -537,6 +536,7 @@ class Agent(
                 toolkits, context.session_id or "", context
             ):
                 from zhenxun.services.ai.flow.agent.engine.executor import AgentExecutor
+
                 executor = AgentExecutor()
 
                 from zhenxun.services.ai.llm.manager import get_model_instance

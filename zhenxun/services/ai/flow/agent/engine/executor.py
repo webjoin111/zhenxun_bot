@@ -353,7 +353,8 @@ class AgentExecutor:
                                 early_result_output = tool_res.output
                                 handoff_triggered = tool_res
                                 display_msg = tool_res.ui_display
-                                final_content = f"✅ 已决定移交控制权至 {getattr(tool_res, 'target', 'unknown')}。"
+                                target = getattr(tool_res, "target", "unknown")
+                                final_content = f"✅ 已决定移交控制权至 {target}。"
                                 tool_res = None
 
                             if display_msg:

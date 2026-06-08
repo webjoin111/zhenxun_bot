@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 from typing import cast
 from typing_extensions import Self
+
 import yaml
 
 from zhenxun.configs.path_config import DATA_PATH
@@ -149,8 +150,6 @@ class SkillManager:
         """清空缓存以重新扫描(方便测试热更)"""
         async with self._discovery_lock:
             self._skills.clear()
-
-    # --- 以下为底层的解析与加载方法 ---
 
     def _parse_skill_from_path(self, path: str | Path) -> Skill | None:
         """按径解析技能，返回提权到最高级别的孤立技能实例，不污染全局状态"""

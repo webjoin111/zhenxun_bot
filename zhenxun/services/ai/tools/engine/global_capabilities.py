@@ -327,14 +327,18 @@ class TelemetryCapability(AbstractCapability):
             res = await handler()
         except ControlFlowExit as e:
             self.summary.total_latency_ms = (time.monotonic() - self.start_t) * 1000
+            latency = self.summary.total_latency_ms
             logger.debug(
-                f"🛑 [Telemetry] 智能体 {agent_name} 正常中止/控制流转移: {type(e).__name__} (耗时: {self.summary.total_latency_ms:.2f}ms)"
+                f"🛑 [Telemetry] 智能体 {agent_name} 正常中止/控制流转移: "
+                f"{type(e).__name__} (耗时: {latency:.2f}ms)"
             )
             raise e
         except Exception as e:
             self.summary.total_latency_ms = (time.monotonic() - self.start_t) * 1000
+            latency = self.summary.total_latency_ms
             logger.error(
-                f"❌ [Telemetry] 智能体 {agent_name} 崩溃，终止遥测 (耗时: {self.summary.total_latency_ms:.2f}ms)"
+                f"❌ [Telemetry] 智能体 {agent_name} 崩溃，终止遥测 "
+                f"(耗时: {latency:.2f}ms)"
             )
             raise e
 
@@ -342,8 +346,9 @@ class TelemetryCapability(AbstractCapability):
         self.summary.usage = res.usage
         res.telemetry = self.summary
 
+        latency = self.summary.total_latency_ms
         logger.debug(
-            f"🏁 [Telemetry] 智能体 {agent_name} 运行结束 (总耗时: {self.summary.total_latency_ms:.2f}ms)"
+            f"🏁 [Telemetry] 智能体 {agent_name} 运行结束 (总耗时: {latency:.2f}ms)"
         )
         return res
 
@@ -565,11 +570,20 @@ class ReflexionCapability(AbstractCapability):
         ivr_messages = list(llm_context.messages)
         last_exception: Exception | None = None
 
+        from zhenxun.services.ai.core.guardrails import GuardrailPipeline
+
+        pipeline = GuardrailPipeline(guardrails) if guardrails else None
+
         for attempt in range(max_retries + 1):
             llm_context.messages = list(ivr_messages)
             current_response_text: str = ""
 
             try:
+                if pipeline:
+                    llm_context.messages = await pipeline.run_input_pipeline(
+                        llm_context.messages, context
+                    )
+
                 response = await handler(llm_context)
                 current_response_text = response.text
 
@@ -583,14 +597,16 @@ class ReflexionCapability(AbstractCapability):
                 else:
                     final_obj = current_response_text
 
-                failed_feedbacks = []
-                for v in guardrails:
-                    v_res = await v.validate(current_response_text, final_obj, context)
-                    if not v_res.success:
-                        failed_feedbacks.append(v_res.feedback or "未知校验失败")
+                if pipeline:
+                    resp_out, final_obj_out = await pipeline.run_output_pipeline(
+                        response, final_obj, context
+                    )
+                    from typing import cast
 
-                if failed_feedbacks:
-                    raise GuardrailViolationError("\n".join(failed_feedbacks))
+                    response = cast("LLMResponse", resp_out)
+                    final_obj = final_obj_out
+                    current_response_text = response.text
+
                 response.parsed_obj = final_obj
                 return response
 

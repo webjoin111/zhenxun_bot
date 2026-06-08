@@ -31,6 +31,7 @@ def generate_session_meta(
 
     from zhenxun.services.ai.memory.types import (
         MemoryIsolationLevel,
+        MemoryQuery,
         SessionMetadata,
     )
 
@@ -41,15 +42,6 @@ def generate_session_meta(
     platform = session.platform
     user_id = session.id1
     group_id = session.id2 or session.id3
-
-    parts = []
-    if prefix:
-        prefix_clean = prefix.strip("/")
-        if prefix_clean:
-            parts.append(prefix_clean)
-
-    if platform:
-        parts.append(f"p_{platform}")
 
     use_group = False
     use_user = False
@@ -66,22 +58,23 @@ def generate_session_meta(
         use_group = True if group_id else False
         use_user = True
 
-    if use_group and group_id:
-        parts.append(f"g_{group_id}")
-    if use_user and user_id:
-        parts.append(f"u_{user_id}")
+    query = MemoryQuery(
+        base_prefix=prefix,
+        platform=platform,
+        group_id=group_id if use_group else None,
+        user_id=user_id if use_user else None,
+        namespace=namespace
+        if isolation_level
+        in (MemoryIsolationLevel.PLUGIN_USER, MemoryIsolationLevel.AGENT_USER)
+        else None,
+        agent_name=agent_name
+        if isolation_level == MemoryIsolationLevel.AGENT_USER
+        else None,
+    )
 
-    if isolation_level in (
-        MemoryIsolationLevel.PLUGIN_USER,
-        MemoryIsolationLevel.AGENT_USER,
-    ):
-        parts.append(f"ns_{namespace or 'unknown'}")
-
-    if isolation_level == MemoryIsolationLevel.AGENT_USER:
-        parts.append(f"ag_{agent_name or 'unknown'}")
-
-    session_id = "/" + "/".join(parts)
-    scope_prefix = session_id
+    parts = query.get_scope_parts()
+    session_id = query.scope_prefix
+    scope_prefix = query.scope_prefix
 
     accessible_scopes = ["/"]
     current_path = ""
