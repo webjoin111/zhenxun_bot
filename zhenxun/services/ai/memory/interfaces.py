@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 
 from zhenxun.services.ai.core.messages import LLMMessage
 from zhenxun.services.ai.memory.types import MemoryQuery, MemorySlot, SessionMetadata
+from zhenxun.services.ai.run import RunContext
 
 
 class BaseChatContext(ABC):
@@ -89,4 +90,14 @@ class BaseMemoryReducer(ABC):
         base_overhead: int = 0,
     ) -> tuple[list[LLMMessage], bool, int]:
         """对消息列表进行压缩处理。"""
+        ...
+
+
+class BaseMemoryIngestionMiddleware(ABC):
+    """记忆入库中间件基类，在写入数据库前拦截并修改/清洗消息"""
+
+    @abstractmethod
+    async def process(
+        self, messages: list[LLMMessage], context: RunContext
+    ) -> list[LLMMessage]:
         ...

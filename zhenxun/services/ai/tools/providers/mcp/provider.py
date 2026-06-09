@@ -42,18 +42,12 @@ class MCPServerConfig(BaseModel):
     """进程的工作目录"""
     install_command: str | None = Field(default=None)
     """首次运行前的安装/预热命令"""
-    isolation: Literal["shared", "per_session"] = Field(default="shared")
-    """会话隔离级别"""
     description: str | None = None
     """服务描述信息（用于配置可读性与展示）"""
     enabled: bool = Field(default=True)
     """是否全局启用"""
     admin_level: int = Field(default=0)
     """执行该服务器工具所需的群管等级"""
-    tools_meta: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    """特定工具的细粒度权限与经济配置"""
-    forward_bot_context: bool = Field(default=False)
-    """是否将 Bot 会话的 User/Group/Platform 映射为 Header 穿透至服务端"""
     sandbox_blueprint: SandboxBlueprint | None = Field(default=None)
     """沙箱环境装配配置（用于 sandbox_proxy 自动处理依赖）"""
 
@@ -192,12 +186,6 @@ class GlobalMCPProvider(ToolProvider):
         """辅助方法：装载单个 MCP Toolkit"""
         clean_name = re.sub(r"[^a-zA-Z0-9]", "_", name)
         prefix = f"mcp_{clean_name}_"
-        metadata: dict[str, dict[str, Any]] = {}
-        if conf.admin_level > 0:
-            metadata["*"] = {"admin_level": conf.admin_level}
-        if conf.tools_meta:
-            for k, v in conf.tools_meta.items():
-                metadata.setdefault(k, {}).update(v)
         self._toolkits[name] = MCPToolkit(
             server_name=name,
             prefix=prefix,
@@ -208,12 +196,10 @@ class GlobalMCPProvider(ToolProvider):
             env=conf.env,
             cwd=conf.cwd,
             install_command=conf.install_command,
-            isolation=conf.isolation,
             timeout=conf.timeout,
-            tool_metadata=metadata,
+            admin_level=conf.admin_level,
             header_provider=self.header_provider,
             env_provider=self.env_provider,
-            forward_bot_context=conf.forward_bot_context,
             sandbox_blueprint=conf.sandbox_blueprint,
         )
 
@@ -307,18 +293,48 @@ class MCPSource(BaseModel):
     config: MCPServerConfig | None = None
     """内联临时配置 (MCPServerConfig 实例)"""
 
+    fetch_all_enabled: bool = Field(default=False)
+    """内部标识：是否拉取所有已启用的 MCP 服务"""
+    exclude_servers: list[str] | None = Field(default=None)
+    """排除的服务名列表（仅当 fetch_all_enabled 为 True 时生效）"""
+
     def __hash__(self):
         return hash((self.server_name, self.namespace))
 
+    @classmethod
+    def all_enabled(cls, exclude: list[str] | None = None) -> "MCPSource":
+        """
+        声明式获取所有已启用的 MCP 服务器下的工具。
+
+        参数:
+            exclude: 需要显式排除的 MCP 服务名称列表。
+        """
+        return cls(fetch_all_enabled=True, exclude_servers=exclude)
+
     @model_validator(mode="after")
     def validate_source(self) -> "MCPSource":
-        if not self.server_name and not self.config:
-            raise ValueError("MCPSource 必须提供 server_name 或 config 其中之一")
+        if not self.server_name and not self.config and not self.fetch_all_enabled:
+            raise ValueError(
+                "MCPSource 必须提供 server_name 或 config，或者开启 fetch_all_enabled"
+            )
         return self
 
     async def resolve(self, context: Any | None = None) -> Any:
         tools = []
-        if self.config:
+        if self.fetch_all_enabled:
+            server_tools_dict = await mcp_provider.discover_tools(
+                excluded_servers=self.exclude_servers
+            )
+            for t in server_tools_dict.values():
+                if hasattr(t, "resolve"):
+                    p = await cast(ToolResolvable, t).resolve(context)
+                    if p:
+                        tools.extend(p.tools)
+                else:
+                    tools.append(t)
+            return ResolvedToolPayload(tools=tools)
+
+        elif self.config:
             import uuid
 
             temp_server_name = self.server_name or f"inline_mcp_{uuid.uuid4().hex[:8]}"
@@ -331,15 +347,14 @@ class MCPSource(BaseModel):
                 env=self.config.env,
                 cwd=self.config.cwd,
                 install_command=self.config.install_command,
-                isolation=self.config.isolation,
                 timeout=self.config.timeout,
-                tool_metadata=self.config.tools_meta,
-                forward_bot_context=self.config.forward_bot_context,
+                admin_level=self.config.admin_level,
                 sandbox_blueprint=self.config.sandbox_blueprint,
             )
             payload = await inline_toolkit.resolve(context)
             payload.toolkits.insert(0, inline_toolkit)
             return payload
+
         else:
             assert self.server_name is not None
             server_tools = await mcp_provider.get_tools_for_server(self.server_name)

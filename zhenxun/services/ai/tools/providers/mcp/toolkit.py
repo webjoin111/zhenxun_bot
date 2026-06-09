@@ -125,9 +125,9 @@ class MCPRemoteTool(BaseTool):
         self.toolkit = toolkit
         self.parent_toolkit = toolkit
         self.args_schema = None
-        meta = toolkit.tool_metadata.get("*", {}).copy()
-        meta.update(toolkit.tool_metadata.get(name, {}))
-        self.metadata = meta
+        self.metadata = (
+            {"admin_level": toolkit.admin_level} if toolkit.admin_level > 0 else {}
+        )
 
     @property
     def effective_ttl(self) -> float:
@@ -168,19 +168,13 @@ class MCPRemoteTool(BaseTool):
         last_error = None
 
         for attempt in range(max_retries):
-            if self.toolkit.isolation == "per_session" and context:
-                sid = context.session_id or f"temp_{id(context)}"
-                await self.toolkit.lifespan_manager.touch(
-                    sid, self.toolkit.effective_ttl
-                )
-            else:
-                await self.toolkit.lifespan_manager.touch(
-                    self.toolkit.server_name, self.toolkit.effective_ttl
-                )
+            await self.toolkit.lifespan_manager.touch(
+                self.toolkit.server_name, self.toolkit.effective_ttl
+            )
 
             session = await self.toolkit.get_session(context)
             if not session:
-                return ToolResult(output="MCP Connection Error").as_error()
+                return ToolResult(output="MCP 连接错误").as_error()
 
             try:
                 result = await session.call_tool(self.original_tool_name, kwargs)
@@ -188,18 +182,19 @@ class MCPRemoteTool(BaseTool):
             except Exception as e:
                 last_error = e
                 logger.warning(
-                    f"MCP Tool '{self.name}' execute failed "
-                    f"(attempt {attempt + 1}/{max_retries}): {e}. "
-                    "Attempting self-healing reconnect..."
+                    f"MCP 工具 '{self.name}' 执行失败 "
+                    f"(尝试 {attempt + 1}/{max_retries}): {e}。"
+                    "正在尝试自动重连自愈..."
                 )
                 if attempt < max_retries - 1:
                     await self.toolkit.close()
                     await asyncio.sleep(2**attempt)
         else:
             logger.error(
-                f"MCP Tool '{self.name}' execute failed after {max_retries} retries: {last_error}"  # noqa: E501
+                f"MCP 工具 '{self.name}' "
+                f"在重试 {max_retries} 次后仍然执行失败: {last_error}"
             )
-            return ToolResult(output=f"MCP Error: {last_error}").as_error()
+            return ToolResult(output=f"MCP 错误: {last_error}").as_error()
 
         if result.isError:
             return ToolResult(output=str(result.content)).as_error()
@@ -266,12 +261,11 @@ class MCPToolkit(BaseToolkit):
         install_command: str | None = None,
         isolation: Literal["shared", "per_session"] = "shared",
         timeout: int = 30,
-        tool_metadata: dict[str, dict[str, Any]] | None = None,
+        admin_level: int = 0,
         header_provider: Callable[[RunContext], dict[str, str]] | None = None,
         env_provider: Callable[[RunContext], dict[str, str]] | None = None,
         ttl: int = 600,
         sandbox_session_id: str | None = None,
-        forward_bot_context: bool = False,
         sandbox_blueprint: SandboxBlueprint | None = None,
     ):
         super().__init__(
@@ -285,18 +279,15 @@ class MCPToolkit(BaseToolkit):
         self.env = env or {}
         self.cwd = cwd
         self.install_command = install_command
-        self.isolation = isolation
         self.timeout = timeout
-        self.tool_metadata = tool_metadata or {}
+        self.admin_level = admin_level
         self.header_provider = header_provider
         self.env_provider = env_provider
         self.sandbox_session_id = sandbox_session_id
-        self.forward_bot_context = forward_bot_context
         self.sandbox_blueprint = sandbox_blueprint
         self.ttl = ttl
 
         self._shared_session: ClientSession | None = None
-        self._session_pool: dict[str, ClientSession] = {}
         self._tools: list[BaseTool] = []
         self._is_initialized = False
         self._bound_sandbox_session_id: str | None = None
@@ -304,10 +295,9 @@ class MCPToolkit(BaseToolkit):
         self.lifespan_manager = LifespanManager()
 
         self._shared_task: asyncio.Task | None = None
-        self._task_pool: dict[str, asyncio.Task] = {}
-        self._stop_events: dict[str, asyncio.Event] = {"shared": asyncio.Event()}
-        self._ready_events: dict[str, asyncio.Event] = {"shared": asyncio.Event()}
-        self._init_exceptions: dict[str, Exception] = {}
+        self._stop_event: asyncio.Event = asyncio.Event()
+        self._ready_event: asyncio.Event = asyncio.Event()
+        self._init_exception: Exception | None = None
 
     @property
     def effective_ttl(self) -> float:
@@ -384,77 +374,17 @@ class MCPToolkit(BaseToolkit):
     async def get_session(
         self, context: RunContext | None = None
     ) -> ClientSession | None:
-        if self.isolation == "shared":
-            await self.lifespan_manager.register(
-                self.server_name,
-                ttl=self.effective_ttl,
-                cleanup_callback=self.release_resource,
-            )
-            if not self._is_initialized:
-                await self.initialize(context)
-            return self._shared_session
-        else:
-            if not context:
-                if not self._is_initialized:
-                    await self.initialize()
-                return self._shared_session
+        await self.lifespan_manager.register(
+            self.server_name,
+            ttl=self.effective_ttl,
+            cleanup_callback=self.release_resource,
+        )
+        if not self._is_initialized:
+            await self.initialize(context)
+        return self._shared_session
 
-            session_id = context.session_id or f"temp_{id(context)}"
-            await self.lifespan_manager.register(
-                session_id,
-                ttl=self.effective_ttl,
-                cleanup_callback=self.release_resource,
-            )
-
-            if not self._is_initialized:
-                await self.initialize()
-
-            if session_id in self._session_pool:
-                return self._session_pool[session_id]
-
-            dynamic_headers = {}
-            dynamic_env = self.env.copy()
-            if self.header_provider:
-                try:
-                    dynamic_headers.update(self.header_provider(context))
-                except Exception as e:
-                    logger.warning(f"Header provider failed for {session_id}: {e}")
-            if self.forward_bot_context and context:
-                uid = context.get_user_id()
-                gid = context.get_group_id()
-                plat = context.get_platform()
-                if uid:
-                    dynamic_headers["X-Zhenxun-User-Id"] = uid
-                if gid:
-                    dynamic_headers["X-Zhenxun-Group-Id"] = gid
-                if plat:
-                    dynamic_headers["X-Zhenxun-Platform"] = plat
-                dynamic_headers["X-Zhenxun-Session-Id"] = session_id
-            if self.env_provider:
-                try:
-                    dynamic_env.update(self.env_provider(context))
-                except Exception as e:
-                    logger.warning(f"Env provider failed for {session_id}: {e}")
-
-            self._stop_events[session_id] = asyncio.Event()
-            self._ready_events[session_id] = asyncio.Event()
-
-            task = asyncio.create_task(
-                self._spawn_session_task(session_id, dynamic_headers, dynamic_env)
-            )
-            self._task_pool[session_id] = task
-
-            await self._ready_events[session_id].wait()
-
-            if session_id in self._init_exceptions:
-                raise self._init_exceptions[session_id]
-
-            return self._session_pool.get(session_id)
-
-    async def _spawn_session_task(
-        self, session_key: str, dynamic_headers: dict, dynamic_env: dict
-    ):
-        """动态按需生成后台任务（兼容 shared 和 per_session 隔离模式）"""
+    async def _spawn_session_task(self, dynamic_headers: dict, dynamic_env: dict):
+        """生成后台连接任务"""
 
         max_attempts = 2 if (self.transport == "stdio" and self.install_command) else 1
 
@@ -546,10 +476,7 @@ class MCPToolkit(BaseToolkit):
                         )
                         await client_session.initialize()
 
-                        if session_key == "shared":
-                            self._shared_session = client_session
-                        else:
-                            self._session_pool[session_key] = client_session
+                        self._shared_session = client_session
 
                         if not self._is_initialized:
                             mcp_tools_res = await client_session.list_tools()
@@ -581,24 +508,22 @@ class MCPToolkit(BaseToolkit):
                                 )
                             self._is_initialized = True
 
-                        self._ready_events[session_key].set()
+                        self._ready_event.set()
                         logger.info(
-                            f"成功连接 MCP 服务器: {self.server_name} [{session_key}], "
+                            f"成功连接 MCP 服务器: {self.server_name}, "
                             f"获取了 {len(self._tools)} 个工具"
                         )
 
-                        await self._stop_events[session_key].wait()
+                        await self._stop_event.wait()
                         return
 
                 except Exception as e:
                     if attempt < max_attempts:
                         logger.warning(
-                            f"⚠️ [{self.server_name}] 进程启动或运行异常崩溃，疑似环境损坏。触发自愈机制 (准备重试)..."  # noqa: E501
+                            f"⚠️ [{self.server_name}] 进程启动或运行异常崩溃，"
+                            "疑似环境损坏。触发自愈机制 (准备重试)..."
                         )
-                        if session_key == "shared":
-                            self._shared_session = None
-                        else:
-                            self._session_pool.pop(session_key, None)
+                        self._shared_session = None
                         if not self._is_initialized:
                             self._is_initialized = False
                         continue
@@ -606,9 +531,10 @@ class MCPToolkit(BaseToolkit):
                     raise e
 
         except Exception as e:
-            self._init_exceptions[session_key] = e
+            self._init_exception = e
             logger.error(
-                f"MCP 服务器 '{self.server_name}' [{session_key}] 初始化连接失败（模式: {self.transport}）。"  # noqa: E501
+                f"MCP 服务器 '{self.server_name}' "
+                f"初始化连接失败（模式: {self.transport}）。"
                 f"错误原因: {e}"
             )
             if "Connection closed" in str(e):
@@ -618,34 +544,31 @@ class MCPToolkit(BaseToolkit):
                     "（例如：镜像中缺少 Node 环境或国内网络无法连接 npm 等）。"
                 )
         finally:
-            if session_key == "shared" and not self._is_initialized:
+            if not self._is_initialized:
                 self._is_initialized = False
-            if session_key == "shared":
-                self._shared_session = None
-            else:
-                self._session_pool.pop(session_key, None)
-            self._ready_events[session_key].set()
+            self._shared_session = None
+            self._ready_event.set()
 
     async def initialize(self, context: RunContext | None = None):
         if self._is_initialized:
             return
 
         self._tools.clear()
-        self._stop_events["shared"].clear()
-        self._ready_events["shared"].clear()
-        self._init_exceptions.pop("shared", None)
+        self._stop_event.clear()
+        self._ready_event.clear()
+        self._init_exception = None
 
         dynamic_headers = {}
         dynamic_env = self.env.copy()
 
         self._shared_task = asyncio.create_task(
-            self._spawn_session_task("shared", dynamic_headers, dynamic_env)
+            self._spawn_session_task(dynamic_headers, dynamic_env)
         )
 
-        await self._ready_events["shared"].wait()
+        await self._ready_event.wait()
 
-        if "shared" in self._init_exceptions:
-            raise self._init_exceptions["shared"]
+        if self._init_exception:
+            raise self._init_exception
 
     async def get_tools(self, context: RunContext | None = None) -> dict[str, BaseTool]:
         await self.lifespan_manager.register(
@@ -662,31 +585,7 @@ class MCPToolkit(BaseToolkit):
         return tools_dict
 
     async def release_resource(self, resource_id: str):
-        if self.isolation == "per_session":
-            await self.close_session(resource_id)
-        else:
-            await self.close()
-
-    async def close_session(self, session_id: str):
-        """清理单个隔离会话的进程和任务资源"""
-        if session_id in self._stop_events:
-            self._stop_events[session_id].set()
-
-        task = self._task_pool.pop(session_id, None)
-        if task and not task.done() and task is not asyncio.current_task():
-            try:
-                await asyncio.wait_for(task, timeout=5.0)
-            except asyncio.TimeoutError:
-                logger.warning(
-                    f"MCP server task for {self.server_name} ({session_id}) "
-                    "timed out, cancelling."
-                )
-                task.cancel()
-
-        self._session_pool.pop(session_id, None)
-        self._stop_events.pop(session_id, None)
-        self._ready_events.pop(session_id, None)
-        self._init_exceptions.pop(session_id, None)
+        await self.close()
 
     async def close(self):
         current_task = asyncio.current_task()
@@ -697,7 +596,7 @@ class MCPToolkit(BaseToolkit):
         ):
             await self.lifespan_manager.stop()
 
-        self._stop_events["shared"].set()
+        self._stop_event.set()
         self._is_initialized = False
         self._shared_session = None
         self._tools.clear()
@@ -711,10 +610,8 @@ class MCPToolkit(BaseToolkit):
                 await asyncio.wait_for(self._shared_task, timeout=5.0)
             except asyncio.TimeoutError:
                 logger.warning(
-                    f"MCP server task for {self.server_name} timed out, cancelling."
+                    f"MCP 服务器 '{self.server_name}' "
+                    "的任务执行超时，正在取消。"
                 )
                 self._shared_task.cancel()
         self._shared_task = None
-
-        for sid in list(self._session_pool.keys()):
-            await self.close_session(sid)

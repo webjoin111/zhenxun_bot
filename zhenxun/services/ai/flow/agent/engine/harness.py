@@ -137,7 +137,7 @@ class AgentHarness:
             session_meta=session_metadata, memory_config=effective_memory
         )
         writer = MemoryWriter(
-            session_meta=session_metadata, memory_config=effective_memory
+            session_meta=session_metadata, memory_config=effective_memory, context=context
         )
 
         if task_obj:

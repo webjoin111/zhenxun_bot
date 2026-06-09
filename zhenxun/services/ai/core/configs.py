@@ -53,6 +53,7 @@ class EmbeddingTaskType(str, Enum):
 
 class BaseOutputDefinition(Generic[T]):
     """声明式结构化输出基类"""
+
     type_: type[T]
 
 
@@ -494,6 +495,9 @@ class LLMEmbeddingConfig(BaseModel):
     """提供该文档的标题以供底层优化。仅在 task_type 为 RETRIEVAL_DOCUMENT 时有效。"""
     encoding_format: str | None = Field(default="float")
     """向量数据在响应中的编码格式 (通常为 float 或 base64)"""
+    multimodal: bool | list[str] = Field(default=False)
+    """是否允许多模态向量化。False 表示纯文本(极速安全)；True 表示全部放行；
+    也可传入 ['image', 'text'] 细粒度控制。"""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

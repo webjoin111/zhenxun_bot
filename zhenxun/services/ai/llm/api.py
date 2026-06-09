@@ -93,6 +93,7 @@ async def embed(
         "general", "query", "document", "similarity", "classification", "clustering"
     ] = "general",
     dimensions: int | None = None,
+    multimodal: bool | list[str] = False,
     config: LLMEmbeddingConfig | None = None,
 ) -> EmbeddingResponse: ...
 
@@ -106,6 +107,7 @@ async def embed(
         "general", "query", "document", "similarity", "classification", "clustering"
     ] = "general",
     dimensions: int | None = None,
+    multimodal: bool | list[str] = False,
     config: LLMEmbeddingConfig | None = None,
 ) -> EmbeddingResponse: ...
 
@@ -118,6 +120,7 @@ async def embed(
         "general", "query", "document", "similarity", "classification", "clustering"
     ] = "general",
     dimensions: int | None = None,
+    multimodal: bool | list[str] = False,
     config: LLMEmbeddingConfig | None = None,
 ) -> EmbeddingResponse:
     """
@@ -129,14 +132,21 @@ async def embed(
         task: 生成意图
             (query检索词 / document目标文档 / similarity相似度 等)，将自动翻译到底层。
         dimensions: 强制降低返回的向量维度 (降维)。
+        multimodal: 是否开启多模态嵌入提取。默认 False (极速安全的纯文本模式)。
         config: 嵌入配置对象。
 
     返回:
         EmbeddingResponse: 包含向量和 Token 消耗统计的富响应对象。
     """
+    final_config = config or LLMEmbeddingConfig()
+    if multimodal is not False:
+        final_config.multimodal = multimodal
+
     from zhenxun.services.ai.message_builder import MessageBuilder
 
-    batch = await MessageBuilder.normalize_to_embed_batch(input_batch)
+    batch = await MessageBuilder.normalize_to_embed_batch(
+        input_batch, config=final_config
+    )
 
     if not batch.payloads:
         from zhenxun.services.ai.core.messages import UsageInfo
@@ -145,7 +155,6 @@ async def embed(
             embeddings=[], usage=UsageInfo(), model_name=str(model)
         )
 
-    final_config = config or LLMEmbeddingConfig()
     if dimensions is not None:
         final_config.output_dimensionality = dimensions
 

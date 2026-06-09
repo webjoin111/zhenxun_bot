@@ -4,7 +4,11 @@ from typing import TYPE_CHECKING
 from typing_extensions import Self
 
 if TYPE_CHECKING:
-    from zhenxun.services.ai.memory.interfaces import BaseChatContext, BaseSlotContext
+    from zhenxun.services.ai.memory.interfaces import (
+        BaseChatContext,
+        BaseMemoryIngestionMiddleware,
+        BaseSlotContext,
+    )
     from zhenxun.services.ai.memory.models import MemorySlot
     from zhenxun.services.ai.rag.backends import Embedder, StorageBackend
     from zhenxun.services.ai.rag.consolidation import Consolidator
@@ -12,6 +16,7 @@ if TYPE_CHECKING:
 from zhenxun.services.ai.memory.compression import MemoryPolicy
 from zhenxun.services.ai.memory.models import (
     ContextCompressionConfig,
+    IngestionConfig,
     LongTermConfig,
     MemoryConfig,
     ShortTermConfig,
@@ -36,6 +41,7 @@ class MemoryBuilder:
             slots=SlotMemoryConfig(enable=False),
             long_term=LongTermConfig(enable=False),
             compression=ContextCompressionConfig(),
+            ingestion=IngestionConfig(),
         )
 
     @classmethod
@@ -224,6 +230,16 @@ class MemoryBuilder:
         适用于短程会话或者具备超长上下文窗口的底层语言模型。
         """
         self._config.compression.policy = MemoryPolicy.unlimited()
+        return self
+
+    def with_ingestion_middlewares(
+        self, *middlewares: "BaseMemoryIngestionMiddleware"
+    ) -> Self:
+        """
+        配置记忆入库管线中间件。
+        用于在消息正式落盘前进行实体消解、隐私脱敏、自动打标签等操作。
+        """
+        self._config.ingestion.middlewares.extend(middlewares)
         return self
 
     def build(self) -> MemoryConfig:

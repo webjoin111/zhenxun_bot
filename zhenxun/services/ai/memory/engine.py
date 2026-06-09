@@ -1,3 +1,5 @@
+from typing import Any
+
 from zhenxun.services.ai.config import get_llm_config
 from zhenxun.services.ai.core.messages import LLMMessage
 from zhenxun.services.ai.memory.compression import (
@@ -202,10 +204,14 @@ class MemoryWriter:
     """
 
     def __init__(
-        self, session_meta: SessionMetadata, memory_config: MemoryConfig | None
+        self,
+        session_meta: SessionMetadata,
+        memory_config: MemoryConfig | None,
+        context: Any = None,
     ):
         self.session_meta = session_meta
         self.memory_config = memory_config
+        self.context = context
 
     async def save_new_messages(
         self,
@@ -214,9 +220,32 @@ class MemoryWriter:
         """将新产生的对话增量保存到数据库"""
         if not new_messages:
             return
+
+        messages_to_save = new_messages
+
+        if self.memory_config and self.memory_config.ingestion.middlewares:
+            from zhenxun.utils.pydantic_compat import model_copy
+
+            messages_to_save = [model_copy(m, deep=True) for m in new_messages]
+
+            for middleware in self.memory_config.ingestion.middlewares:
+                try:
+                    messages_to_save = await middleware.process(
+                        messages_to_save, self.context
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"[MemoryIngestion] 中间件 {middleware.__class__.__name__} "
+                        f"执行失败: {e}",
+                        e=e,
+                    )
+
+        if not messages_to_save:
+            return
+
         chat_ctx = memory_manager.get_chat_context(
             self.memory_config,
             namespace=self.session_meta.namespace or "global",
         )
         if chat_ctx and self.memory_config and self.memory_config.short_term.enable:
-            await chat_ctx.add_messages(self.session_meta, new_messages)
+            await chat_ctx.add_messages(self.session_meta, messages_to_save)

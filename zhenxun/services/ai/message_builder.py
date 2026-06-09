@@ -18,6 +18,7 @@ from nonebot_plugin_alconna.uniseg import (
 )
 from PIL.Image import Image as PILImageType
 
+from zhenxun.services.ai.core.configs import LLMEmbeddingConfig
 from zhenxun.services.ai.core.messages import (
     AudioPart,
     BaseContentPart,
@@ -47,7 +48,7 @@ class MessageBuilder:
     """
 
     _MESSAGE_CONVERTERS: ClassVar[
-        dict[type, dict[str, Callable[[Any], Awaitable[list[LLMMessage]]]]]
+        dict[type, dict[str, Callable[..., Awaitable[list[LLMMessage]]]]]
     ] = defaultdict(dict)
 
     _SEGMENT_HANDLERS: ClassVar[
@@ -82,7 +83,7 @@ class MessageBuilder:
         """装饰器：注册全局消息体类型的转换器"""
         ns = scope if scope is not None else infer_plugin_namespace()
 
-        def decorator(func: Callable[[Any], Awaitable[list[LLMMessage]]]):
+        def decorator(func: Callable[..., Awaitable[list[LLMMessage]]]):
             cls._MESSAGE_CONVERTERS[msg_type][ns] = func
             return func
 
@@ -176,10 +177,29 @@ class MessageBuilder:
 
     @classmethod
     async def unimsg_to_llm_parts(
-        cls, message: UniMessage, namespace: str = "global"
+        cls,
+        message: UniMessage,
+        namespace: str = "global",
+        allowed_modalities: set[str] | None = None,
     ) -> list[UserContentUnion]:
         parts: list[UserContentUnion] = []
         for seg in message:
+            if allowed_modalities is not None:
+                if isinstance(seg, Image) and "image" not in allowed_modalities:
+                    continue
+                if (
+                    isinstance(seg, (Audio, Voice))
+                    and "audio" not in allowed_modalities
+                ):
+                    continue
+                if isinstance(seg, Video) and "video" not in allowed_modalities:
+                    continue
+                if (
+                    getattr(seg, "__class__", type).__name__ == "File"
+                    and "file" not in allowed_modalities
+                ):
+                    continue
+
             handler_dict = cls._SEGMENT_HANDLERS.get(type(seg), {})
             handler = handler_dict.get(namespace) or handler_dict.get("global")
             if handler:
@@ -207,7 +227,11 @@ class MessageBuilder:
 
     @classmethod
     async def _fetch_reply_as_parts(
-        cls, bot: "Bot", event: "Event", namespace: str = "global"
+        cls,
+        bot: "Bot",
+        event: "Event",
+        namespace: str = "global",
+        allowed_modalities: set[str] | None = None,
     ) -> list[LLMContentPart] | None:
         """提取公共引用抓取与解析逻辑"""
         try:
@@ -228,7 +252,9 @@ class MessageBuilder:
 
             uni_msg = uni_msg.exclude(Reply)
 
-            parts = await cls.unimsg_to_llm_parts(uni_msg, namespace=namespace)
+            parts = await cls.unimsg_to_llm_parts(
+                uni_msg, namespace=namespace, allowed_modalities=allowed_modalities
+            )
             if not parts:
                 return None
 
@@ -246,9 +272,10 @@ class MessageBuilder:
         cls,
         message: PromptInput,
         instruction: str | None = None,
-        bot: "Bot | None" = None,
-        event: "Event | None" = None,
+        bot: Bot | None = None,
+        event: Event | None = None,
         namespace: str = "global",
+        allowed_modalities: set[str] | None = None,
     ) -> list[LLMMessage]:
         messages = []
         if instruction:
@@ -280,7 +307,10 @@ class MessageBuilder:
 
             if bot_inst and event_inst and should_fetch_reply:
                 parts = await cls._fetch_reply_as_parts(
-                    bot_inst, event_inst, namespace=namespace
+                    bot_inst,
+                    event_inst,
+                    namespace=namespace,
+                    allowed_modalities=allowed_modalities,
                 )
                 if parts:
                     reply_parts = parts
@@ -289,6 +319,8 @@ class MessageBuilder:
 
         converted_msgs: list[LLMMessage] = []
         converted = False
+        import inspect
+
         for msg_type, converter_dict in cls._MESSAGE_CONVERTERS.items():
             if isinstance(message, msg_type):
                 converter = converter_dict.get(namespace) or converter_dict.get(
@@ -296,7 +328,13 @@ class MessageBuilder:
                 )
                 if not converter:
                     continue
-                converted_msgs = await converter(message)
+                sig = inspect.signature(converter)
+                if "allowed_modalities" in sig.parameters:
+                    converted_msgs = await converter(
+                        message, allowed_modalities=allowed_modalities
+                    )
+                else:
+                    converted_msgs = await converter(message)
                 converted = True
                 break
 
@@ -342,11 +380,22 @@ class MessageBuilder:
     async def _extract_parts_for_embed(
         cls,
         item: Any,
-        bot: "Bot | None" = None,
-        event: "Event | None" = None,
+        bot: Bot | None = None,
+        event: Event | None = None,
         namespace: str = "global",
+        config: LLMEmbeddingConfig | None = None,
     ) -> list[LLMContentPart]:
         """为 Embed 专用提取纯粹的内容片段，忽略工具调用等杂项"""
+        allowed_modalities = {"text"}
+        if config:
+            if config.multimodal is True:
+                allowed_modalities = None
+            elif isinstance(config.multimodal, list):
+                allowed_modalities = set(config.multimodal)
+                allowed_modalities.add("text")
+            elif config.multimodal is False:
+                allowed_modalities = {"text"}
+
         from zhenxun.services.ai.core.messages import (
             AudioPart,
             FilePart,
@@ -356,7 +405,11 @@ class MessageBuilder:
         )
 
         messages = await cls.normalize_to_llm_messages(
-            item, bot=bot, event=event, namespace=namespace
+            item,
+            bot=bot,
+            event=event,
+            namespace=namespace,
+            allowed_modalities=allowed_modalities,
         )
         parts = []
         for msg in messages:
@@ -371,9 +424,10 @@ class MessageBuilder:
     async def normalize_to_embed_batch(
         cls,
         inputs: Any,
-        bot: "Bot | None" = None,
-        event: "Event | None" = None,
+        bot: Bot | None = None,
+        event: Event | None = None,
         namespace: str = "global",
+        config: LLMEmbeddingConfig | None = None,
     ) -> "EmbedBatch":
         """将任意输入标准化为 EmbedBatch (支持单模态批量与多模态融合)"""
         from nonebot_plugin_alconna import UniMessage
@@ -388,7 +442,9 @@ class MessageBuilder:
 
             batch = EmbedBatch(payloads=[])
             for item in inputs:
-                parts = await cls._extract_parts_for_embed(item, bot, event, namespace)
+                parts = await cls._extract_parts_for_embed(
+                    item, bot, event, namespace, config
+                )
                 if parts:
                     batch.payloads.append(EmbedPayload(parts=parts))
                 else:
@@ -397,7 +453,9 @@ class MessageBuilder:
             return batch
 
         else:
-            parts = await cls._extract_parts_for_embed(inputs, bot, event, namespace)
+            parts = await cls._extract_parts_for_embed(
+                inputs, bot, event, namespace, config
+            )
             if not parts:
                 fallback_parts: list[LLMContentPart] = [TextPart(text=" ")]
                 parts = fallback_parts
@@ -405,8 +463,12 @@ class MessageBuilder:
 
 
 @MessageBuilder.register_message_converter(UniMessage, scope="global")
-async def _convert_unimessage(msg: UniMessage) -> list[LLMMessage]:
-    content_parts = await MessageBuilder.unimsg_to_llm_parts(msg)
+async def _convert_unimessage(
+    msg: UniMessage, allowed_modalities: set[str] | None = None
+) -> list[LLMMessage]:
+    content_parts = await MessageBuilder.unimsg_to_llm_parts(
+        msg, allowed_modalities=allowed_modalities
+    )
     return [LLMMessage.user(content_parts)]
 
 

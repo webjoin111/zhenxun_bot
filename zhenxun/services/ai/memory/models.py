@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from zhenxun.services.ai.memory.interfaces import (
     BaseChatContext,
+    BaseMemoryIngestionMiddleware,
     BaseMemoryReducer,
     BaseSlotContext,
 )
@@ -118,6 +119,15 @@ class ContextCompressionConfig(BaseModel):
     """核心记忆压缩策略管线 (List[BaseMemoryReducer])。为 None 时将应用全局默认策略。"""
 
 
+class IngestionConfig(BaseModel):
+    """记忆入库管线配置"""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    middlewares: list[BaseMemoryIngestionMiddleware] = Field(default_factory=list)
+    """入库中间件列表（按顺序依次执行清洗过滤）"""
+
+
 class MemoryConfig(BaseModel):
     """统一的记忆配置项声明 (Declarative Memory Config)"""
 
@@ -132,10 +142,14 @@ class MemoryConfig(BaseModel):
         default_factory=ContextCompressionConfig
     )
     """上下文压缩与管理配置"""
+    ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
+    """记忆入库前的清洗与过滤管线配置"""
 
 
 __all__ = [
+    "BaseMemoryIngestionMiddleware",
     "ContextCompressionConfig",
+    "IngestionConfig",
     "LongTermConfig",
     "MemoryConfig",
     "MemoryIsolationLevel",

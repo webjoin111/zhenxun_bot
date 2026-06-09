@@ -31,8 +31,9 @@ class Embedder(Protocol):
 class DefaultEmbedder(Embedder):
     """系统默认的向量化引擎，调用大模型底座 API"""
 
-    def __init__(self, model_name: str | None = None):
+    def __init__(self, model_name: str | None = None, config: Any = None):
         self.model_name = model_name
+        self.config = config
 
     async def __call__(
         self, input_batch: Any, task: EmbedTaskType = "general", **kwargs
@@ -40,7 +41,7 @@ class DefaultEmbedder(Embedder):
         if not input_batch:
             return []
         try:
-            res = await api_embed(input_batch, model=self.model_name, task=task)
+            res = await api_embed(input_batch, model=self.model_name, task=task, config=self.config)
             return res.embeddings
         except Exception as e:
             logger.error(f"DefaultEmbedder 向量化失败: {e}", e=e)
