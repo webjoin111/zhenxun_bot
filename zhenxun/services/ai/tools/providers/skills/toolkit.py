@@ -1,4 +1,3 @@
-import ast
 from typing import Any, cast
 
 from pydantic import BaseModel, Field
@@ -11,7 +10,6 @@ from zhenxun.services.ai.sandbox.protocols import (
 )
 from zhenxun.services.ai.sandbox.runtimes import get_execution_command
 from zhenxun.services.ai.tools.core.decorators import silent, tool
-from zhenxun.services.ai.tools.core.tool import FunctionTool
 from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
 from zhenxun.services.ai.tools.models import ToolResult
 from zhenxun.services.ai.tools.providers.skills.manager import (
@@ -58,14 +56,12 @@ class SkillSandboxExecutionMixin:
         fs_executor = cast(SupportsFileSystem, executor)
         cmd_executor = cast(SupportsCommandExecution, executor)
 
-        target_workspace = f"/workspace/{skill.id}"
+        target_workspace = f"{executor.workspace_path}/{skill.id}"
 
         if skill.id not in executor.loaded_skills:
             await fs_executor.upload_raw_dir(str(skill.path), target_workspace)
             try:
-                await sandbox.setup_workspace_environment(
-                    session_id, target_workspace
-                )
+                await sandbox.setup_workspace_environment(session_id, target_workspace)
             except Exception as e:
                 logger.warning(f"设置沙箱工作区环境失败: {e}")
             executor.loaded_skills.add(skill.id)
@@ -156,14 +152,12 @@ class SkillSandboxExecutionMixin:
         fs_executor = cast(SupportsFileSystem, executor)
         cmd_executor = cast(SupportsCommandExecution, executor)
 
-        target_workspace = f"/workspace/{skill.id}"
+        target_workspace = f"{executor.workspace_path}/{skill.id}"
 
         if skill.id not in executor.loaded_skills:
             await fs_executor.upload_raw_dir(str(skill.path), target_workspace)
             try:
-                await sandbox.setup_workspace_environment(
-                    session_id, target_workspace
-                )
+                await sandbox.setup_workspace_environment(session_id, target_workspace)
             except Exception as e:
                 logger.warning(f"设置沙箱工作区环境失败: {e}")
             executor.loaded_skills.add(skill.id)
@@ -227,93 +221,8 @@ class SkillSandboxExecutionMixin:
         return tool_result
 
 
-class SkillStaticToolkit(BaseToolkit, SkillSandboxExecutionMixin):
-    """轨道A：静态预装模式。将单个 Skill 的 scripts/ 目录直接映射为独立工具。"""
-
-    def __init__(self, skill: Skill):
-        self.skill = skill
-        super().__init__()
-
-    async def get_tools(self, context: RunContext | None = None) -> dict[str, Any]:
-        tools = []
-        scripts_dir = self.skill.path / "scripts"
-        if not scripts_dir.is_dir():
-            return {}
-
-        for script_file in scripts_dir.iterdir():
-            if script_file.is_file() and script_file.suffix == ".py":
-                tool_name = f"run_{self.skill.id.replace('-', '_')}_{script_file.stem}"
-                desc = f"执行技能 {self.skill.name} 的脚本 {script_file.name}。"
-                code_content = script_file.read_text(encoding="utf-8")
-                try:
-                    if doc := ast.get_docstring(ast.parse(code_content)):
-                        desc += f"\n说明: {doc}"
-                except Exception:
-                    pass
-
-                def make_func(filepath=script_file, code=code_content):
-                    async def run_script(
-                        args: str = "",
-                        context: RunContext | None = None,
-                        sandbox: Inject.Sandbox = None,
-                        **kwargs,
-                    ) -> ToolResult:
-                        if sandbox is None and context is not None:
-                            sandbox = Inject._providers["sandbox"]["global"](context)
-                        return await self._execute_skill_script_in_sandbox(
-                            self.skill, filepath.name, args, context, sandbox, **kwargs
-                        )
-
-                    return run_script
-
-                tools.append(
-                    FunctionTool(
-                        func=make_func(),
-                        name=tool_name,
-                        description=desc[:1024],
-                    )
-                )
-
-        read_tool_name = f"read_{self.skill.id.replace('-', '_')}_file"
-
-        def make_read_func():
-            async def read_file(
-                file_path: str, context: RunContext | None = None
-            ) -> ToolResult:
-                target_file = (self.skill.path / file_path).resolve()
-                if not target_file.is_relative_to(self.skill.path.resolve()):
-                    return ToolResult(
-                        output="❌ 安全拦截：禁止读取技能目录之外的文件！"
-                    ).as_error()
-                if not target_file.is_file():
-                    return ToolResult(output=f"❌ 文件不存在: {file_path}").as_error()
-                content = target_file.read_text(encoding="utf-8")
-                return ToolResult(output=content).with_log(
-                    f"已读取文件 {file_path} (共 {len(content)} 字符)"
-                )
-
-            return read_file
-
-        tools.append(
-            FunctionTool(
-                func=make_read_func(),
-                name=read_tool_name,
-                description=(
-                    f"读取技能 {self.skill.name} 的附加文件"
-                    "（如 references 或 templates 目录下的文件）。"
-                ),
-            )
-        )
-
-        tools_dict = {}
-        for t in tools:
-            t.parent_toolkit = self
-            tools_dict[t.name] = t
-        return tools_dict
-
-
 class SkillMetaToolkit(BaseToolkit, SkillSandboxExecutionMixin):
-    """轨道B：动态发现模式。提供通用的元工具，供大模型按需加载和执行任意可用技能。"""
+    """动态发现模式。提供通用的元工具，供大模型按需加载和执行任意可用技能。"""
 
     def __init__(self, allowed_skills: list[Skill] | None = None, **kwargs):
         super().__init__(**kwargs)
@@ -511,13 +420,13 @@ class SkillMetaToolkit(BaseToolkit, SkillSandboxExecutionMixin):
             if sandbox is None and context is not None:
                 sandbox = Inject._providers["sandbox"]["global"](context)
 
-            executor = await sandbox.get_or_create_session(
-                session_id, blueprint=bp
-            )
+            executor = await sandbox.get_or_create_session(session_id, blueprint=bp)
             fs_executor = cast(SupportsFileSystem, executor)
 
             clean_file_path = file_path.lstrip("/")
-            sandbox_target_path = f"/workspace/{skill.id}/{clean_file_path}"
+            sandbox_target_path = (
+                f"{executor.workspace_path}/{skill.id}/{clean_file_path}"
+            )
 
             content = await fs_executor.read_raw_file(sandbox_target_path)
 

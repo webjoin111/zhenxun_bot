@@ -23,6 +23,7 @@ class BaseSandboxSession(SandboxChannel):
         self.installed_packages: set[str] = set()
         self._extensions: dict[str, BaseSandboxExtension] = {}
         self._meta: dict[str, Any] = {}
+        self.workspace_path: str = f"/workspace/{state.session_id}"
 
     @property
     def session_id(self) -> str:
@@ -128,8 +129,6 @@ class BaseSandboxSession(SandboxChannel):
     @abstractmethod
     async def mkdir(self, path: str, parents: bool = False) -> bool:
         pass
-
-
 
     async def write_raw_file(self, path: str, content: str) -> bool:
         return await self.write(path, content.encode("utf-8"))

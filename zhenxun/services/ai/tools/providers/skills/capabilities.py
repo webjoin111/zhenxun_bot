@@ -3,10 +3,7 @@ from typing import Any
 from zhenxun.services.ai.protocols.capabilities import AbstractCapability
 from zhenxun.services.ai.run import RunContext
 from zhenxun.services.ai.tools.providers.skills.manager import skill_manager
-from zhenxun.services.ai.tools.providers.skills.toolkit import (
-    SkillMetaToolkit,
-    SkillStaticToolkit,
-)
+from zhenxun.services.ai.tools.providers.skills.toolkit import SkillMetaToolkit
 from zhenxun.services.log import logger
 
 
@@ -76,13 +73,7 @@ class SkillCapability(AbstractCapability):
     async def get_tools(self, context: RunContext) -> list[Any]:
         tools = []
 
-        if self.skills:
-            for skill_name in self.skills:
-                skill = await skill_manager.get_skill_details(skill_name)
-                if skill and skill.scripts:
-                    tools.append(SkillStaticToolkit(skill))
-
-        if self.available_skills:
+        if self.skills or self.available_skills:
             tools.append(SkillMetaToolkit())
 
         return tools

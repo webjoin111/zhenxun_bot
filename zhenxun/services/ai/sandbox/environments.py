@@ -68,18 +68,28 @@ class UnifiedManifestProvisioner(BaseProvisioner):
     ) -> bool:
 
         target_hash = blueprint.calculate_hash()
-        hash_check = await session.run_process("cat /workspace/.zx_env_hash")
+
+        if session.get_meta("env_hash") == target_hash:
+            return True
+
+        hash_check = await session.run_process(
+            f"cat {session.workspace_path}/.zx_env_hash"
+        )
         if hash_check.exit_code == 0 and hash_check.stdout.strip() == target_hash:
-            logger.info(
+            logger.debug(
                 f"[Sandbox] ⚡ 环境指纹 ({target_hash[:8]}) "
                 "匹配成功，跳过所有依赖安装环节！"
             )
+            session._meta["env_hash"] = target_hash
             return True
 
         for step in blueprint.setup_steps:
             await step.apply(session)
 
-        await session.run_process(f"echo '{target_hash}' > /workspace/.zx_env_hash")
+        await session.run_process(
+            f"echo '{target_hash}' > {session.workspace_path}/.zx_env_hash"
+        )
+        session._meta["env_hash"] = target_hash
         logger.debug(f"[Sandbox] 环境装配完毕，已写入指纹快照: {target_hash[:8]}")
 
         return True

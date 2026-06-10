@@ -37,7 +37,7 @@ class UniversalMcpExtension(BaseMcpProxyExtension):
         cmd_list = [command, *args]
 
         async with self.session.create_stream_process(
-            command=cmd_list, cwd="/workspace", env=env
+            command=cmd_list, cwd=self.session.workspace_path, env=env
         ) as process_stream:
             read_prod, read_cons = create_memory_object_stream(10)
             write_prod, write_cons = create_memory_object_stream(10)

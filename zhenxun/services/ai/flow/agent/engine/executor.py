@@ -468,7 +468,7 @@ class AgentExecutor:
                     )
                 )
 
-            fallback_msg = LLMMessage.system(
+            fallback_msg = LLMMessage.user(
                 "### 🚨 [系统强制指令]\n"
                 "你的任务执行已达到最大循环次数上限。请根据以上所有收集到的信息，直接给出一个最终的总结性回复。\n"
                 "严禁再次尝试调用任何工具！请直接输出纯文本结果。"

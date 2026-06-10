@@ -38,6 +38,13 @@ def register_sandbox_configs():
         help="沙箱自动清理的闲置超时时间(秒)。0表示关闭，不自动清理",
         type=int,
     )
+    Config.add_plugin_config(
+        "sandbox",
+        "ENABLE_VFS_HELPER",
+        True,
+        help="是否开启 VFS 路径逃逸防范探针，默认开启。遇到兼容性问题时可关闭",
+        type=bool,
+    )
     logger.info("沙箱(Sandbox) 基础设施配置项注册完成")
 
 

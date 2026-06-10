@@ -288,7 +288,7 @@ class HealthManager:
         self.state = GlobalHealthState()
         self._provider_key_index: dict[str, int] = {}
         self._lock = asyncio.Lock()
-        self._file_path = DATA_PATH / "ai" / "ai_health.json"
+        self._file_path = DATA_PATH / "ai" / "api_key.json"
 
     async def initialize(self):
         """从文件异步加载遥测状态"""

@@ -5,7 +5,7 @@ import io
 from pathlib import Path
 import re
 import tarfile
-from typing import Any
+from typing import Any, ClassVar
 
 import aiodocker
 import anyio
@@ -45,13 +45,14 @@ class DockerInteractiveTerminalSession(InteractiveTerminalSession):
         cmd_list = ["/bin/sh", "-c", cmd] if isinstance(cmd, str) else cmd
         env_list = [f"{k}={v}" for k, v in env.items()] if env else None
 
+        await self.session._ensure_workspace()
         exec_inst = await self.session.container.exec(
             cmd=cmd_list,
             tty=True,
             stdin=True,
             stdout=True,
             stderr=True,
-            workdir="/workspace",
+            workdir=self.session.workspace_path,
             environment=env_list,
         )
 
@@ -128,6 +129,7 @@ class DockerSandboxSession(BaseSandboxSession):
         super().__init__(state)
         self.container = container
         self._vfs_helper_installed = False
+        self._workspace_created = False
 
     async def is_alive(self) -> bool:
         if not self.container:
@@ -141,6 +143,18 @@ class DockerSandboxSession(BaseSandboxSession):
     async def create_pty_session(self) -> InteractiveTerminalSession:
         return DockerInteractiveTerminalSession(self)
 
+    async def _ensure_workspace(self):
+        if not self._workspace_created and self.container:
+            exec_inst = await self.container.exec(
+                cmd=["/bin/sh", "-c", f"mkdir -p '{self.workspace_path}'"]
+            )
+            async with exec_inst.start(detach=False) as stream:
+                while True:
+                    msg = await stream.read_out()
+                    if msg is None:
+                        break
+            self._workspace_created = True
+
     @asynccontextmanager
     async def create_stream_process(
         self,
@@ -151,13 +165,14 @@ class DockerSandboxSession(BaseSandboxSession):
         cmd_list = ["/bin/sh", "-c", command] if isinstance(command, str) else command
         env_list = [f"{k}={v}" for k, v in env.items()] if env else None
 
+        await self._ensure_workspace()
         exec_inst = await self.container.exec(
             cmd=cmd_list,
             stdin=True,
             stdout=True,
             stderr=True,
             environment=env_list,
-            workdir=cwd or "/workspace",
+            workdir=cwd or self.workspace_path,
         )
         async with exec_inst.start(detach=False) as raw_stream:
             yield DockerSandboxProcessStream(raw_stream)
@@ -169,17 +184,27 @@ class DockerSandboxSession(BaseSandboxSession):
         check = await self.run_process(f"test -x {RESOLVE_PATH_HELPER.install_path}")
         if check.exit_code != 0:
             res = await self.run_process(RESOLVE_PATH_HELPER.install_command())
-            if res.exit_code != 0:
-                raise RuntimeError(f"安装沙箱 VFS 探针失败: {res.stderr}")
+            if res.exit_code != 0 or res.error:
+                raise RuntimeError(f"安装沙箱 VFS 探针失败: {res.stderr or res.error}")
         self._vfs_helper_installed = True
 
     async def _validate_remote_path(
-        self, path: str | Path, for_write: bool = False, base_dir: str = "/workspace"
+        self, path: str | Path, for_write: bool = False, base_dir: str | None = None
     ) -> Path:
         """基于沙箱内真实环境的防软链接逃逸解析"""
-        await self._ensure_vfs_helper()
+        base_dir = base_dir or self.workspace_path
         target_posix = coerce_posix_path(path).as_posix()
         is_write = "1" if for_write else "0"
+
+        if not target_posix.startswith("/"):
+            import posixpath
+
+            target_posix = posixpath.normpath(f"{base_dir}/{target_posix}")
+
+        if not Config.get_config("sandbox", "ENABLE_VFS_HELPER", True):
+            return Path(target_posix)
+
+        await self._ensure_vfs_helper()
 
         cmd = [str(RESOLVE_PATH_HELPER.install_path), base_dir, target_posix, is_write]
         res = await self.run_process(cmd)
@@ -210,11 +235,12 @@ class DockerSandboxSession(BaseSandboxSession):
         env_list = [f"{k}={v}" for k, v in env.items()] if env else None
 
         try:
+            await self._ensure_workspace()
             exec_inst = await self.container.exec(
                 cmd=cmd_list,
                 stdout=True,
                 stderr=True,
-                workdir=cwd or "/workspace",
+                workdir=cwd or self.workspace_path,
                 environment=env_list,
             )
             stdout_buf = bytearray()
@@ -336,16 +362,21 @@ class DockerSandboxSession(BaseSandboxSession):
             return False
 
     async def close(self) -> None:
+        """销毁沙箱容器"""
         if self.container:
             try:
                 await self.container.delete(force=True)
-            except Exception:
-                pass
+                if DockerSandboxClient._global_container:
+                    DockerSandboxClient._global_container = None
+            except Exception as e:
+                logger.error(f"销毁沙箱容器 {self.session_id} 发生异常: {e}")
 
 
 class DockerSandboxClient(BaseSandboxClient):
     backend_id = "docker"
-    _global_docker_client = None
+    _global_docker_client: ClassVar[Any] = None
+    _global_container: ClassVar[Any] = None
+    _shared_jupyter_port: ClassVar[int | None] = None
     _init_lock = asyncio.Lock()
     _engine_available = False
 
@@ -354,62 +385,91 @@ class DockerSandboxClient(BaseSandboxClient):
         session_id: str,
         blueprint: SandboxBlueprint | None = None,
     ) -> BaseSandboxSession:
-        if self._global_docker_client is None:
-            async with self._init_lock:
-                if self._global_docker_client is None:
-                    self._global_docker_client = aiodocker.Docker()
+        async with self._init_lock:
+            if DockerSandboxClient._global_docker_client is None:
+                DockerSandboxClient._global_docker_client = aiodocker.Docker()
 
-        port_bindings = {}
-        jupyter_port = None
-        if blueprint and blueprint.needs_state:
-            import socket
+            if DockerSandboxClient._global_container is None:
+                port_bindings = {}
+                import socket
 
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(("", 0))
-                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                jupyter_port = s.getsockname()[1]
-            port_bindings = {"8888/tcp": [{"HostPort": str(jupyter_port)}]}
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(("", 0))
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    jupyter_port = s.getsockname()[1]
+                port_bindings = {"8888/tcp": [{"HostPort": str(jupyter_port)}]}
 
-        image = Config.get_config("sandbox", "DOCKER_IMAGE", "zhenxun-sandbox:latest")
+                image = Config.get_config(
+                    "sandbox", "DOCKER_IMAGE", "zhenxun-sandbox:latest"
+                )
 
-        binds = []
-        if blueprint and blueprint.bind_mounts:
-            for mount in blueprint.bind_mounts:
-                mode = "ro" if mount.read_only else "rw"
-                # aiodocker 的 Bind 格式为 "host_path:container_path:mode"
-                binds.append(f"{mount.host_path}:{mount.sandbox_path}:{mode}")
+                from zhenxun.configs.path_config import DATA_PATH
 
-        container_config = {
-            "Image": image,
-            "Env": ["NODE_PATH=/usr/local/lib/node_modules"],
-            "Cmd": ["/bin/sh", "-c", "mkdir -p /workspace && tail -f /dev/null"],
-            "HostConfig": {
-                "PortBindings": port_bindings,
-                "Memory": 512 * 1024 * 1024,
-                "MemorySwap": 512 * 1024 * 1024,
-                "Binds": binds,
-            },
-            "Labels": {"zhenxun_component": "sandbox"},
-        }
+                global_env_dir = DATA_PATH / "ai" / "sandbox_global_env"
+                global_env_dir.mkdir(parents=True, exist_ok=True)
 
-        import re
-        import uuid
+                binds = [f"{global_env_dir.resolve().as_posix()}:/global_env:rw"]
+                if blueprint and blueprint.bind_mounts:
+                    for mount in blueprint.bind_mounts:
+                        mode = "ro" if mount.read_only else "rw"
+                        binds.append(f"{mount.host_path}:{mount.sandbox_path}:{mode}")
 
-        safe_session_id = re.sub(r"[^a-zA-Z0-9_.-]", "_", session_id)
-        name = f"zx_sandbox_{safe_session_id}_{uuid.uuid4().hex[:8]}"
+                container_config = {
+                    "Image": image,
+                    "Env": [
+                        "npm_config_prefix=/global_env/npm",
+                        "VIRTUAL_ENV=/global_env/python_venv",
+                        "PATH=/global_env/python_venv/bin:/global_env/npm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                        "NODE_PATH=/global_env/npm/lib/node_modules",
+                    ],
+                    "Cmd": [
+                        "/bin/sh",
+                        "-c",
+                        "mkdir -p /workspace && tail -f /dev/null",
+                    ],
+                    "HostConfig": {
+                        "PortBindings": port_bindings,
+                        "Memory": 1024 * 1024 * 1024,
+                        "MemorySwap": 1024 * 1024 * 1024,
+                        "Binds": binds,
+                    },
+                    "Labels": {"zhenxun_component": "sandbox"},
+                }
 
-        container = await self._global_docker_client.containers.run(
-            config=container_config, name=name
-        )
+                import uuid
+
+                name = f"zx_sandbox_shared_{uuid.uuid4().hex[:8]}"
+                DockerSandboxClient._global_container = (
+                    await DockerSandboxClient._global_docker_client.containers.run(
+                        config=container_config, name=name
+                    )
+                )
+                DockerSandboxClient._shared_jupyter_port = jupyter_port
 
         state = SandboxSessionState(
             session_id=session_id,
             backend_id=self.backend_id,
             sandbox_type=self.backend_id,
         )
-        session = DockerSandboxSession(state, container)
-        if jupyter_port:
-            session._meta["jupyter_port"] = jupyter_port
+        session = DockerSandboxSession(state, DockerSandboxClient._global_container)
+        if DockerSandboxClient._shared_jupyter_port:
+            session._meta["jupyter_port"] = DockerSandboxClient._shared_jupyter_port
+
+        check_venv = await session.run_process("test -d /global_env/python_venv")
+        if check_venv.exit_code != 0:
+            logger.info(
+                "正在初始化全局共享 Python 虚拟环境 (python_venv)...",
+                command="SandboxManager",
+            )
+            init_res = await session.run_process(
+                "uv venv /global_env/python_venv || python3 -m venv /global_env/python_venv"
+            )
+            if init_res.exit_code != 0:
+                logger.error(
+                    f"初始化虚拟环境失败: {init_res.stderr or init_res.stdout}",
+                    command="SandboxManager",
+                )
+
         return session
 
     async def resume(self, state: SandboxSessionState) -> BaseSandboxSession:
@@ -420,6 +480,12 @@ class DockerSandboxClient(BaseSandboxClient):
 
     @classmethod
     async def close_env(cls):
+        if cls._global_container:
+            try:
+                await cls._global_container.delete(force=True)
+            except Exception:
+                pass
+            cls._global_container = None
         if cls._global_docker_client:
             await cls._global_docker_client.close()
             cls._global_docker_client = None

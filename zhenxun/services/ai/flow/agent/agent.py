@@ -253,16 +253,14 @@ class Agent(
 
         return decorator if func is None else decorator(func)
 
-    def mount_private_skill(self, path: str | Path, as_catalog: bool = True) -> Self:
+    def mount_private_skill(self, path: str | Path) -> Self:
         """
         局部挂载私有技能。
-        as_catalog=True: 作为元工具动态发现 (Meta 模式，大模型自主调用指令和脚本)
-        as_catalog=False: 作为静态工具直接展开 (Static 模式，直接把脚本变成独立的工具)
+        统一使用 Meta 模式动态发现。
         """
         from zhenxun.services.ai.tools.providers.skills.models import SkillMount
 
-        mode = "meta" if as_catalog else "static"
-        mount = SkillMount(path=Path(path), mode=mode)
+        mount = SkillMount(path=Path(path))
         if self.tool_definitions is None:
             self.tool_definitions = []
         self.tool_definitions.append(mount)

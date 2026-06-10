@@ -220,24 +220,16 @@ class Skill(BaseModel):
 class SkillMount(BaseModel):
     """
     局部私有技能挂载器。
-    允许将本地特定目录作为私有技能注入，避免污染全局。实现了 ToolResolvable 协议。
+    允许将本地特定目录作为私有技能注入，避免污染全局
     """
 
     path: Path = Field(description="技能所在目录的物理路径")
-    mode: Literal["static", "meta"] = Field(default="meta", description="挂载模式")
 
     async def resolve(self, context: Any | None = None) -> Any:
         from zhenxun.services.ai.tools.providers.skills.manager import skill_manager
-        from zhenxun.services.ai.tools.providers.skills.toolkit import (
-            SkillMetaToolkit,
-            SkillStaticToolkit,
-        )
+        from zhenxun.services.ai.tools.providers.skills.toolkit import SkillMetaToolkit
 
         skill = skill_manager.load_local_skill(self.path)
-
-        if self.mode == "static":
-            toolkit = SkillStaticToolkit(skill)
-        else:
-            toolkit = SkillMetaToolkit(allowed_skills=[skill])
+        toolkit = SkillMetaToolkit(allowed_skills=[skill])
 
         return await toolkit.resolve(context)

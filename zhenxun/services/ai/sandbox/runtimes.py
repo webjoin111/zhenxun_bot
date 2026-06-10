@@ -251,6 +251,10 @@ class JupyterServerManager:
             raise RuntimeError("沙箱未分配或映射 Jupyter 端口，无法建立服务")
 
         check_jupyter = await self.session.run_process("command -v jupyter-server")
+        if check_jupyter.error:
+            raise RuntimeError(
+                f"检查 jupyter-server 失败 (系统错误): {check_jupyter.error}"
+            )
         if check_jupyter.exit_code != 0:
             raise RuntimeError("沙箱内未安装 jupyter-server，请检查 Blueprint")
 
@@ -261,9 +265,11 @@ class JupyterServerManager:
             "--ServerApp.token='' --ServerApp.password='' "
             "--ServerApp.disable_check_xsrf=True "
             "--ServerApp.allow_origin='*' --ServerApp.allow_root=True "
-            "> /workspace/jupyter.log 2>&1 &"
+            f"> {self.session.workspace_path}/jupyter.log 2>&1 &"
         )
-        await self.session.run_process(start_cmd)
+        start_res = await self.session.run_process(start_cmd)
+        if start_res.error:
+            raise RuntimeError(f"执行启动命令失败 (系统错误): {start_res.error}")
 
         self.base_url = f"http://127.0.0.1:{jupyter_port}"
         self.ws_url = f"ws://127.0.0.1:{jupyter_port}"
@@ -284,7 +290,14 @@ class JupyterServerManager:
             except Exception:
                 pass
             await asyncio.sleep(1)
-        raise RuntimeError("Jupyter 服务动态拉起并等待 API 响应超时")
+
+        log_res = await self.session.run_process(
+            f"cat {self.session.workspace_path}/jupyter.log"
+        )
+        error_details = log_res.stdout if log_res.exit_code == 0 else "无法读取日志"
+        raise RuntimeError(
+            f"Jupyter 服务动态拉起并等待 API 响应超时。日志内容: {error_details}"
+        )
 
     async def get_client(self, kernel_name: str) -> JupyterWSClient:
         await self.ensure_started()
@@ -351,10 +364,11 @@ class GenericCLIExecutor(BaseCodeExecutor):
         env = None
         if injected_code:
             await self.session.write(
-                "/workspace/zhenxun_host.py", injected_code.encode("utf-8")
+                f"{self.session.workspace_path}/zhenxun_host.py",
+                injected_code.encode("utf-8"),
             )
 
-        script_path = f"/workspace/main{self.profile.source_ext}"
+        script_path = f"{self.session.workspace_path}/main{self.profile.source_ext}"
         await self.session.write(script_path, code.encode("utf-8"))
 
         if self.profile.compile_cmd:
@@ -497,7 +511,8 @@ class GenericJupyterExecutor(BaseCodeExecutor):
 
         if injected_code:
             await self.session.write(
-                "/workspace/zhenxun_host.py", injected_code.encode("utf-8")
+                f"{self.session.workspace_path}/zhenxun_host.py",
+                injected_code.encode("utf-8"),
             )
 
         try:

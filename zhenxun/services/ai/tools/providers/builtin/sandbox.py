@@ -33,7 +33,7 @@ class SandboxToolkit(BaseToolkit):
         "⚠️ 该工具**严禁包含 `input()`** 等阻塞式交互。\n"
         "2. **长驻/交互式任务**：若需运行 Web Server 或含 `input()` 的交互程序，"
         "**必须**：\n"
-        "   - 先用 `write_sandbox_file` 将代码保存至沙箱（如 `/workspace/app.py`）。\n"
+        "   - 先用 `write_sandbox_file` 将代码保存至当前工作区。\n"
         "   - 再用 `execute_terminal_command(is_interactive=True)` 启动并挂起进程。\n"
         "   - 通过 `send_sandbox_input` / `read_sandbox_screen` 与屏幕画面交互。\n"
         "3. **终端互斥锁**：虚拟终端只能单线程运行前台程序。"

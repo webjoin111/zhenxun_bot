@@ -1,6 +1,6 @@
 from .manager import skill_manager
 from .models import INSTRUCTIONS, METADATA, RESOURCES, Skill, SkillFrontmatter
-from .toolkit import SkillMetaToolkit, SkillStaticToolkit
+from .toolkit import SkillMetaToolkit
 
 __all__ = [
     "INSTRUCTIONS",
@@ -9,6 +9,5 @@ __all__ = [
     "Skill",
     "SkillFrontmatter",
     "SkillMetaToolkit",
-    "SkillStaticToolkit",
     "skill_manager",
 ]
