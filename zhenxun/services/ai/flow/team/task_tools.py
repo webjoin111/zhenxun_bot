@@ -2,7 +2,6 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-
 from zhenxun.services.ai.flow.base import BaseRunnable
 from zhenxun.services.ai.run.context import RunContext
 from zhenxun.services.ai.tools.core.decorators import tool
@@ -18,6 +17,8 @@ class TaskPlanningToolkit(BaseToolkit):
     任务规划工具箱 (Planner Toolkit)。
     大模型专用的黑板操作工具。大模型被剥夺了执行权，仅能拆解、指派和总结任务。
     """
+
+    default_prefix = ""
 
     default_instructions = """<instructions>
 ## 🛠️ 任务规划工作流指南

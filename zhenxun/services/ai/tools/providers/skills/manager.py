@@ -1,8 +1,9 @@
 import asyncio
+from collections.abc import Sequence
 import json
 from pathlib import Path
 import re
-from typing import cast
+from typing import Any, cast
 from typing_extensions import Self
 
 import yaml
@@ -83,6 +84,10 @@ class SkillManager:
         self._initialized = True
         self._discovery_lock = asyncio.Lock()
 
+        default_skill_dir = DATA_PATH / "ai" / "skills"
+        default_skill_dir.mkdir(parents=True, exist_ok=True)
+        self._scan_dirs.append(default_skill_dir)
+
     def add_scan_dir(self, path: str | Path):
         p = Path(path).resolve()
         if p not in self._scan_dirs:
@@ -133,6 +138,43 @@ class SkillManager:
             async with self._discovery_lock:
                 self._skills[name] = skill
         return skill
+
+    async def resolve_mixed_skills(self, skills: Sequence[Any]) -> list[Skill]:
+        """统一解析混合类型的技能列表 (str ID, Path 路径, Skill 实例, SkillSource 描述符)"""
+        resolved = []
+        for s in skills:
+            if isinstance(s, Skill):
+                resolved.append(s)
+            elif isinstance(s, str):
+                skill = await self.get_skill_details(s)
+                if skill:
+                    resolved.append(skill)
+            elif isinstance(s, Path):
+                skill = self.load_local_skill(s)
+                if skill:
+                    resolved.append(skill)
+            elif type(s).__name__ == "SkillSource":
+                from zhenxun.services.ai.tools.providers.skills.models import (
+                    SkillSource,
+                )
+
+                s_obj = cast(SkillSource, s)
+                candidates = []
+                if s_obj.fetch_all:
+                    candidates = list((await self.discover_skills()).values())
+                elif s_obj.scan_dir:
+                    p = s_obj.scan_dir.resolve()
+                    if p.exists() and p.is_dir():
+                        for child in p.iterdir():
+                            if child.is_dir() and not child.name.startswith("."):
+                                sk = self._parse_skill_from_path(child)
+                                if sk:
+                                    candidates.append(sk)
+
+                for cand in candidates:
+                    if not s_obj.exclude_skills or cand.id not in s_obj.exclude_skills:
+                        resolved.append(cand)
+        return resolved
 
     async def read_skill_resource(self, skill: Skill, file_path: str) -> str | None:
         """提供统一的资源文件（如 markdown 参考、脚本等）物理读取接口"""

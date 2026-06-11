@@ -1,3 +1,5 @@
+from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from zhenxun.services.ai.core.messages import PromptInput
@@ -7,6 +9,7 @@ from zhenxun.services.ai.flow.team.strategy import (
     BaseTeamStrategy,
 )
 from zhenxun.services.ai.run import AgentRunResult, RunContext, Task
+from zhenxun.services.ai.tools.providers.skills.models import Skill, SkillSource
 
 if TYPE_CHECKING:
     from zhenxun.services.ai.flow.agent.agent import CapabilitySource
@@ -28,6 +31,7 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         persona: "Persona | dict | None" = None,
         runtime_config: TeamRuntimeConfig | dict | None = None,
         capabilities: list["CapabilitySource"] | None = None,
+        skills: Sequence[str | Path | Skill | SkillSource] | None = None,
     ):
         """
         多智能体协作团队初始化。
@@ -66,6 +70,12 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
             runtime_config = TeamRuntimeConfig(**runtime_config)
         self.runtime_config = runtime_config or TeamRuntimeConfig(stateless=True)
 
+        if skills:
+            from zhenxun.services.ai.tools.providers.skills.capabilities import (
+                SkillCapability,
+            )
+            self.capabilities.append(SkillCapability(skills=skills))
+
         self.selector_func = getattr(strategy, "selector_func", None)
 
     async def run(
@@ -74,6 +84,7 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         *,
         context: "RunContext | None" = None,
         capabilities: list["CapabilitySource"] | None = None,
+        skills: Sequence[str | Path | Skill | SkillSource] | None = None,
         **kwargs: Any,
     ) -> AgentRunResult[Any]:
         """
@@ -88,6 +99,13 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         返回:
             AgentRunResult[Any]: 包含最终融合输出、消息历史和用量统计的运行结果对象。
         """
+        if skills:
+            from zhenxun.services.ai.tools.providers.skills.capabilities import (
+                SkillCapability,
+            )
+            capabilities = list(capabilities) if capabilities else []
+            capabilities.append(SkillCapability(skills=skills))
+
         return await super().run(
             prompt=prompt, context=context, capabilities=capabilities, **kwargs
         )
@@ -101,6 +119,7 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         *,
         context: "RunContext | None" = None,
         capabilities: list["CapabilitySource"] | None = None,
+        skills: Sequence[str | Path | Skill | SkillSource] | None = None,
         **kwargs: Any,
     ):
         import asyncio
@@ -113,6 +132,13 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
 
         if hasattr(self, "capabilities") and self.capabilities:
             context.capabilities.extend(self.capabilities)
+
+        if skills:
+            from zhenxun.services.ai.tools.providers.skills.capabilities import (
+                SkillCapability,
+            )
+            capabilities = list(capabilities) if capabilities else []
+            capabilities.append(SkillCapability(skills=skills))
 
         if capabilities:
             from zhenxun.services.ai.protocols.capabilities import (

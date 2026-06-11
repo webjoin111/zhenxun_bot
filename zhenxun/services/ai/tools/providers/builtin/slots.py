@@ -17,6 +17,8 @@ class MemorySlotToolkit(BaseToolkit):
     向大模型开放直接编辑上下文 XML 节点的能力。
     """
 
+    default_prefix = ""
+
     default_instructions = (
         "## 记忆槽管理系统 (Memory Slots)\n"
         "系统已为你提供了类似记事本的记忆槽功能，用于保存关键偏好、人设或当前任务状态。\n"

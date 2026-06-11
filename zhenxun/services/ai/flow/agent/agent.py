@@ -1,9 +1,8 @@
 import asyncio
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 import contextlib
 from pathlib import Path
 from typing import Any, Generic, cast
-from typing_extensions import Self
 
 from nonebot.utils import is_coroutine_callable
 
@@ -52,7 +51,7 @@ from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
 from zhenxun.services.ai.tools.models import (
     GlobalToolFilter,
 )
-from zhenxun.services.ai.tools.providers.skills.capabilities import SkillCapability
+from zhenxun.services.ai.tools.providers.skills.models import Skill, SkillSource
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_copy
 from zhenxun.utils.utils import infer_plugin_namespace
@@ -80,6 +79,7 @@ class Agent(
         persona: Persona | dict | None = None,
         model: str | Callable[[], str] | None = None,
         tools: list[ToolSource] | None = None,
+        skills: Sequence[str | Path | Skill | SkillSource] | None = None,
         generation_config: GenerationConfig | IntentBuilder | dict | None = None,
         response_model: BaseOutputDefinition | type[OutputDataT] | None = None,
         dynamic_prompts: list[Callable] | None = None,
@@ -97,8 +97,9 @@ class Agent(
             name: Agent 名称，用于日志、事件和链路标识。
             instruction: 静态系统指令，可为普通字符串或模板字符串。
             persona: 可选人设配置；传入 dict 时会自动构造成 `Persona`。
-            model: 默认模型名（如 `Provider/Model`）或返回模型名的回调。
+            model: 默认模型名（如 `Provider/Model`）或返回模型名的回调.
             tools: 初始工具定义列表，可混用工具对象与字符串工具名。
+            skills: 注入的领域知识技能，支持 ID、目录 Path、Skill 对象或 SkillSource 动态源。
             generation_config: 默认生成配置，支持 `GenerationConfig`、`IntentBuilder` 或 dict。
             response_model: 结构化输出模型；为空时按纯文本输出。
             dynamic_prompts: 动态系统提示词函数列表，运行时追加到系统提示。
@@ -190,6 +191,13 @@ class Agent(
 
             self.tool_definitions.append(HITLToolkit())
 
+        if skills:
+            from zhenxun.services.ai.tools.providers.skills.capabilities import (
+                SkillCapability,
+            )
+
+            self.capabilities.append(SkillCapability(skills=skills))
+
     def tool(
         self,
         func: Callable | None = None,
@@ -253,34 +261,6 @@ class Agent(
 
         return decorator if func is None else decorator(func)
 
-    def mount_private_skill(self, path: str | Path) -> Self:
-        """
-        局部挂载私有技能。
-        统一使用 Meta 模式动态发现。
-        """
-        from zhenxun.services.ai.tools.providers.skills.models import SkillMount
-
-        mount = SkillMount(path=Path(path))
-        if self.tool_definitions is None:
-            self.tool_definitions = []
-        self.tool_definitions.append(mount)
-        return self
-
-    def load_skills(self, skills: list[str], as_catalog: bool = False) -> Self:
-        """挂载底层技能栈"""
-        cap = next(
-            (c for c in self.capabilities if isinstance(c, SkillCapability)), None
-        )
-        if not cap:
-            cap = SkillCapability()
-            self.capabilities.append(cap)
-
-        if as_catalog:
-            cap.available_skills.extend(skills)
-        else:
-            cap.skills.extend(skills)
-        return self
-
     def guardrail(self, func: Callable | str | Any | None = None):
         """护栏装饰器/注册器 (支持传入函数或自然语言风控规则字符串)"""
         if func is None:
@@ -316,6 +296,7 @@ class Agent(
         memory: bool | MemoryConfig | MemoryBuilder | None = None,
         generation_config: GenerationConfig | None = None,
         capabilities: list[CapabilitySource] | None = None,
+        skills: Sequence[str | Path | Skill | SkillSource] | None = None,
         **kwargs: Any,
     ) -> AgentRunResult[OutputDataT]:
         """
@@ -335,6 +316,14 @@ class Agent(
         返回:
             AgentRunResult[OutputDataT]: 包含最终输出数据、消息历史和用量统计的运行结果对象。
         """  # noqa: E501
+        if skills:
+            from zhenxun.services.ai.tools.providers.skills.capabilities import (
+                SkillCapability,
+            )
+
+            capabilities = list(capabilities) if capabilities else []
+            capabilities.append(SkillCapability(skills=skills))
+
         return await super().run(
             prompt=prompt,
             deps=deps,
@@ -362,12 +351,21 @@ class Agent(
         generation_config: GenerationConfig | None = None,
         event_streamer: EventStreamer | None = None,
         capabilities: list[CapabilitySource] | None = None,
+        skills: Sequence[str | Path | Skill | SkillSource] | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[StreamedRunResult[OutputDataT]]:
         """
         智能体流式运行入口。
         返回上下文管理器，可安全、解耦地获取底层事件或纯净文本结果。
         """
+
+        if skills:
+            from zhenxun.services.ai.tools.providers.skills.capabilities import (
+                SkillCapability,
+            )
+
+            capabilities = list(capabilities) if capabilities else []
+            capabilities.append(SkillCapability(skills=skills))
 
         streamer = event_streamer or EventStreamer()
         if context is None:

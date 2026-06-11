@@ -53,7 +53,7 @@ class BaseSandboxSession(SandboxChannel):
         return self._extensions[extension_name]
 
     async def apply_blueprint(
-        self, blueprint: SandboxBlueprint, base_path: str = "/workspace"
+        self, blueprint: SandboxBlueprint, base_path: str | None = None
     ) -> None:
         """声明式应用初始化清单"""
         if blueprint.env:
@@ -61,9 +61,11 @@ class BaseSandboxSession(SandboxChannel):
             current_env.update(blueprint.env)
             self._meta["env"] = current_env
 
+        actual_base_path = base_path or self.workspace_path
+
         if blueprint.entries:
             for rel_path, entry in blueprint.entries.items():
-                target_path = f"{base_path}/{rel_path}".replace("//", "/")
+                target_path = f"{actual_base_path}/{rel_path}".replace("//", "/")
                 await entry.apply(self, target_path)
 
     def touch(self) -> None:

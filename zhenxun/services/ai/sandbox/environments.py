@@ -103,7 +103,7 @@ class UnifiedManifestProvisioner(BaseProvisioner):
             check_uv = await session.run_process("command -v uv")
             if check_uv.exit_code == 0:
                 await session.run_process(
-                    "uv pip install --system -r requirements.txt",
+                    "uv pip install -r requirements.txt",
                     cwd=workspace_dir,
                     timeout=300,
                 )

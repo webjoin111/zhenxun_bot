@@ -137,7 +137,9 @@ class AgentHarness:
             session_meta=session_metadata, memory_config=effective_memory
         )
         writer = MemoryWriter(
-            session_meta=session_metadata, memory_config=effective_memory, context=context
+            session_meta=session_metadata,
+            memory_config=effective_memory,
+            context=context,
         )
 
         if task_obj:
@@ -267,15 +269,31 @@ class AgentHarness:
 
         if config is None:
             from zhenxun.services.ai.config import get_llm_config
+
             global_agent_settings = get_llm_config().agent_settings
             from zhenxun.utils.pydantic_compat import model_dump
+
             exec_config = AgentEngineConfig(**model_dump(global_agent_settings))
         else:
             exec_config = config
 
+        static_prompts_list = [static_prompt]
         if tool_payload.injected_prompts:
-            static_prompt += "\n\n--- 工具箱专属使用说明 ---\n\n"
-            static_prompt += "\n\n".join(tool_payload.injected_prompts)
+            toolkit_instructions = []
+            skill_catalog = None
+
+            for p in tool_payload.injected_prompts:
+                if p.startswith("--- 当前受限的可用技能库 ---"):
+                    skill_catalog = p
+                else:
+                    toolkit_instructions.append(p)
+
+            if toolkit_instructions:
+                static_prompts_list.append(
+                    "--- 工具箱专属使用说明 ---\n\n" + "\n\n".join(toolkit_instructions)
+                )
+            if skill_catalog:
+                static_prompts_list.append(skill_catalog)
 
         normalized_user_msg = None
         if final_prompt_payload is not None:
@@ -304,14 +322,14 @@ class AgentHarness:
             effective_tools, context, self.agent.prepare_tools, run_scoped_cap
         )
 
-        context.session.append_only_manager.build([static_prompt], final_tools)
+        context.session.append_only_manager.build(static_prompts_list, final_tools)
         context.session.append_only_manager.sync_messages(messages_for_run)
 
         loop_ctx = AgentLoopContext(
             messages=messages_for_run,
             tools=final_tools,
             run_context=context,
-            static_system_prompt=static_prompt,
+            static_system_prompt=static_prompts_list,
             dynamic_system_prompt=dynamic_prompt,
         )
 

@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import json
 from pathlib import Path
+import re
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -106,8 +107,26 @@ class AptSetup(BaseSetupStep):
     async def apply(self, session: Any) -> None:
         if not self.packages:
             return
-        pkg_str = " ".join(self.packages)
-        logger.info(f"[Sandbox] 正在安装系统级依赖 (Apt): {pkg_str}")
+
+        res = await session.run_process("dpkg -l", timeout=10)
+        installed_pkgs = set()
+        if res.exit_code == 0:
+            for line in res.stdout.splitlines():
+                if line.startswith("ii "):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        pkg_name = parts[1].split(":")[0].strip().lower()
+                        installed_pkgs.add(pkg_name)
+
+        missing_packages = [
+            pkg for pkg in self.packages if pkg.strip().lower() not in installed_pkgs
+        ]
+        if not missing_packages:
+            logger.debug(f"[Sandbox] Apt 依赖已全部满足，跳过安装: {self.packages}")
+            return
+
+        pkg_str = " ".join(missing_packages)
+        logger.info(f"[Sandbox] 正在安装缺失的系统级依赖 (Apt): {pkg_str}")
         await session.run_process(
             "sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && "
             f"sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq {pkg_str}",
@@ -122,17 +141,34 @@ class PythonSetup(BaseSetupStep):
     async def apply(self, session: Any) -> None:
         if not self.packages:
             return
-        pkg_str = " ".join(self.packages)
+
+        res = await session.run_process("python3 -m pip freeze", timeout=10)
+        installed_pkgs = set()
+        if res.exit_code == 0:
+            for line in res.stdout.splitlines():
+                if "==" not in line and "@" not in line:
+                    continue
+                base_name = re.split(r"[=><~!@\[]", line)[0].strip().lower()
+                installed_pkgs.add(base_name)
+
+        missing_packages = [
+            pkg
+            for pkg in self.packages
+            if re.split(r"[=><~!@\[]", pkg)[0].strip().lower() not in installed_pkgs
+        ]
+        if not missing_packages:
+            logger.debug(f"[Sandbox] Python 依赖已全部满足，跳过安装: {self.packages}")
+            return
+
+        pkg_str = " ".join(missing_packages)
         check_uv = await session.run_process("command -v uv")
         if check_uv.exit_code != 0:
             logger.info("[Sandbox] 未检测到 uv，正在极速下载 uv...")
             await session.run_process(
                 "pip install uv --disable-pip-version-check -q", timeout=60
             )
-        logger.info(f"[Sandbox] 正在安装 Python 依赖: {pkg_str}")
-        res = await session.run_process(
-            f"uv pip install --system {pkg_str}", timeout=120
-        )
+        logger.info(f"[Sandbox] 正在安装缺失的 Python 依赖: {pkg_str}")
+        res = await session.run_process(f"uv pip install {pkg_str}", timeout=120)
         if res.exit_code != 0:
             logger.warning(f"[Sandbox] uv 安装报错，尝试降级使用 pip: {res.stderr}")
             await session.run_process(f"pip install {pkg_str} -q", timeout=180)
@@ -145,8 +181,31 @@ class NodeSetup(BaseSetupStep):
     async def apply(self, session: Any) -> None:
         if not self.packages:
             return
-        pkg_str = " ".join(self.packages)
-        logger.info(f"[Sandbox] 正在安装 Node 依赖: {pkg_str}")
+
+        res = await session.run_process("npm list -g --depth=0", timeout=15)
+        installed_pkgs = set()
+        if res.exit_code == 0:
+            for line in res.stdout.splitlines():
+                match = re.search(r"[├└]──\s+((?:@[^/]+/)?[^@\s]+)", line)
+                if match:
+                    installed_pkgs.add(match.group(1).strip().lower())
+
+        missing_packages = []
+        for pkg in self.packages:
+            base_name = (
+                ("@" + pkg[1:].split("@")[0])
+                if pkg.startswith("@")
+                else pkg.split("@")[0]
+            )
+            if base_name.strip().lower() not in installed_pkgs:
+                missing_packages.append(pkg)
+
+        if not missing_packages:
+            logger.debug(f"[Sandbox] Node 依赖已全部满足，跳过安装: {self.packages}")
+            return
+
+        pkg_str = " ".join(missing_packages)
+        logger.info(f"[Sandbox] 正在安装缺失的 Node 依赖: {pkg_str}")
         await session.run_process(f"npm install -g {pkg_str}", timeout=180)
 
 

@@ -1,17 +1,14 @@
 from typing import Any, cast
 
-from pydantic import BaseModel, Field
-
 from zhenxun.services.ai.run import Inject, RunContext
 from zhenxun.services.ai.sandbox.models import SandboxBlueprint
 from zhenxun.services.ai.sandbox.protocols import (
     SupportsCommandExecution,
     SupportsFileSystem,
 )
-from zhenxun.services.ai.sandbox.runtimes import get_execution_command
 from zhenxun.services.ai.tools.core.decorators import silent, tool
 from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
-from zhenxun.services.ai.tools.models import ToolResult
+from zhenxun.services.ai.tools.models import ResolvedToolPayload, ToolResult
 from zhenxun.services.ai.tools.providers.skills.manager import (
     skill_env_manager,
     skill_manager,
@@ -21,116 +18,8 @@ from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_copy
 
 
-class ScriptArgs(BaseModel):
-    args: str = Field(default="")
-    """传递给脚本的命令行参数（字符串格式）"""
-
-
-class ReadFileArgs(BaseModel):
-    file_path: str = Field(...)
-    """要读取的文件相对路径（例如 'references/a-stock-features.md'）"""
-
-
 class SkillSandboxExecutionMixin:
     """技能沙箱执行与自愈逻辑混入类"""
-
-    async def _execute_skill_script_in_sandbox(
-        self,
-        skill: Skill,
-        script_name: str,
-        args: str,
-        context: RunContext | None,
-        sandbox: Any,
-        **kwargs,
-    ) -> ToolResult:
-
-        session_id = (
-            context.session_id
-            if context and context.session_id
-            else f"skill_{skill.id}_session"
-        )
-        bp = model_copy(skill.frontmatter.blueprint, deep=True)
-        bp.enable_network = skill.frontmatter.enable_network
-
-        executor = await sandbox.get_or_create_session(session_id, blueprint=bp)
-        fs_executor = cast(SupportsFileSystem, executor)
-        cmd_executor = cast(SupportsCommandExecution, executor)
-
-        target_workspace = f"{executor.workspace_path}/{skill.id}"
-
-        if skill.id not in executor.loaded_skills:
-            await fs_executor.upload_raw_dir(str(skill.path), target_workspace)
-            try:
-                await sandbox.setup_workspace_environment(session_id, target_workspace)
-            except Exception as e:
-                logger.warning(f"设置沙箱工作区环境失败: {e}")
-            executor.loaded_skills.add(skill.id)
-
-        configured_envs = skill_env_manager.get_envs_for_skill(skill.id)
-        missing_keys = [
-            k for k in skill.frontmatter.required_envs if not configured_envs.get(k)
-        ]
-        if missing_keys:
-            return (
-                ToolResult(
-                    output=(
-                        f"❌ 技能执行被系统拦截：缺少必需的全局环境变量 "
-                        f"{missing_keys}。\n"
-                        "💡 [智能体自愈引导]：当前技能的底层配置缺失，无法正常运行。"
-                        "请你立即停止尝试，并向用户抱歉，提示用户（或 Bot 管理员）"
-                        "在机器人后端的 `data/ai/skill_envs.json` 文件中为该技能配置"
-                        "相应的环境变量（API Key 等），配置完成后方可使用。"
-                    ),
-                )
-                .as_error()
-                .with_log(f"技能 {skill.id} 因缺少环境变量 {missing_keys} 被拦截。")
-            )
-
-        env_vars = {}
-        for k, v in configured_envs.items():
-            if v:
-                env_vars[k] = str(v)
-
-        for k, v in kwargs.items():
-            env_vars[k] = str(v)
-        if context:
-            for k, v in context.state.items():
-                if isinstance(v, str | int | float | bool):
-                    env_vars[k] = str(v)
-
-        import shlex
-
-        arg_list = shlex.split(args)
-        cmd = get_execution_command(f"scripts/{script_name}", arg_list)
-
-        result = await cmd_executor.run_process(
-            cmd, cwd=target_workspace, timeout=60, env=env_vars
-        )
-
-        output = (
-            result.stdout + ("\nSTDERR:\n" + result.stderr if result.stderr else "")
-        ).strip()
-
-        if output:
-            logger.debug(f"Console Output from {script_name}:\n{output}")
-
-        if getattr(result, "is_timeout", False) or result.exit_code == -1:
-            final_output = f"""🚨 脚本执行发生严重系统异常或超时被强杀
-(Exit Code: {result.exit_code})！
-这通常意味着网络不通、下载数据过大耗时太长，或沙箱环境崩溃。输出为空。"""
-        elif result.exit_code != 0:
-            final_output = f"""❌ 脚本执行失败 (Exit Code: {result.exit_code})。
-输出日志:
-{output or "无日志输出"}"""
-        else:
-            final_output = output or "✅ 执行成功 (无控制台输出)。"
-
-        tool_result = ToolResult(output=final_output).with_log(
-            f"脚本 {script_name} 执行完毕, Exit Code: {result.exit_code}"
-        )
-        if result.exit_code != 0:
-            tool_result = tool_result.as_error()
-        return tool_result
 
     async def _execute_skill_command_in_sandbox(
         self,
@@ -194,8 +83,18 @@ class SkillSandboxExecutionMixin:
                 if isinstance(v, str | int | float | bool):
                     env_vars[k] = str(v)
 
+        env_vars["SKILL_DIR"] = target_workspace
+
+        env_exports = "".join(
+            [
+                f"export {k}='{v}'; export {k.upper()}='{v}'; "
+                for k, v in env_vars.items()
+            ]
+        )
+        wrapped_command = f"{env_exports}{command}"
+
         result = await cmd_executor.run_process(
-            command, cwd=target_workspace, timeout=180, env=env_vars
+            wrapped_command, cwd=target_workspace, timeout=180, env=None
         )
 
         output = (
@@ -224,6 +123,8 @@ class SkillSandboxExecutionMixin:
 class SkillMetaToolkit(BaseToolkit, SkillSandboxExecutionMixin):
     """动态发现模式。提供通用的元工具，供大模型按需加载和执行任意可用技能。"""
 
+    default_prefix = ""
+
     def __init__(self, allowed_skills: list[Skill] | None = None, **kwargs):
         super().__init__(**kwargs)
         self._allowed_skills = allowed_skills
@@ -243,8 +144,8 @@ class SkillMetaToolkit(BaseToolkit, SkillSandboxExecutionMixin):
             return None
         return await skill_manager.get_skill_details(skill_name)
 
-    def get_instructions(self) -> str | None:
-        base_inst = super().get_instructions() or ""
+    async def resolve(self, context: RunContext | None = None) -> ResolvedToolPayload:
+        payload = await super().resolve(context)
         if self._allowed_skills is not None:
             catalog_parts = []
             for skill in self._allowed_skills:
@@ -258,50 +159,25 @@ class SkillMetaToolkit(BaseToolkit, SkillSandboxExecutionMixin):
                     + "\n".join(catalog_parts)
                     + "\n</available_skills>"
                 )
-                tag_name = (
-                    f"{self.config.prefix}{self.__class__.__name__}_Instructions"
-                    if self.config.prefix
-                    else f"{self.__class__.__name__}_Instructions"
+                payload.injected_prompts.append(
+                    f"--- 当前受限的可用技能库 ---\n\n{catalog_xml}"
                 )
-                closing_tag = f"</{tag_name}>"
-                if base_inst.endswith(closing_tag):
-                    base_inst = (
-                        base_inst[: -len(closing_tag)]
-                        + f"\n--- 当前受限的可用技能库 ---\n\n{catalog_xml}\n"
-                        + closing_tag
-                    )
-                else:
-                    base_inst += f"\n\n--- 当前受限的可用技能库 ---\n\n{catalog_xml}"
-        return base_inst
+        return payload
 
-    default_instructions = (
-        "## 技能元工具系统\n"
-        "你可以通过此工具箱动态加载和执行外部技能。工作流如下：\n"
-        "1. 使用 `read_skill_instructions` 传入技能名称，获取该技能的完整指南。\n"
-        "2. 系统将返回严谨的 `<skill>` XML 节点树，"
-        "请仔细阅读 `<instructions>` 了解业务规则。\n"
-        "3. **[重点] 环境装配与执行规范**：\n"
-        "   - **环境预检**：如果指南中明确要求安装全局依赖"
-        "（如 `npm install -g`, `npx ...`, `pip install`），"
-        "你必须**优先**调用 `execute_skill_command` 执行安装。\n"
-        "   - **脚本执行**：若指南中要求执行物理存在的脚本文件"
-        "（如 `<available_scripts>` 节点列出的文件），"
-        "请调用 `run_skill_script`。\n"
-        "   - **终端执行**：若指南中提供的是纯命令行终端指令"
-        "（例如 `curl`, `infsh`, `gh` 等），请调用 "
-        "`execute_skill_command` 在技能专属沙箱中直接执行该命令。\n"
-        "   - **智能自愈 (Agentic Healing)**："
-        "如果执行脚本或命令时失败（如 Exit Code 非 0），"
-        "你必须自主阅读输出日志 (Stderr/Stdout)，"
-        "分析报错原因（如缺少依赖、命令不存在、代码逻辑错误等）。\n"
-        "     - 如果是缺少依赖，请主动调用 `execute_skill_command` "
-        "使用相应的包管理器"
-        "（如 `uv pip install <pkg>` 或 `npm install <pkg>`）"
-        "安装缺失的依赖，安装成功后再次重试目标任务。\n"
-        "     - 如果是其他错误，请结合技能指南调整参数或操作流程后重试。\n"
-        "4. 如需阅读参考文档，请参考 `<available_references>` 节点并调用 "
-        "`read_skill_file`。"
-    )
+    default_instructions = """\
+## 技能元工具系统
+你可以通过此工具箱动态加载和执行外部技能。工作流如下：
+1. 使用 `read_skill_instructions` 传入技能名称，获取该技能的完整指南。
+2. 系统将返回严谨的 `<skill>` XML 节点树，请仔细阅读 `<instructions>` 了解业务规则。
+3. **[重点] 环境装配与执行规范**：
+   - **环境变量**：系统已自动将该技能的物理根目录注入为环境变量 `$SKILL_DIR`，在执行终端命令时可直接使用它来定位文件（例如 `cat $SKILL_DIR/package.json`）。
+   - **按需安装(懒加载)**：沙箱内通常已通过底层 Blueprint 预装了所需的依赖包。**即使技能指南(说明文档)中写了“安装依赖”的步骤，你也必须忽略它！** 严禁在没有任何报错的情况下主动去执行安装命令（如 `npm install`, `pip install`）。
+   - **脚本执行**：若指南中要求执行物理存在的脚本文件（如 `<available_scripts>` 节点列出的文件），请统一调用 `execute_skill_command` 并加上解释器和完整路径（如 `python3 $SKILL_DIR/scripts/xxx.py`）。
+   - **终端执行**：若指南中提供的是纯命令行终端指令（例如 `curl`, `infsh`, `gh` 等），请调用 `execute_skill_command` 在技能专属沙箱中直接执行该命令。
+   - **智能自愈 (Agentic Healing)**：如果执行脚本或命令时失败（如 Exit Code 非 0），你必须自主阅读输出日志 (Stderr/Stdout)，分析报错原因。
+     - **只有当运行报错且明确提示缺少依赖时**（如 `command not found`, `ModuleNotFoundError` 等），你才可以调用 `execute_skill_command` 安装缺失的依赖（Python 依赖强烈建议使用 `uv pip install <pkg>`，Node 使用 `npm install <pkg>`），安装成功后再次重试。
+     - 如果是其他错误，请结合技能指南调整参数或操作流程后重试。
+4. 如需阅读参考文档，请参考 `<available_references>` 节点并调用 `read_skill_file`。"""  # noqa: E501
 
     @tool(
         name="read_skill_instructions",
@@ -319,38 +195,6 @@ class SkillMetaToolkit(BaseToolkit, SkillSandboxExecutionMixin):
             "目录下的任何附加文件（如 references/ 或 templates/ 下的文档）。"
         )
         return ToolResult(output=res).with_log(f"已加载技能 {skill.name} 指南。")
-
-    @tool(
-        name="run_skill_script",
-        description="在安全沙箱中执行指定技能的内置 Python 脚本。",
-    )
-    async def run_skill_script(
-        self,
-        skill_name: str,
-        script_name: str,
-        args: str = "",
-        context: RunContext | None = None,
-        sandbox: Inject.Sandbox = None,
-        **kwargs,
-    ) -> ToolResult:
-        script_name = script_name.strip()
-        if " " in script_name:
-            parts = script_name.split(" ", 1)
-            script_name = parts[0]
-            args = f"{parts[1]} {args}".strip()
-
-        skill = await self._get_skill(skill_name)
-        if not skill or script_name not in skill.scripts:
-            return ToolResult(
-                output=f"越权操作/未找到技能 {skill_name} 或不包含脚本 {script_name}",
-            ).as_error()
-
-        if sandbox is None and context is not None:
-            sandbox = Inject._providers["sandbox"]["global"](context)
-
-        return await self._execute_skill_script_in_sandbox(
-            skill, script_name, args, context, sandbox, **kwargs
-        )
 
     @tool(
         name="execute_skill_command",

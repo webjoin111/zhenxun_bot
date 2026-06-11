@@ -26,6 +26,8 @@ class PythonPluginProtocol(Protocol):
 
 
 class SandboxToolkit(BaseToolkit):
+    default_prefix = ""
+
     default_instructions = (
         "## 🖥️ 沙箱工作区交互规范\n"
         "你拥有物理隔离的沙箱环境。请严格遵循以下调度规则：\n"

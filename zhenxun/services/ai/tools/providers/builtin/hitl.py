@@ -12,6 +12,8 @@ class HITLToolkit(BaseToolkit):
     提供大模型主动挂起执行流并向用户提问求助的能力。
     """
 
+    default_prefix = ""
+
     default_instructions = (
         "## 人机协同求助系统\n"
         "你拥有向用户发起提问的权限。当你遇到困难时（例如缺少关键信息、连续执行某个操作出错、找不到文件等），"

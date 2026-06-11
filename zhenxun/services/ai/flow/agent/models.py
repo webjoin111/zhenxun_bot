@@ -61,7 +61,7 @@ class AgentLoopContext(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    static_system_prompt: str = ""
+    static_system_prompt: str | list[str] = ""
     """绝对不变的系统提示词（用于前缀缓存）"""
     dynamic_system_prompt: str = ""
     """包含变量与实时状态的动态提示词（用于尾部注入）"""

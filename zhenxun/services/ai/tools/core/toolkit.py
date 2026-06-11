@@ -36,6 +36,8 @@ class BaseToolkit:
     """
 
     default_instructions: str = ""
+    default_prefix: str | None = None
+    """默认名称前缀。为空(None)时自动推导命名空间，空字符串("")表示关闭前缀机制。"""
     config: ToolkitConfig
     _class_tools_meta: ClassVar[dict[str, dict[str, Any]]] = {}
     _default_config: ClassVar[ToolkitConfig] = ToolkitConfig()
@@ -60,6 +62,10 @@ class BaseToolkit:
             for k in dir(config_cls):
                 if not k.startswith("_"):
                     config_dict[k] = getattr(config_cls, k)
+
+        if hasattr(cls, "default_prefix") and cls.default_prefix is not None:
+            config_dict["prefix"] = cls.default_prefix
+
         cls._default_config = ToolkitConfig(**config_dict)
 
     def __init__(

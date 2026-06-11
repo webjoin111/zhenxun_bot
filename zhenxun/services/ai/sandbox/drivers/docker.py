@@ -405,10 +405,14 @@ class DockerSandboxClient(BaseSandboxClient):
 
                 from zhenxun.configs.path_config import DATA_PATH
 
-                global_env_dir = DATA_PATH / "ai" / "sandbox_global_env"
+                global_env_dir = DATA_PATH / "ai" / "sandbox" / "global_env"
                 global_env_dir.mkdir(parents=True, exist_ok=True)
 
+                global_home_dir = DATA_PATH / "ai" / "sandbox" / "global_home"
+                global_home_dir.mkdir(parents=True, exist_ok=True)
+
                 binds = [f"{global_env_dir.resolve().as_posix()}:/global_env:rw"]
+                binds.append(f"{global_home_dir.resolve().as_posix()}:/root:rw")
                 if blueprint and blueprint.bind_mounts:
                     for mount in blueprint.bind_mounts:
                         mode = "ro" if mount.read_only else "rw"
@@ -421,6 +425,10 @@ class DockerSandboxClient(BaseSandboxClient):
                         "VIRTUAL_ENV=/global_env/python_venv",
                         "PATH=/global_env/python_venv/bin:/global_env/npm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
                         "NODE_PATH=/global_env/npm/lib/node_modules",
+                        "npm_config_cache=/tmp/npm_cache",
+                        "PIP_CACHE_DIR=/tmp/pip_cache",
+                        "YARN_CACHE_FOLDER=/tmp/yarn_cache",
+                        "HF_HOME=/tmp/hf_cache",
                     ],
                     "Cmd": [
                         "/bin/sh",
@@ -455,14 +463,16 @@ class DockerSandboxClient(BaseSandboxClient):
         if DockerSandboxClient._shared_jupyter_port:
             session._meta["jupyter_port"] = DockerSandboxClient._shared_jupyter_port
 
-        check_venv = await session.run_process("test -d /global_env/python_venv")
+        check_venv = await session.run_process(
+            "test -x /global_env/python_venv/bin/pip"
+        )
         if check_venv.exit_code != 0:
             logger.info(
-                "正在初始化全局共享 Python 虚拟环境 (python_venv)...",
+                "正在初始化/修复全局共享 Python 虚拟环境 (python_venv)...",
                 command="SandboxManager",
             )
             init_res = await session.run_process(
-                "uv venv /global_env/python_venv || python3 -m venv /global_env/python_venv"
+                "rm -rf /global_env/python_venv && uv venv --seed --system-site-packages /global_env/python_venv || python3 -m venv --system-site-packages /global_env/python_venv"
             )
             if init_res.exit_code != 0:
                 logger.error(

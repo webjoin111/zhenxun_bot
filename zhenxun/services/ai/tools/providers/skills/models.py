@@ -140,7 +140,8 @@ class SkillFrontmatter(BaseModel):
 
     @property
     def enable_network(self) -> bool:
-        """网络权限：默认开启（高信任静态资产），允许在 YAML 中通过 permissions.network 显式关闭"""  # noqa: E501
+        """网络权限：默认开启（高信任静态资产），
+        允许在 YAML 中通过 permissions.network 显式关闭"""
         if self.permissions and isinstance(self.permissions, dict):
             return self.permissions.get("network", True)
         return True
@@ -217,19 +218,26 @@ class Skill(BaseModel):
         return self.frontmatter.description
 
 
-class SkillMount(BaseModel):
-    """
-    局部私有技能挂载器。
-    允许将本地特定目录作为私有技能注入，避免污染全局
-    """
+class SkillSource(BaseModel):
+    """显式定义的技能源 (动态解析器)"""
 
-    path: Path = Field(description="技能所在目录的物理路径")
+    fetch_all: bool = Field(default=False)
+    """是否拉取全局所有已注册的技能"""
+    scan_dir: Path | None = Field(default=None)
+    """扫描特定物理目录下的所有技能"""
+    exclude_skills: list[str] | None = Field(default=None)
+    """需要排除的技能 ID 列表"""
 
-    async def resolve(self, context: Any | None = None) -> Any:
-        from zhenxun.services.ai.tools.providers.skills.manager import skill_manager
-        from zhenxun.services.ai.tools.providers.skills.toolkit import SkillMetaToolkit
+    @classmethod
+    def all(cls, exclude: list[str] | None = None) -> "SkillSource":
+        """声明式：获取系统全局挂载目录下的所有技能"""
+        return cls(fetch_all=True, exclude_skills=exclude)
 
-        skill = skill_manager.load_local_skill(self.path)
-        toolkit = SkillMetaToolkit(allowed_skills=[skill])
+    @classmethod
+    def from_dir(
+        cls, path: str | Path, exclude: list[str] | None = None
+    ) -> "SkillSource":
+        """声明式：获取指定物理目录下的所有技能（支持私有独立技能库）"""
+        from pathlib import Path
 
-        return await toolkit.resolve(context)
+        return cls(scan_dir=Path(path), exclude_skills=exclude)

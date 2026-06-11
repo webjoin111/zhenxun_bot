@@ -14,6 +14,8 @@ class MemoryManagementToolkit(BaseToolkit):
     赋予大模型自主存取、修改和删除用户长期设定的能力。
     """
 
+    default_prefix = ""
+
     default_instructions = (
         "## 长期记忆管理系统 (LTM)\n"
         "你拥有管理用户个人设定和长期记忆的权限。请遵循以下规则：\n"

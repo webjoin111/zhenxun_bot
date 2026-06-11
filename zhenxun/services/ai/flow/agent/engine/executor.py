@@ -215,9 +215,13 @@ class AgentExecutor:
 
                 messages_to_send = []
                 if loop_ctx.static_system_prompt:
-                    messages_to_send.append(
-                        LLMMessage.system(loop_ctx.static_system_prompt)
-                    )
+                    if isinstance(loop_ctx.static_system_prompt, list):
+                        for sp in loop_ctx.static_system_prompt:
+                            messages_to_send.append(LLMMessage.system(sp))
+                    else:
+                        messages_to_send.append(
+                            LLMMessage.system(loop_ctx.static_system_prompt)
+                        )
 
                 messages_to_send.extend(execution_history)
 
@@ -470,8 +474,9 @@ class AgentExecutor:
 
             fallback_msg = LLMMessage.user(
                 "### 🚨 [系统强制指令]\n"
-                "你的任务执行已达到最大循环次数上限。请根据以上所有收集到的信息，直接给出一个最终的总结性回复。\n"
-                "严禁再次尝试调用任何工具！请直接输出纯文本结果。"
+                "你的任务执行已达到最大工具调用循环次数上限，当前思考流已被框架强制中断。\n"
+                "请**诚实地**向用户总结：你目前进行到了哪一步？遇到了什么困难导致循环耗尽？还有哪些预期步骤未能完成？\n"
+                "**绝对禁止**对用户撒谎声称你已经完成了任务。严禁再次尝试调用任何工具！请直接输出纯文本结果。"
             )
             execution_history.append(fallback_msg)
 

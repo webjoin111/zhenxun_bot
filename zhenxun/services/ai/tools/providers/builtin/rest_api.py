@@ -16,6 +16,8 @@ class RestApiToolkit(BaseToolkit):
     让大模型无需编写任何代码即可调用外部 HTTP 接口获取或提交数据。
     """
 
+    default_prefix = ""
+
     default_instructions = (
         "你拥有调用外部 REST API 接口的能力。\n"
         "1. 使用 `make_request` 工具发起 HTTP 请求。\n"
