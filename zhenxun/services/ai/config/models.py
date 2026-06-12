@@ -128,6 +128,19 @@ class AgentEngineSettings(BaseModel):
     """MCP 服务自动清理的闲置超时时间(秒)。0表示关闭自动清理机制（永久驻留）"""
 
 
+class SandboxSettings(BaseModel):
+    """沙箱底层基础设施环境配置"""
+
+    sandbox_type: str = Field(default="docker")
+    """沙箱底层驱动类型: docker 等"""
+    docker_image: str = Field(default="zhenxun-sandbox:latest")
+    """Docker 沙箱使用的镜像名称 (自定义 Jupyter 增强版)"""
+    cleanup_timeout: int = Field(default=1800)
+    """沙箱自动清理的闲置超时时间(秒)。0表示关闭，不自动清理"""
+    enable_vfs_helper: bool = Field(default=True)
+    """是否开启 VFS 路径逃逸防范探针，默认开启。遇到兼容性问题时可关闭"""
+
+
 class LLMConfig(BaseModel):
     """AI 模块全局持久化配置总模型"""
 
@@ -154,6 +167,8 @@ class LLMConfig(BaseModel):
     """虚拟模型路由组配置 (Virtual Router Groups)"""
     agent_settings: AgentEngineSettings = Field(default_factory=AgentEngineSettings)
     """Agent 执行引擎层核心默认参数配置"""
+    sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
+    """沙箱基础设施环境相关配置"""
 
     def validate_model_name(self, provider_model_name: str) -> bool:
         """验证模型名称在当前配置中是否存在"""

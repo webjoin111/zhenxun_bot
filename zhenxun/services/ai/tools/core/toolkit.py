@@ -18,6 +18,7 @@ from zhenxun.services.ai.tools.models import (
 from zhenxun.services.log import logger
 from zhenxun.utils.lifespan import LifespanManager
 from zhenxun.utils.pydantic_compat import dump_json_safely, model_copy, parse_as
+from zhenxun.utils.utils import infer_plugin_namespace
 
 from .tool import BaseTool, FunctionTool
 
@@ -75,8 +76,6 @@ class BaseToolkit:
         instructions: str | None = None,
         **kwargs: Any,
     ):
-
-        from zhenxun.utils.utils import infer_plugin_namespace
 
         raw_namespace = infer_plugin_namespace()
 

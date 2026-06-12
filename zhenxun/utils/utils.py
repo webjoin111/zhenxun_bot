@@ -76,26 +76,55 @@ def is_binary_file(file_path: str) -> bool:
     返回:
         bool: 是否为二进制文件
     """
-    # fmt: off
-    # 精简但包含图片和字体的二进制文件扩展名集合
-    BINARY_EXTENSIONS = frozenset({
-        # 图片文件
-        "jpg", "jpeg", "png", "gif", "bmp", "ico", "webp", "tiff", "tif", "svg",
-        # 字体文件
-        "ttf", "otf", "woff", "woff2", "eot",
-        # 压缩文件
-        "zip", "rar", "7z", "tar", "gz", "bz2", "xz",
-        # 可执行文件和库
-        "exe", "dll", "so", "dylib",
-        # 文档文件
-        "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
-        # 多媒体文件
-        "mp3", "mp4", "avi", "mov", "wmv", "flv",
-        # 其他常见二进制文件
-        "bin", "dat", "db", "class", "pyc"
-    })
+    BINARY_EXTENSIONS = frozenset(
+        {
+            "jpg",
+            "jpeg",
+            "png",
+            "gif",
+            "bmp",
+            "ico",
+            "webp",
+            "tiff",
+            "tif",
+            "svg",
+            "ttf",
+            "otf",
+            "woff",
+            "woff2",
+            "eot",
+            "zip",
+            "rar",
+            "7z",
+            "tar",
+            "gz",
+            "bz2",
+            "xz",
+            "exe",
+            "dll",
+            "so",
+            "dylib",
+            "pdf",
+            "doc",
+            "docx",
+            "xls",
+            "xlsx",
+            "ppt",
+            "pptx",
+            "mp3",
+            "mp4",
+            "avi",
+            "mov",
+            "wmv",
+            "flv",
+            "bin",
+            "dat",
+            "db",
+            "class",
+            "pyc",
+        }
+    )
 
-    # 使用os.path.splitext高效提取扩展名
     _, ext = os.path.splitext(file_path)
     ext_clean = ext.lstrip(".").lower()
 
@@ -265,16 +294,10 @@ def win_on_rm_error(
 
 
 def infer_plugin_namespace(
-    ignore_prefixes: tuple[str, ...] = ("zhenxun.services.", "zhenxun.utils."),
-    default: str = "unknown",
+    default: str = "global",
 ) -> str:
     """
     智能推断调用者所在的插件命名空间。
-
-    推断顺序：
-    1. 上下文变量 (极速，仅加载阶段有效)
-    2. inspect 调用栈 + NoneBot API 匹配 (精准，支持动态加载)
-    3. 字符串切割降级回退 (兼容旧硬编码逻辑)
     """
     import inspect
 
@@ -285,7 +308,6 @@ def infer_plugin_namespace(
     if plugin:
         return plugin.name
 
-    module_name = ""
     try:
         stack = inspect.stack()
         for frame_info in stack[1:]:
@@ -293,25 +315,26 @@ def infer_plugin_namespace(
             if not module:
                 continue
             m_name = module.__name__
-            if any(m_name.startswith(p) for p in ignore_prefixes):
+
+            if m_name.startswith("zhenxun.services.") or m_name.startswith(
+                "zhenxun.utils."
+            ):
                 continue
-            module_name = m_name
-            break
+
+            plugin = get_plugin_by_module_name(m_name)
+            if plugin:
+                return plugin.name
+
+            parts = m_name.split(".")
+            for keyword in ("plugins", "builtin_plugins"):
+                if keyword in parts:
+                    idx = parts.index(keyword)
+                    if len(parts) > idx + 1:
+                        return parts[idx + 1]
+
+            continue
+
     except Exception:
         pass
 
-    if not module_name:
-        return default
-
-    plugin = get_plugin_by_module_name(module_name)
-    if plugin:
-        return plugin.name
-
-    parts = module_name.split(".")
-    if (
-        len(parts) >= 3
-        and parts[0] == "zhenxun"
-        and parts[1] in ("plugins", "builtin_plugins")
-    ):
-        return parts[2]
-    return parts[0] if parts else default
+    return default

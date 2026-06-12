@@ -2,7 +2,7 @@ from typing import Any, cast
 
 import nonebot
 
-from zhenxun.configs.config import Config
+from zhenxun.services.ai.config import get_llm_config
 from zhenxun.services.ai.sandbox.models import (
     SandboxBlueprint,
 )
@@ -13,38 +13,6 @@ from .drivers.base import BaseSandboxClient, BaseSandboxSession
 from .registry import SandboxRegistry
 
 _startup_tasks = set()
-
-
-def register_sandbox_configs():
-    """注册沙箱基础设施专属配置项"""
-    Config.add_plugin_config(
-        "sandbox",
-        "SANDBOX_TYPE",
-        "docker",
-        help="沙箱底层驱动类型: docker",
-        type=str,
-    )
-    Config.add_plugin_config(
-        "sandbox",
-        "DOCKER_IMAGE",
-        "zhenxun-sandbox:latest",
-        help="Docker 沙箱使用的镜像名称 (自定义 Jupyter 增强版)",
-        type=str,
-    )
-    Config.add_plugin_config(
-        "sandbox",
-        "CLEANUP_TIMEOUT",
-        1800,
-        help="沙箱自动清理的闲置超时时间(秒)。0表示关闭，不自动清理",
-        type=int,
-    )
-    Config.add_plugin_config(
-        "sandbox",
-        "ENABLE_VFS_HELPER",
-        True,
-        help="是否开启 VFS 路径逃逸防范探针，默认开启。遇到兼容性问题时可关闭",
-        type=bool,
-    )
 
 
 class SandboxManager:
@@ -61,7 +29,7 @@ class SandboxManager:
         self,
         blueprint: SandboxBlueprint,
     ) -> BaseSandboxClient:
-        global_type = Config.get_config("sandbox", "SANDBOX_TYPE", "docker")
+        global_type = get_llm_config().sandbox.sandbox_type
 
         effective_type = (
             blueprint.sandbox_type
@@ -89,7 +57,7 @@ class SandboxManager:
         if blueprint.setup_steps:
             blueprint.enable_network = True
 
-        cleanup_timeout = Config.get_config("sandbox", "CLEANUP_TIMEOUT", 1800)
+        cleanup_timeout = get_llm_config().sandbox.cleanup_timeout
         await self.lifespan_manager.register(
             session_id, ttl=float(cleanup_timeout), cleanup_callback=self.close_session
         )

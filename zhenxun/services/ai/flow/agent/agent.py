@@ -196,7 +196,9 @@ class Agent(
                 SkillCapability,
             )
 
-            self.capabilities.append(SkillCapability(skills=skills))
+            self.capabilities.append(
+                SkillCapability(skills=skills, namespace=infer_plugin_namespace())
+            )
 
     def tool(
         self,
@@ -322,7 +324,9 @@ class Agent(
             )
 
             capabilities = list(capabilities) if capabilities else []
-            capabilities.append(SkillCapability(skills=skills))
+            capabilities.append(
+                SkillCapability(skills=skills, namespace=infer_plugin_namespace())
+            )
 
         return await super().run(
             prompt=prompt,
@@ -365,7 +369,9 @@ class Agent(
             )
 
             capabilities = list(capabilities) if capabilities else []
-            capabilities.append(SkillCapability(skills=skills))
+            capabilities.append(
+                SkillCapability(skills=skills, namespace=infer_plugin_namespace())
+            )
 
         streamer = event_streamer or EventStreamer()
         if context is None:

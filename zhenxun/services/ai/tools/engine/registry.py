@@ -16,6 +16,7 @@ from zhenxun.services.ai.run.context import RunContext
 from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
 from zhenxun.services.ai.tools.models import Query, ResolvedToolPayload
 from zhenxun.services.log import logger
+from zhenxun.utils.utils import infer_plugin_namespace
 
 T = TypeVar("T", bound=ToolExecutable)
 
@@ -319,8 +320,6 @@ class ToolProviderManager:
         """注册由 @tool 生成的单一工具"""
         if not hasattr(tool, "name"):
             setattr(tool, "name", str(id(tool)))
-        from zhenxun.utils.utils import infer_plugin_namespace
-
         ns = infer_plugin_namespace()
         if ns not in self._namespaced_tools:
             self._namespaced_tools[ns] = ToolCollection()
@@ -331,8 +330,6 @@ class ToolProviderManager:
         """
         注册一个完整的 Toolkit 实例，使其可通过智能字符串路由（Tag或Name）被动态发现。
         """
-        from zhenxun.utils.utils import infer_plugin_namespace
-
         ns = infer_plugin_namespace()
         if ns not in self._namespaced_tools:
             self._namespaced_tools[ns] = ToolCollection()
@@ -532,8 +529,6 @@ class ToolProviderManager:
             return ResolvedToolPayload()
 
         if not namespace:
-            from zhenxun.utils.utils import infer_plugin_namespace
-
             namespace = infer_plugin_namespace()
             logger.debug(
                 f"🔍 [StringRouter] 自动推断当前调用者所在插件为: '{namespace}'"

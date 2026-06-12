@@ -239,6 +239,10 @@ class SandboxBlueprint(BaseModel):
     """是否允许访问外网"""
     needs_state: bool = Field(default=False)
     """是否需要持久化状态"""
+    image: str | None = Field(default=None)
+    """自定义镜像名称。为空则使用全局默认配置"""
+    container_name: str = Field(default="global")
+    """容器/命名空间名称。相同名称将共享同一个物理容器和依赖环境"""
 
     setup_steps: list[BaseSetupStep] = Field(default_factory=list)
     """多态环境装配图元管线"""
@@ -267,6 +271,16 @@ class SandboxBlueprint(BaseModel):
     def with_state(self, enable: bool = True) -> "SandboxBlueprint":
         """设置是否启用状态持久化"""
         self.needs_state = enable
+        return self
+
+    def with_image(self, image: str) -> "SandboxBlueprint":
+        """声明使用的自定义 Docker 镜像"""
+        self.image = image
+        return self
+
+    def with_container_name(self, name: str) -> "SandboxBlueprint":
+        """声明沙箱使用的物理容器命名空间（实现环境隔离）"""
+        self.container_name = name
         return self
 
     def with_setup_step(self, step: BaseSetupStep) -> "SandboxBlueprint":
@@ -361,6 +375,8 @@ class SandboxBlueprint(BaseModel):
         }
 
         data_to_hash = {
+            "image": self.image,
+            "container_name": self.container_name,
             "steps": [s.model_dump() for s in self.setup_steps],
             "entries": entries_dict,
             "bind_mounts": [m.model_dump() for m in self.bind_mounts],
@@ -376,6 +392,12 @@ class SandboxBlueprint(BaseModel):
         self.needs_state = self.needs_state or other.needs_state
         self.sandbox_type = (
             other.sandbox_type if other.sandbox_type != "auto" else self.sandbox_type
+        )
+        self.image = other.image or self.image
+        self.container_name = (
+            other.container_name
+            if other.container_name != "global"
+            else self.container_name
         )
 
         self.setup_steps.extend(other.setup_steps)
@@ -418,6 +440,8 @@ class SandboxSessionState(BaseModel):
     """会话唯一标识符"""
     backend_id: str
     """后端驱动分配的容器/沙箱 ID"""
+    container_name: str = "global"
+    """底层所关联的物理容器名称"""
     sandbox_type: str = "docker"
     """沙箱驱动类型"""
     workspace_root_ready: bool = False

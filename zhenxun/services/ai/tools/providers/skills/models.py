@@ -16,7 +16,7 @@ RESOURCES: DisclosureLevel = 3
 class SkillEnvConfig(BaseModel):
     """全量技能环境变量配置根节点"""
 
-    envs: dict[str, dict[str, str]] = Field(default_factory=dict)
+    envs: dict[str, dict[str, dict[str, str]]] = Field(default_factory=dict)
 
 
 class SkillFrontmatter(BaseModel):
@@ -38,94 +38,6 @@ class SkillFrontmatter(BaseModel):
     """统一环境装配蓝图声明 (根据 metadata 等自动推导)"""
     required_envs: list[str] = Field(default_factory=list)
     """声明该技能必需的全局环境变量 Key"""
-
-    @model_validator(mode="before")
-    @classmethod
-    def parse_blueprint(cls, values: dict[str, Any]) -> dict[str, Any]:
-        env_setup_data = values.get("env_setup", {})
-        blueprint = values.get("blueprint")
-        if isinstance(blueprint, SandboxBlueprint):
-            return values
-
-        python_packages = env_setup_data.get("python_packages", [])
-        system_packages = env_setup_data.get("system_packages", [])
-        bins = env_setup_data.get("bins", [])
-        install_scripts = env_setup_data.get("install_scripts", [])
-        required_envs = values.get("required_envs", [])
-
-        metadata = values.get("metadata", {})
-        if isinstance(metadata, str):
-            import json
-
-            try:
-                metadata = json.loads(metadata)
-                values["metadata"] = metadata
-            except Exception:
-                metadata = {}
-
-        if isinstance(metadata, dict):
-            for provider in ["openclaw", "clawbot"]:
-                if provider in metadata and isinstance(metadata[provider], dict):
-                    data = metadata[provider]
-                    requires = data.get("requires", {})
-                    if isinstance(requires, dict):
-                        bins.extend(requires.get("bins", []))
-                        envs = requires.get("env", [])
-                        if isinstance(envs, list):
-                            required_envs.extend(envs)
-
-                    installs = data.get("install", [])
-                    if isinstance(installs, list):
-                        for inst in installs:
-                            if isinstance(inst, dict):
-                                kind = inst.get("kind")
-                                if kind in ("python", "pip"):
-                                    pkg = inst.get("package", "")
-                                    if isinstance(pkg, str):
-                                        python_packages.extend(pkg.split())
-                                elif kind in ("node", "npm"):
-                                    pkg = inst.get("package", "")
-                                    if isinstance(pkg, str) and pkg:
-                                        install_scripts.append(f"npm install -g {pkg}")
-                                elif kind == "brew":
-                                    formula = inst.get("formula", "")
-                                    if isinstance(formula, str) and formula:
-                                        system_packages.extend(formula.split())
-
-        key = "allowed-tools"
-        alt_key = "allowed_tools"
-        raw_tools = values.get(key) or values.get(alt_key)
-
-        tools_list = []
-        if isinstance(raw_tools, str):
-            tools_list = raw_tools.split()
-        elif isinstance(raw_tools, list):
-            tools_list = raw_tools
-
-        import re
-
-        for tool in tools_list:
-            if isinstance(tool, str) and tool.startswith("Bash("):
-                match = re.search(r"Bash\((.*?)\)", tool)
-                if match:
-                    inner = match.group(1)
-                    cmd = inner.split(":")[0]
-                    if cmd not in bins:
-                        bins.append(cmd)
-
-        from zhenxun.services.ai.sandbox.models import AptSetup, PythonSetup, ShellSetup
-
-        steps = []
-        if system_packages:
-            steps.append(AptSetup(packages=list(dict.fromkeys(system_packages))))
-        if python_packages:
-            steps.append(PythonSetup(packages=list(dict.fromkeys(python_packages))))
-        if install_scripts:
-            steps.append(ShellSetup(scripts=install_scripts))
-
-        values["blueprint"] = {"setup_steps": steps}
-        values["required_envs"] = list(dict.fromkeys(required_envs))
-        return values
 
     @model_validator(mode="before")
     @classmethod
@@ -162,6 +74,8 @@ class Skill(BaseModel):
     """参考文档列表"""
     source: str = Field(default="local")
     """技能来源提供者标识"""
+    namespace: str = Field(default="global")
+    """隔离所属的插件命名空间"""
 
     def with_disclosure_level(
         self,
@@ -181,6 +95,7 @@ class Skill(BaseModel):
             scripts=scripts if scripts is not None else self.scripts,
             references=references if references is not None else self.references,
             source=self.source,
+            namespace=self.namespace,
         )
 
     @property
@@ -241,3 +156,104 @@ class SkillSource(BaseModel):
         from pathlib import Path
 
         return cls(scan_dir=Path(path), exclude_skills=exclude)
+
+
+class SkillBlueprintBuilder:
+    """环境蓝图组装器：将 YAML 字典剥离解析为沙箱 Blueprint 和环境变量要求"""
+
+    @classmethod
+    def build(cls, values: dict[str, Any]) -> tuple[SandboxBlueprint, list[str]]:
+        env_setup_data = values.get("env_setup", {})
+        python_packages = env_setup_data.get("python_packages", [])
+        system_packages = env_setup_data.get("system_packages", [])
+        node_packages = env_setup_data.get("node_packages", [])
+        bins = env_setup_data.get("bins", [])
+        install_scripts = env_setup_data.get("install_scripts", [])
+        required_envs = values.get("required_envs", [])
+
+        metadata = values.get("metadata", {})
+        if isinstance(metadata, str):
+            import json
+
+            try:
+                metadata = json.loads(metadata)
+            except Exception:
+                metadata = {}
+
+        if isinstance(metadata, dict):
+            for data in metadata.values():
+                if not isinstance(data, dict):
+                    continue
+                requires = data.get("requires", {})
+                if isinstance(requires, dict):
+                    for bin_key in ("bins", "anyBins"):
+                        b = requires.get(bin_key, [])
+                        if isinstance(b, list):
+                            bins.extend(b)
+                    envs = requires.get("env", [])
+                    if isinstance(envs, list):
+                        required_envs.extend(envs)
+
+                installs = data.get("install", [])
+                if isinstance(installs, list):
+                    for inst in installs:
+                        if not isinstance(inst, dict):
+                            continue
+                        kind = inst.get("kind", "").lower()
+                        if kind in ("python", "pip", "uv"):
+                            pkg = inst.get("package", "")
+                            if isinstance(pkg, str) and pkg:
+                                python_packages.extend(pkg.split())
+                        elif kind in ("node", "npm"):
+                            pkg = inst.get("package", "")
+                            if isinstance(pkg, str) and pkg:
+                                node_packages.append(pkg)
+                        elif kind in ("apt"):
+                            pkg = inst.get("formula") or inst.get("package") or ""
+                            if isinstance(pkg, str) and pkg:
+                                pkg_name = pkg.split("/")[-1]
+                                system_packages.append(pkg_name)
+                        elif kind == "go":
+                            mod = inst.get("module", "")
+                            if isinstance(mod, str) and mod:
+                                install_scripts.append(f"go install {mod}")
+
+        key = "allowed-tools"
+        alt_key = "allowed_tools"
+        raw_tools = values.get(key) or values.get(alt_key)
+        tools_list = (
+            raw_tools.split()
+            if isinstance(raw_tools, str)
+            else (raw_tools if isinstance(raw_tools, list) else [])
+        )
+
+        import re
+
+        for tool in tools_list:
+            if isinstance(tool, str) and tool.startswith("Bash("):
+                match = re.search(r"Bash\((.*?)\)", tool)
+                if match:
+                    inner = match.group(1)
+                    cmd = inner.split(":")[0]
+                    if cmd not in bins:
+                        bins.append(cmd)
+
+        from zhenxun.services.ai.sandbox.models import (
+            AptSetup,
+            NodeSetup,
+            PythonSetup,
+            ShellSetup,
+        )
+
+        steps = []
+        if system_packages:
+            steps.append(AptSetup(packages=list(dict.fromkeys(system_packages))))
+        if python_packages:
+            steps.append(PythonSetup(packages=list(dict.fromkeys(python_packages))))
+        if node_packages:
+            steps.append(NodeSetup(packages=list(dict.fromkeys(node_packages))))
+        if install_scripts:
+            steps.append(ShellSetup(scripts=install_scripts))
+
+        blueprint = SandboxBlueprint(setup_steps=steps)
+        return blueprint, list(dict.fromkeys(required_envs))

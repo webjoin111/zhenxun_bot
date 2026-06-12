@@ -412,6 +412,7 @@ def bind_matcher(
     terminal: bool = True,
     auto_register: bool = True,
     command_formatter: Callable[[Any], list[Any] | str] | None = None,
+    require_prefix: bool = True,
 ) -> MatcherTool:
     """
     将现有的 Nonebot Matcher (on_command, on_alconna等) 绑定并转化为大模型工具。
@@ -427,6 +428,13 @@ def bind_matcher(
         command_formatter: 可选的格式化器。对于原生 on_command，如果不传，
             则直接使用 kwargs values 拼接为空格字符串。
     """
+
+    if require_prefix:
+        from zhenxun.utils.utils import infer_plugin_namespace
+        ns = infer_plugin_namespace(default="global")
+        if ns and ns not in ("global", "unknown"):
+            if not name.startswith(f"{ns}_"):
+                name = f"{ns}_{name}"
 
     is_alconna = (
         hasattr(matcher, "command")

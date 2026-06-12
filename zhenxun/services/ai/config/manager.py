@@ -206,6 +206,18 @@ def register_llm_configs():
 
     Config.add_plugin_config(
         AI_CONFIG_GROUP,
+        "sandbox",
+        model_dump(llm_config.sandbox),
+        help=(
+            "沙箱底层环境基础设施配置。\n"
+            "包含: sandbox_type(驱动类型), docker_image(使用的镜像), "
+            "cleanup_timeout(空闲清理超时秒数), enable_vfs_helper(开启VFS防逃逸探针)"
+        ),
+        type=dict,
+    )
+
+    Config.add_plugin_config(
+        AI_CONFIG_GROUP,
         PROVIDERS_CONFIG_KEY,
         get_default_providers(),
         help=(
@@ -248,6 +260,7 @@ def get_llm_config() -> LLMConfig:
         "context_settings": ai_config.get("context_settings", {}),
         "model_groups": ai_config.get("MODEL_GROUPS", {}),
         "agent_settings": ai_config.get("agent_settings", {}),
+        "sandbox": ai_config.get("sandbox", {}),
     }
 
     return parse_as(LLMConfig, config_data)

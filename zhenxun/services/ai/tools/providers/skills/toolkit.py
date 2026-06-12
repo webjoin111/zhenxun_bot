@@ -16,30 +16,21 @@ from zhenxun.services.ai.tools.providers.skills.manager import (
 from zhenxun.services.ai.tools.providers.skills.models import Skill
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_copy
+from zhenxun.utils.utils import infer_plugin_namespace
 
 
 class SkillSandboxExecutionMixin:
     """技能沙箱执行与自愈逻辑混入类"""
 
-    async def _execute_skill_command_in_sandbox(
-        self,
-        skill: Skill,
-        command: str,
-        context: RunContext | None,
-        sandbox: Any,
-        **kwargs,
-    ) -> ToolResult:
-        session_id = (
-            context.session_id
-            if context and context.session_id
-            else f"skill_{skill.id}_session"
-        )
+    async def _ensure_skill_workspace(
+        self, skill: Skill, session_id: str, sandbox: Any
+    ) -> tuple[Any, str]:
+        """负责环境隔离与沙箱启动装配，返回底层执行器和目标工作区路径"""
         bp = model_copy(skill.frontmatter.blueprint, deep=True)
         bp.enable_network = skill.frontmatter.enable_network
 
         executor = await sandbox.get_or_create_session(session_id, blueprint=bp)
         fs_executor = cast(SupportsFileSystem, executor)
-        cmd_executor = cast(SupportsCommandExecution, executor)
 
         target_workspace = f"{executor.workspace_path}/{skill.id}"
 
@@ -51,7 +42,15 @@ class SkillSandboxExecutionMixin:
                 logger.warning(f"设置沙箱工作区环境失败: {e}")
             executor.loaded_skills.add(skill.id)
 
-        configured_envs = skill_env_manager.get_envs_for_skill(skill.id)
+        return executor, target_workspace
+
+    def _prepare_skill_env_vars(
+        self, skill: Skill, context: RunContext | None, **kwargs
+    ) -> dict[str, str] | ToolResult:
+        """处理环境变量注入与缺失拦截"""
+        configured_envs = skill_env_manager.get_envs_for_skill(
+            skill.namespace, skill.id
+        )
         missing_keys = [
             k for k in skill.frontmatter.required_envs if not configured_envs.get(k)
         ]
@@ -83,32 +82,23 @@ class SkillSandboxExecutionMixin:
                 if isinstance(v, str | int | float | bool):
                     env_vars[k] = str(v)
 
-        env_vars["SKILL_DIR"] = target_workspace
+        final_env = {}
+        for k, v in env_vars.items():
+            final_env[k] = str(v)
+            final_env[k.upper()] = str(v)
 
-        env_exports = "".join(
-            [
-                f"export {k}='{v}'; export {k.upper()}='{v}'; "
-                for k, v in env_vars.items()
-            ]
-        )
-        wrapped_command = f"{env_exports}{command}"
+        return final_env
 
-        result = await cmd_executor.run_process(
-            wrapped_command, cwd=target_workspace, timeout=180, env=None
-        )
-
+    def _format_execution_result(self, result: Any, command: str) -> ToolResult:
+        """统一处理沙箱输出并转换为 ToolResult"""
         output = (
             result.stdout + ("\nSTDERR:\n" + result.stderr if result.stderr else "")
         ).strip()
 
         if getattr(result, "is_timeout", False) or result.exit_code == -1:
-            final_output = f"""🚨 终端命令执行发生严重系统异常或超时被强杀
-(Exit Code: {result.exit_code})！
-这通常意味着网络不通、下载数据过大耗时太长，或沙箱环境崩溃。输出为空。"""
+            final_output = f"""🚨 终端命令执行发生严重系统异常或超时被强杀\n(Exit Code: {result.exit_code})！\n这通常意味着网络不通、下载数据过大耗时太长，或沙箱环境崩溃。输出为空。"""
         elif result.exit_code != 0:
-            final_output = f"""❌ 终端命令执行失败 (Exit Code: {result.exit_code})。
-输出日志:
-{output or "无日志输出"}"""
+            final_output = f"""❌ 终端命令执行失败 (Exit Code: {result.exit_code})。\n输出日志:\n{output or "无日志输出"}"""
         else:
             final_output = output or "✅ 执行成功 (无控制台输出)。"
 
@@ -118,6 +108,38 @@ class SkillSandboxExecutionMixin:
         if result.exit_code != 0:
             tool_result = tool_result.as_error()
         return tool_result
+
+    async def _execute_skill_command_in_sandbox(
+        self,
+        skill: Skill,
+        command: str,
+        context: RunContext | None,
+        sandbox: Any,
+        **kwargs,
+    ) -> ToolResult:
+        """主调度方法"""
+        session_id = (
+            context.session_id
+            if context and context.session_id
+            else f"skill_{skill.id}_session"
+        )
+
+        executor, target_workspace = await self._ensure_skill_workspace(
+            skill, session_id, sandbox
+        )
+
+        env_res = self._prepare_skill_env_vars(skill, context, **kwargs)
+        if isinstance(env_res, ToolResult):
+            return env_res
+
+        env_res["SKILL_DIR"] = target_workspace
+
+        cmd_executor = cast(SupportsCommandExecution, executor)
+        result = await cmd_executor.run_process(
+            command, cwd=target_workspace, timeout=180, env=env_res
+        )
+
+        return self._format_execution_result(result, command)
 
 
 class SkillMetaToolkit(BaseToolkit, SkillSandboxExecutionMixin):
@@ -142,7 +164,10 @@ class SkillMetaToolkit(BaseToolkit, SkillSandboxExecutionMixin):
                 if s.id == skill_name or s.name == skill_name:
                     return s
             return None
-        return await skill_manager.get_skill_details(skill_name)
+
+        return await skill_manager.get_skill_details(
+            skill_name, namespace=infer_plugin_namespace()
+        )
 
     async def resolve(self, context: RunContext | None = None) -> ResolvedToolPayload:
         payload = await super().resolve(context)

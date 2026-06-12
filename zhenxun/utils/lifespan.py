@@ -49,7 +49,7 @@ class LifespanManager:
             ttl: 资源的存活时间 (秒)。
             cleanup_callback: 资源过期时触发的回调函数，接收 resource_id 作为唯一参数。
             is_busy_callback: (可选) 延迟存活探针。在触发清理前调用，若返回 True 则放弃清理并自动续期。
-        """
+        """  # noqa: E501
         if ttl <= 0:
             await self.unregister(resource_id)
             return
@@ -140,7 +140,8 @@ class LifespanManager:
 
                     if is_active:
                         logger.debug(
-                            f"探针检测到资源 '{res_id}' 仍在忙碌，已自动续期 ({original_ttl}s)。",
+                            f"探针检测到资源 '{res_id}' 仍在忙碌，"
+                            f"已自动续期 ({original_ttl}s)。",
                             command="LifespanManager",
                         )
                         await self.touch(res_id, original_ttl)

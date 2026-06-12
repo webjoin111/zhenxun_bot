@@ -10,7 +10,7 @@ from typing import Any, ClassVar
 import aiodocker
 import anyio
 
-from zhenxun.configs.config import Config
+from zhenxun.services.ai.config import get_llm_config
 from zhenxun.services.ai.core.exceptions import SandboxPathEscapeError, WorkspaceIOError
 from zhenxun.services.ai.sandbox.models import (
     SandboxBlueprint,
@@ -201,7 +201,7 @@ class DockerSandboxSession(BaseSandboxSession):
 
             target_posix = posixpath.normpath(f"{base_dir}/{target_posix}")
 
-        if not Config.get_config("sandbox", "ENABLE_VFS_HELPER", True):
+        if not get_llm_config().sandbox.enable_vfs_helper:
             return Path(target_posix)
 
         await self._ensure_vfs_helper()
@@ -362,21 +362,18 @@ class DockerSandboxSession(BaseSandboxSession):
             return False
 
     async def close(self) -> None:
-        """销毁沙箱容器"""
-        if self.container:
-            try:
-                await self.container.delete(force=True)
-                if DockerSandboxClient._global_container:
-                    DockerSandboxClient._global_container = None
-            except Exception as e:
-                logger.error(f"销毁沙箱容器 {self.session_id} 发生异常: {e}")
+        """关闭会话：仅清理工作区，不销毁共享容器"""
+        try:
+            await self.rm(self.workspace_path, recursive=True)
+        except Exception as e:
+            logger.error(f"清理沙箱会话工作区 {self.session_id} 异常: {e}")
 
 
 class DockerSandboxClient(BaseSandboxClient):
     backend_id = "docker"
     _global_docker_client: ClassVar[Any] = None
-    _global_container: ClassVar[Any] = None
-    _shared_jupyter_port: ClassVar[int | None] = None
+    _containers: ClassVar[dict[str, Any]] = {}
+    _jupyter_ports: ClassVar[dict[str, int]] = {}
     _init_lock = asyncio.Lock()
     _engine_available = False
 
@@ -385,11 +382,15 @@ class DockerSandboxClient(BaseSandboxClient):
         session_id: str,
         blueprint: SandboxBlueprint | None = None,
     ) -> BaseSandboxSession:
+        bp = blueprint or SandboxBlueprint()
+        eff_image = bp.image or get_llm_config().sandbox.docker_image
+        eff_cname = bp.container_name
+
         async with self._init_lock:
             if DockerSandboxClient._global_docker_client is None:
                 DockerSandboxClient._global_docker_client = aiodocker.Docker()
 
-            if DockerSandboxClient._global_container is None:
+            if eff_cname not in DockerSandboxClient._containers:
                 port_bindings = {}
                 import socket
 
@@ -399,27 +400,29 @@ class DockerSandboxClient(BaseSandboxClient):
                     jupyter_port = s.getsockname()[1]
                 port_bindings = {"8888/tcp": [{"HostPort": str(jupyter_port)}]}
 
-                image = Config.get_config(
-                    "sandbox", "DOCKER_IMAGE", "zhenxun-sandbox:latest"
-                )
-
                 from zhenxun.configs.path_config import DATA_PATH
 
-                global_env_dir = DATA_PATH / "ai" / "sandbox" / "global_env"
+                safe_image_name = eff_image.replace(":", ".").replace("/", "_")
+
+                global_env_dir = (
+                    DATA_PATH / "ai" / "sandbox" / safe_image_name / eff_cname / "env"
+                )
                 global_env_dir.mkdir(parents=True, exist_ok=True)
 
-                global_home_dir = DATA_PATH / "ai" / "sandbox" / "global_home"
+                global_home_dir = (
+                    DATA_PATH / "ai" / "sandbox" / safe_image_name / eff_cname / "home"
+                )
                 global_home_dir.mkdir(parents=True, exist_ok=True)
 
                 binds = [f"{global_env_dir.resolve().as_posix()}:/global_env:rw"]
                 binds.append(f"{global_home_dir.resolve().as_posix()}:/root:rw")
-                if blueprint and blueprint.bind_mounts:
-                    for mount in blueprint.bind_mounts:
+                if bp.bind_mounts:
+                    for mount in bp.bind_mounts:
                         mode = "ro" if mount.read_only else "rw"
                         binds.append(f"{mount.host_path}:{mount.sandbox_path}:{mode}")
 
                 container_config = {
-                    "Image": image,
+                    "Image": eff_image,
                     "Env": [
                         "npm_config_prefix=/global_env/npm",
                         "VIRTUAL_ENV=/global_env/python_venv",
@@ -441,38 +444,53 @@ class DockerSandboxClient(BaseSandboxClient):
                         "MemorySwap": 1024 * 1024 * 1024,
                         "Binds": binds,
                     },
-                    "Labels": {"zhenxun_component": "sandbox"},
+                    "Labels": {
+                        "zhenxun_component": "sandbox",
+                        "zhenxun_container_name": eff_cname,
+                    },
                 }
 
                 import uuid
 
-                name = f"zx_sandbox_shared_{uuid.uuid4().hex[:8]}"
-                DockerSandboxClient._global_container = (
+                name = f"zx_sandbox_{eff_cname}_{uuid.uuid4().hex[:8]}"
+                container = (
                     await DockerSandboxClient._global_docker_client.containers.run(
                         config=container_config, name=name
                     )
                 )
-                DockerSandboxClient._shared_jupyter_port = jupyter_port
+                DockerSandboxClient._containers[eff_cname] = container
+                DockerSandboxClient._jupyter_ports[eff_cname] = jupyter_port
+                logger.info(
+                    f"[DockerSandbox] 已启动物理隔离容器: {eff_cname} "
+                    f"(镜像: {eff_image})"
+                )
 
         state = SandboxSessionState(
             session_id=session_id,
             backend_id=self.backend_id,
+            container_name=eff_cname,
             sandbox_type=self.backend_id,
         )
-        session = DockerSandboxSession(state, DockerSandboxClient._global_container)
-        if DockerSandboxClient._shared_jupyter_port:
-            session._meta["jupyter_port"] = DockerSandboxClient._shared_jupyter_port
+        session = DockerSandboxSession(
+            state, DockerSandboxClient._containers[eff_cname]
+        )
+        if eff_cname in DockerSandboxClient._jupyter_ports:
+            session._meta["jupyter_port"] = DockerSandboxClient._jupyter_ports[
+                eff_cname
+            ]
 
         check_venv = await session.run_process(
             "test -x /global_env/python_venv/bin/pip"
         )
         if check_venv.exit_code != 0:
             logger.info(
-                "正在初始化/修复全局共享 Python 虚拟环境 (python_venv)...",
+                f"正在初始化/修复容器 [{eff_cname}] 的共享 Python 虚拟环境...",
                 command="SandboxManager",
             )
             init_res = await session.run_process(
-                "rm -rf /global_env/python_venv && uv venv --seed --system-site-packages /global_env/python_venv || python3 -m venv --system-site-packages /global_env/python_venv"
+                "rm -rf /global_env/python_venv && "
+                "uv venv --seed --system-site-packages /global_env/python_venv || "
+                "python3 -m venv --system-site-packages /global_env/python_venv"
             )
             if init_res.exit_code != 0:
                 logger.error(
@@ -486,16 +504,42 @@ class DockerSandboxClient(BaseSandboxClient):
         raise NotImplementedError("Docker Driver 不支持无状态重建恢复。")
 
     async def delete(self, session: BaseSandboxSession) -> None:
+        """触发会话销毁及引用计数物理回收"""
         await session.close()
+
+        from zhenxun.services.ai.sandbox.manager import sandbox_manager
+
+        cname = session.state.container_name
+
+        in_use = any(
+            s.state.container_name == cname
+            for sid, s in sandbox_manager._active_sessions.items()
+            if sid != session.session_id
+        )
+
+        if not in_use and cname in self._containers:
+            try:
+                await self._containers[cname].delete(force=True)
+                self._containers.pop(cname, None)
+                self._jupyter_ports.pop(cname, None)
+                logger.info(
+                    f"[DockerSandbox] 物理容器 {cname} "
+                    "已长时间闲置，已触发彻底销毁释放内存。"
+                )
+            except Exception as e:
+                logger.error(f"[DockerSandbox] 闲置销毁物理容器 {cname} 失败: {e}")
 
     @classmethod
     async def close_env(cls):
-        if cls._global_container:
+        for cname, container in cls._containers.items():
             try:
-                await cls._global_container.delete(force=True)
-            except Exception:
-                pass
-            cls._global_container = None
+                await container.delete(force=True)
+                logger.info(f"已清理物理容器: {cname}")
+            except Exception as e:
+                logger.error(f"清理物理容器 {cname} 失败: {e}")
+        cls._containers.clear()
+        cls._jupyter_ports.clear()
+
         if cls._global_docker_client:
             await cls._global_docker_client.close()
             cls._global_docker_client = None

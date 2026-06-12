@@ -10,6 +10,7 @@ from zhenxun.services.ai.flow.team.strategy import (
 )
 from zhenxun.services.ai.run import AgentRunResult, RunContext, Task
 from zhenxun.services.ai.tools.providers.skills.models import Skill, SkillSource
+from zhenxun.utils.utils import infer_plugin_namespace
 
 if TYPE_CHECKING:
     from zhenxun.services.ai.flow.agent.agent import CapabilitySource
@@ -53,6 +54,8 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         )
         self.persona = persona
 
+        self.namespace = infer_plugin_namespace() or "unknown"
+
         self.capabilities: list[Any] = []
         if capabilities:
             from zhenxun.services.ai.protocols.capabilities import (
@@ -74,7 +77,10 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
             from zhenxun.services.ai.tools.providers.skills.capabilities import (
                 SkillCapability,
             )
-            self.capabilities.append(SkillCapability(skills=skills))
+
+            self.capabilities.append(
+                SkillCapability(skills=skills, namespace=self.namespace)
+            )
 
         self.selector_func = getattr(strategy, "selector_func", None)
 
@@ -103,8 +109,11 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
             from zhenxun.services.ai.tools.providers.skills.capabilities import (
                 SkillCapability,
             )
+
             capabilities = list(capabilities) if capabilities else []
-            capabilities.append(SkillCapability(skills=skills))
+            capabilities.append(
+                SkillCapability(skills=skills, namespace=self.namespace)
+            )
 
         return await super().run(
             prompt=prompt, context=context, capabilities=capabilities, **kwargs
@@ -137,8 +146,11 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
             from zhenxun.services.ai.tools.providers.skills.capabilities import (
                 SkillCapability,
             )
+
             capabilities = list(capabilities) if capabilities else []
-            capabilities.append(SkillCapability(skills=skills))
+            capabilities.append(
+                SkillCapability(skills=skills, namespace=self.namespace)
+            )
 
         if capabilities:
             from zhenxun.services.ai.protocols.capabilities import (

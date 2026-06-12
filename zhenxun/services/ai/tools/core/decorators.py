@@ -50,6 +50,8 @@ def tool(
     description: str | None = None,
     settings: ToolOptions | None = None,
     tags: list[str] | None = None,
+    auto_register: bool = False,
+    require_prefix: bool = True,
 ):
     """
     将普通函数或类方法注册为 LLM 工具的统一装饰器大一统。
@@ -63,6 +65,9 @@ def tool(
             用于控制极速缓存、人工审批拦截、静默执行等扩展能力。
         tags: 工具的标签列表。
             用于被 Agent 的智能字符串路由识别并进行能力注入。
+        auto_register: 是否自动注册到当前命名空间的工具注册表。
+            默认为 False，开发者需要显式传递实例。若为 True 方可通过字符串调用。
+        require_prefix: 是否自动添加插件命名空间前缀（仅对游离函数生效）。默认为 True。
     返回:
         Callable | FunctionTool: 包装后的函数或方法。
     """
@@ -107,6 +112,13 @@ def tool(
             setattr(func, "__tool_settings__", base_settings)
             return func
         else:
+            if require_prefix:
+                from zhenxun.utils.utils import infer_plugin_namespace
+                ns = infer_plugin_namespace(default="global")
+                if ns and ns not in ("global", "unknown"):
+                    if not tool_name.startswith(f"{ns}_"):
+                        tool_name = f"{ns}_{tool_name}"
+
             from zhenxun.services.ai.tools.core.tool import FunctionTool
             from zhenxun.services.ai.tools.engine.registry import tool_provider_manager
             from zhenxun.services.log import logger
@@ -117,8 +129,9 @@ def tool(
                 description=tool_desc,
                 settings=base_settings,
             )
-            tool_provider_manager.register_tool(func_tool)
-            logger.info(f"已注册全局工具(Callable): '{tool_name}'")
+            if auto_register:
+                tool_provider_manager.register_tool(func_tool)
+                logger.debug(f"已按命名空间隔离注册了工具(Callable): '{tool_name}'")
 
             setattr(func_tool, "__tool_settings__", base_settings)
             return func_tool
