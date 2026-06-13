@@ -1,3 +1,4 @@
+import base64
 from collections.abc import Callable
 import datetime
 import time
@@ -175,7 +176,7 @@ class InMemoryChatContext(BaseChatContext):
         self._messages: dict[str, list[LLMMessage]] = {}
 
     async def get_messages(self, session: SessionMetadata) -> list[LLMMessage]:
-        return self._messages.get(session.session_id, [])
+        return list(self._messages.get(session.session_id, []))
 
     async def search(
         self, query: str, session: SessionMetadata, limit: int = 10
@@ -316,8 +317,6 @@ class TortoiseChatContext(BaseChatContext):
             adapter = TypeAdapter(LLMContentPart)
             for p in content_raw:
                 if isinstance(p, dict):
-                    import base64
-
                     for k in list(p.keys()):
                         if k.startswith("_is_b64_"):
                             orig_k = k[8:]
@@ -400,7 +399,6 @@ class TortoiseChatContext(BaseChatContext):
                         else (p.copy() if isinstance(p, dict) else p)
                     )
 
-                    import base64
                     from pathlib import Path
 
                     if isinstance(p_dump, dict):

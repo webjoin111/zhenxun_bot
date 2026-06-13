@@ -324,24 +324,28 @@ class ServerSideTool(BaseTool):
     代表那些由各大模型厂商在云端原生实现的能力（如 Google Search, Code Execution）。
     此类工具只产生 Schema 提交给大模型用于触发路由，禁止在本地执行。
     """
+
     execution_side: Literal["client", "server"] = "server"
     type_id: str = ""
-    
-    async def execute(self, context: RunContext | None = None, **kwargs: Any) -> ToolResult:
-        raise ToolFatalError(f"[{self.name}] 是服务端工具，禁止在本地层执行引擎中运行。")
-        
-    async def get_definition(self, context: RunContext | None = None) -> ToolDefinition | None:
+
+    async def execute(
+        self, context: RunContext | None = None, **kwargs: Any
+    ) -> ToolResult:
+        raise ToolFatalError(
+            f"[{self.name}] 是服务端工具，禁止在本地层执行引擎中运行。"
+        )
+
+    async def get_definition(
+        self, context: RunContext | None = None
+    ) -> ToolDefinition | None:
         if hasattr(self, "_dynamic_def") and self._dynamic_def is not None:
             return self._dynamic_def
         return ToolDefinition(
             name=self.name,
             description=self.description,
             parameters={"type": "object", "properties": {}},
-            metadata=self.settings.metadata.copy()
+            metadata=self.settings.metadata.copy(),
         )
-
-    def to_gemini_payload(self) -> dict[str, Any] | None: return None
-    def to_openai_payload(self) -> dict[str, Any] | None: return None
 
 
 class FunctionTool(BaseTool):

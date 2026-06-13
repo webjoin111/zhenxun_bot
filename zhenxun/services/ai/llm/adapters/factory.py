@@ -111,6 +111,7 @@ class SmartAdapter(BaseAdapter):
         ("*gemini*", "gemini"),
         ("*deepseek*", "deepseek"),
         ("*minimax*", "minimax"),
+        ("*gpt*", "openai_responses"),
     ]
     _DEFAULT_API_TYPE: ClassVar[str] = "openai"
 

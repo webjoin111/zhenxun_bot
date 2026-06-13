@@ -1,4 +1,3 @@
-import asyncio
 import base64
 import binascii
 import json
@@ -143,7 +142,9 @@ class OpenAIMessageConverter(MessageConverter):
     def __init__(self, api_type: str = "openai"):
         self.api_type = api_type
 
-    def convert_messages(self, messages: list[LLMMessage]) -> list[dict[str, Any]]:
+    async def convert_messages_async(
+        self, messages: list[LLMMessage]
+    ) -> list[dict[str, Any]]:
         openai_messages: list[dict[str, Any]] = []
         for msg in messages:
             if isinstance(msg, SystemMessage):
@@ -184,26 +185,8 @@ class OpenAIMessageConverter(MessageConverter):
                                         "image_url": {"url": part.url},
                                     }
                                 )
-                            elif part.raw is not None:
-                                import base64
-
-                                raw_data = part.raw
-                                mime = part.mime_type or "image/png"
-                                b64_str = base64.b64encode(raw_data).decode("utf-8")
-                                data_uri = f"data:{mime};base64,{b64_str}"
-                                content_parts.append(
-                                    {
-                                        "type": "image_url",
-                                        "image_url": {"url": data_uri},
-                                    }
-                                )
-                            elif part.path is not None:
-                                import base64
-
-                                raw_data = part.path.read_bytes()
-                                mime = part.mime_type or "image/png"
-                                b64_str = base64.b64encode(raw_data).decode("utf-8")
-                                data_uri = f"data:{mime};base64,{b64_str}"
+                            else:
+                                data_uri = await part.get_data_uri("image/png")
                                 content_parts.append(
                                     {
                                         "type": "image_url",
@@ -312,6 +295,12 @@ class OpenAIToolSerializer(ToolSerializer):
 
             openai_tools.append({"type": "function", "function": tool_payload})
         return openai_tools
+
+    def serialize_server_tools(
+        self, tools: list[Any], capabilities: ModelCapabilities
+    ) -> list[dict[str, Any]]:
+        """标准 OpenAI 协议 (/v1/chat/completions) 不支持原生云端工具传递"""
+        return []
 
 
 class OpenAIResponseParser(ResponseParser):
@@ -430,33 +419,12 @@ class OpenAIResponseParser(ResponseParser):
                 try:
                     if tc_data.get("type") == "function":
                         raw_arguments = tc_data["function"]["arguments"]
-                        repaired_arguments = raw_arguments
-
-                        if raw_arguments:
-                            try:
-                                json.loads(raw_arguments)
-                            except json.JSONDecodeError:
-                                try:
-                                    repaired_obj = json_repair.loads(raw_arguments)
-                                    if isinstance(repaired_obj, dict):
-                                        repaired_arguments = json.dumps(
-                                            repaired_obj, ensure_ascii=False
-                                        )
-                                        logger.debug(
-                                            "成功修复损坏的工具参数: "
-                                            f"{raw_arguments} -> {repaired_arguments}"
-                                        )
-                                except Exception as repair_err:
-                                    logger.warning(
-                                        f"尝试修复损坏的工具参数失败: {raw_arguments}, "
-                                        f"错误: {repair_err}"
-                                    )
 
                         content_parts.append(
                             ToolCallPart(
                                 id=tc_data["id"],
                                 tool_name=tc_data["function"]["name"],
-                                args=repaired_arguments,
+                                args=raw_arguments,
                             )
                         )
                 except KeyError as e:
@@ -513,7 +481,9 @@ class ResponsesConfigMapper(OpenAIConfigMapper):
 class ResponsesMessageConverter(MessageConverter):
     """针对 OpenAI Responses API 的消息转换器"""
 
-    def convert_messages(self, messages: list[LLMMessage]) -> list[dict[str, Any]]:
+    async def convert_messages_async(
+        self, messages: list[LLMMessage]
+    ) -> list[dict[str, Any]]:
         input_items: list[dict[str, Any]] = []
         for msg in messages:
             role = msg.role
@@ -545,23 +515,8 @@ class ResponsesMessageConverter(MessageConverter):
                         content_list.append(
                             {"type": "input_image", "image_url": part.url}
                         )
-                    elif part.raw is not None:
-                        import base64
-
-                        raw_data = part.raw
-                        mime = part.mime_type or "image/png"
-                        b64_str = base64.b64encode(raw_data).decode("utf-8")
-                        data_uri = f"data:{mime};base64,{b64_str}"
-                        content_list.append(
-                            {"type": "input_image", "image_url": data_uri}
-                        )
-                    elif part.path is not None:
-                        import base64
-
-                        raw_data = part.path.read_bytes()
-                        mime = part.mime_type or "image/png"
-                        b64_str = base64.b64encode(raw_data).decode("utf-8")
-                        data_uri = f"data:{mime};base64,{b64_str}"
+                    else:
+                        data_uri = await part.get_data_uri("image/png")
                         content_list.append(
                             {"type": "input_image", "image_url": data_uri}
                         )
@@ -619,6 +574,34 @@ class ResponsesToolSerializer(OpenAIToolSerializer):
             res_tools.append(tool_payload)
         return res_tools
 
+    def serialize_server_tools(
+        self, tools: list[Any], capabilities: ModelCapabilities
+    ) -> list[dict[str, Any]]:
+        """OpenAI Responses API 的专门序列化，增加基于 capabilities 的鉴权"""
+        res = []
+        for t in tools:
+            type_id = getattr(t, "type_id", "unknown")
+            if type_id not in capabilities.supported_native_tools:
+                continue
+            if type_id == "web_search":
+                payload = {"type": "web_search"}
+                if getattr(t, "domain_filters", None):
+                    payload["filters"] = t.domain_filters
+                res.append(payload)
+            elif type_id == "code_execution":
+                res.append({"type": "code_interpreter"})
+            elif type_id == "computer_use":
+                res.append(
+                    {
+                        "type": "computer_use",
+                        "display_width_px": getattr(t, "display_width_px", 1024),
+                        "display_height_px": getattr(t, "display_height_px", 768),
+                    }
+                )
+            elif type_id == "file_search":
+                res.append({"type": "file_search"})
+        return res
+
 
 class ResponsesResponseParser(OpenAIResponseParser):
     """针对 OpenAI Responses API 的响应解析器"""
@@ -675,8 +658,6 @@ class OpenAITextHandler(BaseTextHandler):
             "messages": messages,
         }
 
-
-
     async def prepare_text_request(
         self,
         adapter: BaseAdapter,
@@ -705,21 +686,7 @@ class OpenAITextHandler(BaseTextHandler):
                 else StructuredOutputStrategy.NATIVE
             )
 
-        client_executables: list[Any] = []
-        server_tools: list[Any] = []
-        if tools:
-            raw_tools = list(tools.values()) if isinstance(tools, dict) else tools
-            for tool in raw_tools:
-                if getattr(tool, "execution_side", "client") == "server":
-                    server_tools.append(tool)
-                elif hasattr(tool, "get_definition"):
-                    client_executables.append(tool)
-
-        definition_tasks = [executable.get_definition() for executable in client_executables]
-        tool_defs: list[Any] = []
-        if definition_tasks:
-            results = await asyncio.gather(*definition_tasks)
-            tool_defs = [td for td in results if td is not None]
+        tool_defs, _, server_tools = await self._resolve_and_split_tools(tools)
 
         openai_tools: list[dict[str, Any]] | None = None
         if tool_defs:
@@ -788,7 +755,7 @@ class OpenAITextHandler(BaseTextHandler):
                 openai_tools = []
             openai_tools.append(structured_tool)
 
-        converted_messages = self.converter.convert_messages(messages)
+        converted_messages = await self.converter.convert_messages_async(messages)
         body = self._build_base_body(model, converted_messages)
 
         if openai_tools:
@@ -806,11 +773,13 @@ class OpenAITextHandler(BaseTextHandler):
         if server_tools:
             if openai_tools is None:
                 openai_tools = []
-            for st in server_tools:
-                payload = st.to_openai_payload()
-                if payload:
-                    openai_tools.append(payload)
-            body["tools"] = openai_tools
+            server_payloads = self.serializer.serialize_server_tools(
+                server_tools, model.capabilities
+            )
+            if server_payloads:
+                openai_tools.extend(server_payloads)
+            if openai_tools:
+                body["tools"] = openai_tools
 
         if "tools" not in body and "tool_choice" in body:
             body.pop("tool_choice")
@@ -873,8 +842,6 @@ class OpenAIResponsesTextHandler(OpenAITextHandler):
             "model": model.model_name,
             "input": messages,
         }
-
-
 
 
 class OpenAIEmbeddingHandler(BaseEmbeddingHandler):
@@ -1164,8 +1131,7 @@ class OpenAIAudioHandler(BaseAudioHandler):
 class CompositeOpenAITextHandler(BaseTextHandler):
     """
     OpenAI 复合文本对话处理器 (Composite Pattern)。
-    内部包装标准协议与 responses 协议 Handler，根据模型配置在请求时动态路由，
-    从而保证 Adapter 层的绝对干净和无脑委派。
+    内部包装标准协议与 responses 协议 Handler，根据模型配置在请求时动态路由
     """
 
     def __init__(self, api_type: str = "openai"):
@@ -1176,7 +1142,7 @@ class CompositeOpenAITextHandler(BaseTextHandler):
         )
 
     def _get_active_handler(self, model: LLMModelBase) -> BaseTextHandler:
-        current_api_type = model.model_detail.api_type or model.api_type
+        current_api_type = model._get_effective_api_type()
         if current_api_type == "openai_responses":
             return self._responses_handler
         return self._standard_handler

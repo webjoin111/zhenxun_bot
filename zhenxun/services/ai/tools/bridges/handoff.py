@@ -75,5 +75,4 @@ class HandoffTool(BaseTool):
             target=self.target_name,
             reason=reason,
             context_data=context_data,
-            ui_display=f"🔄 正在将控制权移交给 {self.target_name}...",
-        )
+        ).with_log(f"🔄 正在将控制权移交给 {self.target_name}...")

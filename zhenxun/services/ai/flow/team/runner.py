@@ -64,13 +64,12 @@ class TeamRunner:
         sub_context = context.clone_for_member(target_agent.name)
         sub_context.capabilities = list(sub_context.capabilities)
 
-        team_mode = getattr(self.team, "mode", None)
-        mode_str = getattr(team_mode, "value", str(team_mode)) if team_mode else ""
-        if mode_str != "tasks":
+        from zhenxun.services.ai.flow.team.strategy import RouteStrategy
+        if isinstance(self.strategy, RouteStrategy):
             routing_cap = TeamRoutingCapability(
                 team_name=self.team.name,
                 members=self.team.members,
-                state_flow=getattr(self.team, "state_flow", None),
+                state_flow=getattr(self.strategy, "state_flow", None),
             )
             sub_context.capabilities.append(routing_cap)
 

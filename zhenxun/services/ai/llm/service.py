@@ -161,6 +161,8 @@ class LLMModel(LLMModelBase):
             return "gemini"
         if "minimax" in self.model_name.lower():
             return "minimax"
+        if "gpt" in self.model_name.lower():
+            return "openai_responses"
         return "openai"
 
     async def _select_api_key(self, failed_keys: set[str] | None = None) -> str:
@@ -247,6 +249,10 @@ class LLMModel(LLMModelBase):
         from zhenxun.services.ai.core.messages import AudioPart, ImagePart, VideoPart
         from zhenxun.utils.pydantic_compat import model_copy
 
+        _warned_image = False
+        _warned_audio = False
+        _warned_video = False
+
         for msg in messages:
             new_content = []
             for part in msg.content:
@@ -254,25 +260,31 @@ class LLMModel(LLMModelBase):
                     isinstance(part, ImagePart)
                     and ModelModality.IMAGE not in self.capabilities.input_modalities
                 ):
-                    logger.warning(
-                        f"模型 {self.model_name} 不支持图像输入，已自动过滤图片内容。"
-                    )
+                    if not _warned_image:
+                        logger.warning(
+                            f"模型 {self.model_name} 不支持图像输入，已自动过滤图片内容。"
+                        )
+                        _warned_image = True
                     continue
                 if (
                     isinstance(part, AudioPart)
                     and ModelModality.AUDIO not in self.capabilities.input_modalities
                 ):
-                    logger.warning(
-                        f"模型 {self.model_name} 不支持音频输入，已自动过滤音频内容。"
-                    )
+                    if not _warned_audio:
+                        logger.warning(
+                            f"模型 {self.model_name} 不支持音频输入，已自动过滤音频内容。"
+                        )
+                        _warned_audio = True
                     continue
                 if (
                     isinstance(part, VideoPart)
                     and ModelModality.VIDEO not in self.capabilities.input_modalities
                 ):
-                    logger.warning(
-                        f"模型 {self.model_name} 不支持视频输入，已自动过滤视频内容。"
-                    )
+                    if not _warned_video:
+                        logger.warning(
+                            f"模型 {self.model_name} 不支持视频输入，已自动过滤视频内容。"
+                        )
+                        _warned_video = True
                     continue
                 new_content.append(part)
             filtered_messages.append(model_copy(msg, update={"content": new_content}))

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
@@ -52,8 +53,6 @@ class BaseContentPart(BaseModel):
     @classmethod
     def image_base64_part(cls, data: str, mime_type: str = "image/png") -> "ImagePart":
         """创建一个基于 Base64 编码数据的图片片段"""
-        import base64
-
         return ImagePart(raw=base64.b64decode(data), mime_type=mime_type)
 
     @classmethod
@@ -69,15 +68,11 @@ class BaseContentPart(BaseModel):
     @classmethod
     def video_base64_part(cls, data: str, mime_type: str = "video/mp4") -> "VideoPart":
         """创建一个基于 Base64 编码数据的视频片段"""
-        import base64
-
         return VideoPart(raw=base64.b64decode(data), mime_type=mime_type)
 
     @classmethod
     def audio_base64_part(cls, data: str, mime_type: str = "audio/wav") -> "AudioPart":
         """创建一个基于 Base64 编码数据的音频片段"""
-        import base64
-
         return AudioPart(raw=base64.b64decode(data), mime_type=mime_type)
 
     @classmethod
@@ -105,6 +100,41 @@ class BaseContentPart(BaseModel):
             tool_name=name,
             output=result,
         )
+
+    async def get_raw_bytes(self) -> bytes:
+        """统一获取多模态原始字节数据 (自动适配 raw、本地 path 或自动下载公网 url)"""
+        raw_data = getattr(self, "raw", None)
+        if isinstance(raw_data, bytes):
+            return raw_data
+
+        path_data = getattr(self, "path", None)
+        if path_data is not None:
+            from pathlib import Path
+
+            if isinstance(path_data, Path):
+                return path_data.read_bytes()
+
+        url_data = getattr(self, "url", None)
+        if isinstance(url_data, str):
+            from zhenxun.utils.http_utils import AsyncHttpx
+
+            content = await AsyncHttpx.get_content(url_data)
+            if isinstance(content, bytes):
+                return content
+            return b""
+
+        raise ValueError(
+            f"{self.__class__.__name__} 未提供有效的数据源 (url, raw, path)"
+        )
+
+    async def get_base64_data(self) -> str:
+        """统一获取 Base64 编码的字符串数据"""
+        return base64.b64encode(await self.get_raw_bytes()).decode("utf-8")
+
+    async def get_data_uri(self, default_mime: str = "application/octet-stream") -> str:
+        """统一获取 Data URI (data:mime;base64,...) 格式的字符串"""
+        mime = getattr(self, "mime_type", None) or default_mime
+        return f"data:{mime};base64,{await self.get_base64_data()}"
 
 
 class ImagePart(BaseContentPart):
@@ -273,6 +303,7 @@ class EmbedBatch(BaseModel):
     def to_text_only(self, context_name: str) -> list[str]:
         """降级工具：将多模态的批量向量安全剔除图片等内容，回退为纯文本数组"""
         from zhenxun.services.log import logger
+
         texts = []
         for payload in self.payloads:
             if payload.has_multimodal:
@@ -373,7 +404,9 @@ class LLMMessage(BaseModel, Generic[RoleT, ContentT]):
         if isinstance(data, dict):
             content = data.get("content")
             if isinstance(content, str):
-                data["content"] = [{"type": "text", "text": content}] if content.strip() else []
+                data["content"] = (
+                    [{"type": "text", "text": content}] if content.strip() else []
+                )
             elif content is None:
                 data["content"] = []
             elif isinstance(content, list):
@@ -556,8 +589,6 @@ class LLMMessage(BaseModel, Generic[RoleT, ContentT]):
 
     def add_image_base64(self, b64_data: str, mime_type: str = "image/png") -> Self:
         """链式添加 Base64 图片"""
-        import base64
-
         self.content.append(
             cast(Any, ImagePart(raw=base64.b64decode(b64_data), mime_type=mime_type))
         )

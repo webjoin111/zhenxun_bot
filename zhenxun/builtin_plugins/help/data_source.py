@@ -10,11 +10,8 @@ from zhenxun.models.level_user import LevelUser
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.statistics import Statistics
 from zhenxun.services import avatar_service
-from zhenxun.services.ai.llm import (
-    LLMException,
-    LLMMessage,
-    generate,
-)
+from zhenxun.services.ai import LLMException, LLMMessage
+from zhenxun.services.ai.llm import generate
 from zhenxun.services.log import logger
 from zhenxun.services.renderer.result_cache import RenderResultMemoryCache
 from zhenxun.ui.models import PluginMenuCategory, PluginMenuData

@@ -17,7 +17,9 @@ class BaseEngine(ABC):
     """
 
     @abstractmethod
-    async def execute(self, context: LLMContext, payload: RequestData) -> httpx.Response | Any:
+    async def execute(
+        self, context: LLMContext, payload: RequestData
+    ) -> httpx.Response | Any:
         """
         执行底层调用。
 
@@ -42,7 +44,9 @@ class HttpEngine(BaseEngine):
     def __init__(self, client: LLMHttpClient):
         self.client = client
 
-    async def execute(self, context: LLMContext, payload: RequestData) -> httpx.Response:
+    async def execute(
+        self, context: LLMContext, payload: RequestData
+    ) -> httpx.Response:
         if not isinstance(payload, RequestData):
             raise ValueError("HttpEngine 仅支持 RequestData 类型的 Payload")
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import httpx
 
@@ -40,10 +40,10 @@ class ConfigMapper(ABC):
 
 class MessageConverter(ABC):
     @abstractmethod
-    def convert_messages(
+    async def convert_messages_async(
         self, messages: list[LLMMessage]
     ) -> list[dict[str, Any]] | dict[str, Any]:
-        """将通用消息列表转换为特定 API 的消息格式"""
+        """将通用消息列表异步转换为特定 API 的消息格式"""
         ...
 
 
@@ -56,6 +56,13 @@ class ToolSerializer(ABC):
     @abstractmethod
     def sanitize_schema(self, schema: dict[str, Any]) -> dict[str, Any]:
         """对 JSON Schema 进行特定 API 的清洗和格式化"""
+        ...
+
+    @abstractmethod
+    def serialize_server_tools(
+        self, tools: list[Any], capabilities: ModelCapabilities
+    ) -> list[dict[str, Any]]:
+        """将系统内置的原生云端工具转译为底层 API 载荷（执行双重能力校验）"""
         ...
 
 
@@ -71,6 +78,26 @@ class BaseTextHandler(ABC):
     文本对话生成处理器接口。
     负责将真寻的通用消息与工具列表转换为底层 API 的请求格式，并解析响应。
     """
+
+    async def _resolve_and_split_tools(
+        self, tools: list[Any] | None
+    ) -> tuple[list[Any], list[Any], list[Any]]:
+        """
+        统一的工具解析逻辑：分离客户端工具与服务端内置工具，并发获取 Schema。
+        返回: (tool_defs, client_executables, server_tools)
+        """
+        client_executables, server_tools, tool_defs = [], [], []
+        if tools:
+            import asyncio
+            raw_tools = list(tools.values()) if isinstance(tools, dict) else tools
+            for tool in raw_tools:
+                if getattr(tool, "execution_side", "client") == "server":
+                    server_tools.append(tool)
+                elif hasattr(tool, "get_definition"):
+                    client_executables.append(tool)
+            if definition_tasks := [t.get_definition() for t in client_executables]:
+                tool_defs = [td for td in await asyncio.gather(*definition_tasks) if td]
+        return tool_defs, client_executables, server_tools
 
     @abstractmethod
     async def prepare_text_request(

@@ -85,7 +85,6 @@ class CommonOverrides:
     gemini_high_res = _fallback
 
 
-from zhenxun.services.ai.chat_session import ChatSession as AI
 from zhenxun.services.ai.core.configs import GenerationConfig, OutputFormatConfig
 
 
@@ -113,7 +112,6 @@ from zhenxun.services.ai.core.messages import LLMMessage, LLMResponse
 from zhenxun.services.ai.tools import tool as function_tool
 
 __all__ = [
-    "AI",
     "AIConfig",
     "CommonOverrides",
     "GenerationConfig",

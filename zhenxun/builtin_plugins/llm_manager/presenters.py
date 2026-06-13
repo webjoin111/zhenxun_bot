@@ -72,7 +72,7 @@ class Presenters:
 
         cap_list = []
         if ModelModality.IMAGE in caps.input_modalities:
-            cap_list.append("视觉")
+            cap_list.append("图片")
         if ModelModality.VIDEO in caps.input_modalities:
             cap_list.append("视频")
         if ModelModality.AUDIO in caps.input_modalities:

@@ -51,6 +51,9 @@ class RoutedLLMModel(LLMModelBase):
         self.override_config = override_config
         self.model_name = group_name
 
+    def _get_effective_api_type(self) -> str:
+        return "smart"
+
     async def __aenter__(self):
         return self
 

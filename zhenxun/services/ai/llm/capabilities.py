@@ -7,28 +7,12 @@ from zhenxun.services.ai.core.models import (
 )
 from zhenxun.utils.pydantic_compat import model_copy
 
-PATTERNS_GEMINI_2_5_FLASH = [
-    "gemini-2.5-flash*",
-    "gemini-flash*",
-    "gemini*lite*",
-    "gemini-flash-latest",
-]
-PATTERNS_GEMINI_2_5_PRO = ["gemini-2.5-pro*"]
-PATTERNS_GEMINI_3 = ["gemini-3*"]
-PATTERNS_OPENAI_REASONING = ["o1-*", "o3-*"]
-PATTERNS_DEEPSEEK_PRO = ["deepseek-v4-pro*"]
-PATTERNS_DEEPSEEK_FLASH = ["deepseek-v4-flash*"]
-PATTERNS_MINIMAX_REASONING = ["*MiniMax-M2*", "*minimax-m2*"]
-PATTERNS_GEMINI_IMAGE = ["*gemini*image*"]
-PATTERNS_GEMINI_EMBEDDING_2 = ["gemini-embedding-2*"]
-PATTERNS_JINA_EMBEDDING = ["jina-embeddings-*"]
-PATTERNS_JINA_V5_OMNI = ["jina-embeddings-v5-omni*"]
-PATTERNS_JINA_RERANKER = ["jina-reranker-*", "jina-colbert-*"]
-
-PATTERNS_1M_MODELS = [
-    "mimo-v2.5*", "mimo-v2-pro*",
-    "*MiniMax-M3*"
-]
+CTX_1M = 1_000_000
+CTX_400K = 400_000
+CTX_256K = 256_000
+CTX_200K = 204_800
+CTX_128K = 128_000
+CTX_8K = 8_192
 
 CAP_MULTIMODAL_EMBEDDING = ModelCapabilities(
     input_modalities={
@@ -102,6 +86,16 @@ CAP_OPENAI_REASONING = ModelCapabilities(
         "file_search",
     },
 )
+CAP_OPENAI_MULTIMODAL = ModelCapabilities(
+    input_modalities={ModelModality.TEXT, ModelModality.IMAGE},
+    output_modalities={ModelModality.TEXT},
+    supports_tool_calling=True,
+    supported_native_tools={
+        "web_search",
+        "computer_use",
+        "file_search",
+    },
+)
 CAP_DEEPSEEK_V4 = ModelCapabilities(
     input_modalities={ModelModality.TEXT},
     output_modalities={ModelModality.TEXT},
@@ -115,6 +109,29 @@ CAP_MINIMAX_REASONING = ModelCapabilities(
     supports_tool_calling=True,
     reasoning_mode=ReasoningMode.EFFORT,
     reasoning_visibility="visible",
+)
+
+CAP_GLM_MULTIMODAL = ModelCapabilities(
+    input_modalities={
+        ModelModality.TEXT,
+        ModelModality.IMAGE,
+        ModelModality.VIDEO,
+        ModelModality.FILE,
+    },
+    output_modalities={ModelModality.TEXT},
+    supports_tool_calling=True,
+)
+
+CAP_MINIMAX_MULTIMODAL = ModelCapabilities(
+    input_modalities={ModelModality.TEXT, ModelModality.IMAGE, ModelModality.VIDEO},
+    output_modalities={ModelModality.TEXT},
+    supports_tool_calling=True,
+)
+
+CAP_TEXT_EMBEDDING = ModelCapabilities(
+    input_modalities={ModelModality.TEXT},
+    is_embedding_model=True,
+    supports_tool_calling=False,
 )
 
 CAP_RERANK_ONLY = ModelCapabilities(
@@ -149,14 +166,6 @@ DEFAULT_PERMISSIVE_CAPABILITIES = ModelCapabilities(
         ModelModality.AUDIO,
     },
     supports_tool_calling=True,
-    supported_native_tools={
-        "web_search",
-        "code_execution",
-        "computer_use",
-        "file_search",
-        "google_map",
-        "url_context",
-    },
 )
 
 MODEL_ALIAS_MAPPING: dict[str, str] = {
@@ -165,54 +174,56 @@ MODEL_ALIAS_MAPPING: dict[str, str] = {
 }
 
 
+_ROUTING_TABLE: list[tuple[list[str], ModelCapabilities, int]] = [
+    (["glm-4.6v*"], CAP_GLM_MULTIMODAL, CTX_128K),
+    (["glm-4.7-flash*"], STANDARD_TEXT_TOOL_CAPABILITIES, CTX_128K),
+    (["deepseek-v4-pro*", "deepseek-v4-flash*"], CAP_DEEPSEEK_V4, CTX_1M),
+    (["glm-4-long*"], STANDARD_TEXT_TOOL_CAPABILITIES, CTX_1M),
+    (["*MiniMax-M3*"], CAP_MINIMAX_MULTIMODAL, CTX_1M),
+    (["mimo-v2.5*", "mimo-v2-pro*"], DEFAULT_PERMISSIVE_CAPABILITIES, CTX_1M),
+    (["gpt-5.5*", "gpt-5.4*"], CAP_OPENAI_MULTIMODAL, CTX_1M),
+    (["gemini-3*", "gemini-2.5-pro*"], CAP_GEMINI_3, CTX_1M),
+    (["gemini-2.5-flash*", "gemini-flash*", "gemini*lite*"], CAP_GEMINI_2_5, CTX_1M),
+    (
+        ["gpt-5*", "gpt-5-mini*", "gpt-5-nano*", "*codex*"],
+        CAP_OPENAI_MULTIMODAL,
+        CTX_400K,
+    ),
+    (
+        ["kimi-k2.7*", "kimi-k2.6*", "kimi-k2.5*"],
+        DEFAULT_PERMISSIVE_CAPABILITIES,
+        CTX_256K,
+    ),
+    (["glm-5v*"], CAP_GLM_MULTIMODAL, CTX_200K),
+    (["glm-5*", "glm-4.7*", "glm-4.6*"], STANDARD_TEXT_TOOL_CAPABILITIES, CTX_200K),
+    (["*MiniMax-M2*", "*minimax-m2*"], CAP_MINIMAX_REASONING, CTX_200K),
+    (["gpt-4*", "gpt-3.5*", "gpt-*"], CAP_OPENAI_MULTIMODAL, CTX_128K),
+    (["o1-*", "o3-*"], CAP_OPENAI_REASONING, CTX_128K),
+    (["glm-4v*"], CAP_GLM_MULTIMODAL, CTX_128K),
+    (
+        ["glm-4.5*", "glm-4-flashx-*", "glm-4*"],
+        STANDARD_TEXT_TOOL_CAPABILITIES,
+        CTX_128K,
+    ),
+    (["*gemini*image*"], CAP_GEMINI_IMAGE, CTX_128K),
+    (
+        ["gemini-embedding-2*", "jina-embeddings-v5-omni*"],
+        CAP_MULTIMODAL_EMBEDDING,
+        CTX_8K,
+    ),
+    (["jina-embeddings-*"], CAP_TEXT_EMBEDDING, CTX_8K),
+    (["*reranker*", "*rerank*", "bge-m3*", "jina-colbert-*"], CAP_RERANK_ONLY, CTX_8K),
+]
+
+
 def _build_registry() -> dict[str, ModelCapabilities]:
-    """构建模型能力注册表"""
+    """构建模型能力注册表 (基于声明式路由表)"""
     registry: dict[str, ModelCapabilities] = {}
 
-    def register_family(
-        patterns: list[str],
-        cap: ModelCapabilities,
-        context_limits: dict[str, int] | None = None,
-    ) -> None:
+    for patterns, cap_template, ctx_limit in _ROUTING_TABLE:
+        cap_instance = model_copy(cap_template, update={"max_input_tokens": ctx_limit})
         for pattern in patterns:
-            if context_limits:
-                registry[pattern] = model_copy(cap, update=context_limits)
-            else:
-                registry[pattern] = cap
-
-    ctx_1m = {"max_input_tokens": 1000000}
-    ctx_200k = {"max_input_tokens": 204800}
-    ctx_128k = {"max_input_tokens": 128000}
-    ctx_8k = {"max_input_tokens": 8192}
-
-    register_family(PATTERNS_GEMINI_IMAGE, CAP_GEMINI_IMAGE, ctx_128k)
-    register_family(PATTERNS_GEMINI_3, CAP_GEMINI_3, ctx_1m)
-    register_family(PATTERNS_GEMINI_2_5_FLASH, CAP_GEMINI_2_5, ctx_1m)
-    register_family(PATTERNS_GEMINI_2_5_PRO, CAP_GEMINI_2_5, ctx_1m)
-    register_family(PATTERNS_OPENAI_REASONING, CAP_OPENAI_REASONING, ctx_128k)
-    register_family(["gpt-4o*"], CAP_GEMINI_2_5, ctx_128k)
-    register_family(["gpt-4-*", "gpt-5*"], STANDARD_TEXT_TOOL_CAPABILITIES, ctx_8k)
-    register_family(PATTERNS_DEEPSEEK_PRO, CAP_DEEPSEEK_V4, ctx_128k)
-    register_family(PATTERNS_DEEPSEEK_FLASH, STANDARD_TEXT_TOOL_CAPABILITIES, ctx_128k)
-    register_family(PATTERNS_MINIMAX_REASONING, CAP_MINIMAX_REASONING, ctx_200k)
-    register_family(PATTERNS_1M_MODELS, DEFAULT_PERMISSIVE_CAPABILITIES, ctx_1m)
-
-    register_family(["*reranker*", "*rerank*", "bge-m3*"], CAP_RERANK_ONLY)
-
-    register_family(PATTERNS_GEMINI_EMBEDDING_2, CAP_MULTIMODAL_EMBEDDING, ctx_8k)
-    register_family(PATTERNS_JINA_V5_OMNI, CAP_MULTIMODAL_EMBEDDING, ctx_8k)
-
-    register_family(
-        PATTERNS_JINA_EMBEDDING,
-        ModelCapabilities(
-            input_modalities={ModelModality.TEXT},
-            is_embedding_model=True,
-            supports_tool_calling=False,
-        ),
-        ctx_8k,
-    )
-
-    register_family(PATTERNS_JINA_RERANKER, CAP_RERANK_ONLY, ctx_8k)
+            registry[pattern] = cap_instance
 
     return registry
 

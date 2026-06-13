@@ -102,6 +102,17 @@ def get_default_providers() -> list[dict[str, Any]]:
                 {"model_name": "jina-reranker-v2-base-multilingual"},
             ],
         },
+        {
+            "name": "MiniMax",
+            "api_key": "YOUR_API_KEY",
+            "api_base": "https://api.minimaxi.com",
+            "api_type": "minimax",
+            "models": [
+                {"model_name": "MiniMax-M3"},
+                {"model_name": "MiniMax-M2.7"},
+                {"model_name": "MiniMax-M2.7-highspeed"},
+            ],
+        },
     ]
 
 

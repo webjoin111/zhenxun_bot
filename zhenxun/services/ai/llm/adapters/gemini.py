@@ -4,7 +4,8 @@ Gemini API 适配器
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from zhenxun.services.ai.core.configs import GenerationConfig
+from zhenxun.services.ai.protocols.llm import LLMModelBase
 
 from .base import BaseAdapter
 from .handlers.gemini_handlers import (
@@ -13,9 +14,6 @@ from .handlers.gemini_handlers import (
     GeminiImageHandler,
     GeminiTextHandler,
 )
-
-from zhenxun.services.ai.core.configs import GenerationConfig
-from zhenxun.services.ai.protocols.llm import LLMModelBase
 
 
 class GeminiAdapter(BaseAdapter):

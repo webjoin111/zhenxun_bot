@@ -154,8 +154,15 @@ def _sanitize_openai_response(response_json: dict) -> dict:
                     f"<{len(tool_names)} tools hidden: {', '.join(tool_names)}>"
                 )
 
+        if not debug_conf.show_safety:
+            for safety_key in ("content_filters", "prompt_annotations"):
+                if safety_key in sanitized_json:
+                    sanitized_json[safety_key] = "<Safety Ratings Hidden>"
+
         if "choices" in sanitized_json and isinstance(sanitized_json["choices"], list):
             for choice in sanitized_json["choices"]:
+                if not debug_conf.show_safety and "content_filter_results" in choice:
+                    choice["content_filter_results"] = "<Safety Ratings Hidden>"
                 if "message" in choice and isinstance(choice["message"], dict):
                     message = choice["message"]
                     if "images" in message and isinstance(message["images"], list):
@@ -438,7 +445,7 @@ def sanitize_for_logging(data: Any, context: str | None = None) -> Any:
     if context == "nonebot_message":
         if isinstance(data, Message):
             return _sanitize_nonebot_message(data)
-    elif context == "openai_response":
+    elif context in ("openai_response", "openai_responses_response"):
         if isinstance(data, dict):
             return _sanitize_openai_response(data)
     elif context == "gemini_response":
@@ -447,7 +454,7 @@ def sanitize_for_logging(data: Any, context: str | None = None) -> Any:
     elif context == "gemini_request":
         if isinstance(data, dict):
             return _sanitize_gemini_request(data)
-    elif context == "openai_request":
+    elif context in ("openai_request", "openai_responses_request"):
         if isinstance(data, dict):
             return _sanitize_openai_request(data)
     elif context == "ui_html":

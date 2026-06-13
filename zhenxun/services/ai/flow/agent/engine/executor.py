@@ -295,19 +295,22 @@ class AgentExecutor:
                     )
 
                 completed_call_ids = {
-                    p.tool_call_id for p in response.content_parts if isinstance(p, ToolReturnPart)
+                    p.tool_call_id
+                    for p in response.content_parts
+                    if isinstance(p, ToolReturnPart)
                 }
                 client_tool_calls = []
                 for call in response.tool_calls:
                     tool_inst = tools.get(call.tool_name) if tools else None
-                    is_server_side = (
-                        call.id in completed_call_ids
-                        or (tool_inst and getattr(tool_inst, "execution_side", "client") == "server")
+                    is_server_side = call.id in completed_call_ids or (
+                        tool_inst
+                        and getattr(tool_inst, "execution_side", "client") == "server"
                     )
 
                     if is_server_side:
                         logger.debug(
-                            f"☁️ [AgentExecutor] 检测到云端工具调用: {call.tool_name}，已跳过本地执行。"
+                            "☁️ [AgentExecutor] 检测到云端工具调用: "
+                            f"{call.tool_name}，已跳过本地执行。"
                         )
                         if event_streamer:
                             from zhenxun.services.ai.core.stream_events import (
@@ -404,6 +407,10 @@ class AgentExecutor:
                     else:
                         _, tool_res = res_or_exc
 
+                        log_msg = getattr(tool_res, "log_content", None)
+                        if log_msg:
+                            logger.info(f"📝 [{original_call.tool_name}] {log_msg}")
+
                         if hasattr(tool_res, "directive"):
                             if tool_res.directive == "submit_structured":
                                 structured_result = tool_res.output
@@ -430,10 +437,6 @@ class AgentExecutor:
                                 await ui.send_display(display_msg)
 
                         if tool_res is not None:
-                            log_msg = getattr(tool_res, "log_content", None)
-                            if log_msg:
-                                logger.info(f"📝 [{original_call.tool_name}] {log_msg}")
-
                             from zhenxun.services.ai.core.messages import (
                                 AudioPart,
                                 FilePart,

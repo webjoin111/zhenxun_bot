@@ -1,8 +1,8 @@
-import asyncio
 import base64
 import io
 import json
 from typing import Any
+import uuid
 import wave
 
 import httpx
@@ -60,7 +60,6 @@ from zhenxun.services.ai.llm.adapters.handlers.base import (
 )
 from zhenxun.services.ai.protocols.llm import LLMModelBase
 from zhenxun.services.log import logger
-from zhenxun.utils.http_utils import AsyncHttpx
 
 
 class GeminiConfigMapper(ConfigMapper):
@@ -251,84 +250,42 @@ class GeminiMessageConverter(MessageConverter):
             return {"text": part.thought_text, "thought": True}
 
         if isinstance(part, ImagePart):
-            if part.url is not None:
-                logger.debug(f"正在为Gemini下载并编码URL图片: {part.url}")
-                try:
-                    raw_data = await AsyncHttpx.get_content(part.url)
-                except Exception as e:
-                    logger.error(f"下载或编码URL图片失败: {e}", e=e)
-                    raise ValueError(f"无法处理图片URL: {e}")
-            elif part.raw is not None:
-                raw_data = part.raw
-            elif part.path is not None:
-                raw_data = part.path.read_bytes()
-            else:
-                raise ValueError("ImagePart 必须且只能提供 url, raw, path 中的一个")
-
-            mime_type = part.mime_type or "image/jpeg"
-            base64_data = base64.b64encode(raw_data).decode("utf-8")
-            payload = {"inlineData": {"mimeType": mime_type, "data": base64_data}}
+            payload = {
+                "inlineData": {
+                    "mimeType": part.mime_type or "image/jpeg",
+                    "data": await part.get_base64_data(),
+                }
+            }
             payload.update(_get_gemini_resolution_dict())
             return payload
 
         if isinstance(part, VideoPart):
-            if part.url is not None:
-                logger.debug(f"正在为Gemini下载并编码URL视频: {part.url}")
-                try:
-                    raw_data = await AsyncHttpx.get_content(part.url)
-                except Exception as e:
-                    logger.error(f"下载或编码URL视频失败: {e}", e=e)
-                    raise ValueError(f"无法处理视频URL: {e}")
-            elif part.raw is not None:
-                raw_data = part.raw
-            elif part.path is not None:
-                raw_data = part.path.read_bytes()
-            else:
-                raise ValueError("VideoPart 必须且只能提供 url, raw, path 中的一个")
-            mime_type = part.mime_type or "video/mp4"
-            base64_data = base64.b64encode(raw_data).decode("utf-8")
-            payload = {"inlineData": {"mimeType": mime_type, "data": base64_data}}
+            payload = {
+                "inlineData": {
+                    "mimeType": part.mime_type or "video/mp4",
+                    "data": await part.get_base64_data(),
+                }
+            }
             payload.update(_get_gemini_resolution_dict())
             return payload
 
         if isinstance(part, AudioPart):
-            if part.url is not None:
-                logger.debug(f"正在为Gemini下载并编码URL音频: {part.url}")
-                try:
-                    raw_data = await AsyncHttpx.get_content(part.url)
-                except Exception as e:
-                    logger.error(f"下载或编码URL音频失败: {e}", e=e)
-                    raise ValueError(f"无法处理音频URL: {e}")
-            elif part.raw is not None:
-                raw_data = part.raw
-            elif part.path is not None:
-                raw_data = part.path.read_bytes()
-            else:
-                raise ValueError("AudioPart 必须且只能提供 url, raw, path 中的一个")
-            mime_type = part.mime_type or "audio/mp3"
-            base64_data = base64.b64encode(raw_data).decode("utf-8")
-            payload = {"inlineData": {"mimeType": mime_type, "data": base64_data}}
+            payload = {
+                "inlineData": {
+                    "mimeType": part.mime_type or "audio/mp3",
+                    "data": await part.get_base64_data(),
+                }
+            }
             payload.update(_get_gemini_resolution_dict())
             return payload
 
         if isinstance(part, FilePart):
-            if part.url is not None:
-                logger.debug(f"正在为Gemini下载并编码URL文件: {part.url}")
-                try:
-                    raw_data = await AsyncHttpx.get_content(part.url)
-                except Exception as e:
-                    logger.error(f"下载或编码URL文件失败: {e}", e=e)
-                    raise ValueError(f"无法处理文件URL: {e}")
-            elif part.raw is not None:
-                raw_data = part.raw
-            elif part.path is not None:
-                raw_data = part.path.read_bytes()
-            else:
-                raise ValueError("FilePart 必须且只能提供 url, raw, path 中的一个")
-
-            mime_type = part.mime_type or "application/octet-stream"
-            base64_data = base64.b64encode(raw_data).decode("utf-8")
-            payload = {"inlineData": {"mimeType": mime_type, "data": base64_data}}
+            payload = {
+                "inlineData": {
+                    "mimeType": part.mime_type or "application/octet-stream",
+                    "data": await part.get_base64_data(),
+                }
+            }
             payload.update(_get_gemini_resolution_dict())
             return payload
 
@@ -485,6 +442,27 @@ class GeminiToolSerializer(ToolSerializer):
             function_declarations.append(declaration)
         return function_declarations
 
+    def serialize_server_tools(
+        self, tools: list[Any], capabilities: ModelCapabilities
+    ) -> list[dict[str, Any]]:
+        """Gemini 接口的专门序列化，增加基于 capabilities 的鉴权"""
+        res = []
+        for t in tools:
+            type_id = getattr(t, "type_id", "unknown")
+            if type_id not in capabilities.supported_native_tools:
+                continue
+            if type_id == "web_search":
+                res.append({"googleSearch": {}})
+            elif type_id == "code_execution":
+                res.append({"codeExecution": {}})
+            elif type_id == "file_search":
+                res.append({"fileSearch": {}})
+            elif type_id == "google_map":
+                res.append({"googleMaps": {}})
+            elif type_id == "url_context":
+                res.append({"urlContext": {}})
+        return res
+
 
 class GeminiResponseParser(ResponseParser):
     def validate_response(self, response_json: dict[str, Any]) -> None:
@@ -601,6 +579,8 @@ class GeminiResponseParser(ResponseParser):
                 fc_sig = part_signature
                 try:
                     call_id = fc_data.get("id", "")
+                    if not call_id:
+                        call_id = f"call_{uuid.uuid4().hex[:16]}"
                     tc_part = ToolCallPart(
                         id=call_id,
                         tool_name=fc_data.get("name")
@@ -618,8 +598,11 @@ class GeminiResponseParser(ResponseParser):
             elif "functionResponse" in part or "toolResponse" in part:
                 resp_data = part.get("functionResponse") or part.get("toolResponse")
                 try:
+                    call_id = resp_data.get("id", "")
+                    if not call_id:
+                        call_id = f"call_{uuid.uuid4().hex[:16]}"
                     tc_part = ToolReturnPart(
-                        tool_call_id=resp_data.get("id", ""),
+                        tool_call_id=call_id,
                         tool_name=resp_data.get("name")
                         or resp_data.get("toolType", ""),
                         output=resp_data.get("response", {}),
@@ -690,15 +673,11 @@ class GeminiTextHandler(BaseTextHandler):
             config if config is not None else getattr(model, "_generation_config", None)
         )
 
-        client_executables = []
-        server_tools = []
-        if tools:
-            raw_tools = list(tools.values()) if isinstance(tools, dict) else tools
-            for tool in raw_tools:
-                if getattr(tool, "execution_side", "client") == "server":
-                    server_tools.append(tool)
-                elif hasattr(tool, "get_definition"):
-                    client_executables.append(tool)
+        (
+            tool_defs,
+            client_executables,
+            server_tools,
+        ) = await self._resolve_and_split_tools(tools)
 
         from zhenxun.services.ai.config import get_llm_config
 
@@ -777,18 +756,11 @@ class GeminiTextHandler(BaseTextHandler):
         all_tools_for_request = []
 
         if server_tools:
-            supported = model.capabilities.supported_native_tools
-            for st in server_tools:
-                if getattr(st, "type_id", "") not in supported:
-                    logger.warning(
-                        f"模型 {model.model_name} 声明不支持云端工具 {st.name}，已跳过"
-                    )
-                    continue
-                payload = st.to_gemini_payload()
-                if payload:
-                    all_tools_for_request.append(payload)
-
-            if all_tools_for_request:
+            server_payloads = self.serializer.serialize_server_tools(
+                server_tools, model.capabilities
+            )
+            if server_payloads:
+                all_tools_for_request.extend(server_payloads)
                 body.setdefault("toolConfig", {}).update(
                     {
                         "includeServerSideToolInvocations": True,
@@ -797,28 +769,13 @@ class GeminiTextHandler(BaseTextHandler):
 
         has_user_functions = False
         if client_executables:
-            from zhenxun.services.ai.protocols.tool import ToolExecutable
+            function_declarations = self.serializer.serialize_tools(tool_defs)
 
-            function_tools: list[ToolExecutable] = []
-            for tool in client_executables:
-                function_tools.append(tool)
-
-            if function_tools:
-                definition_tasks = [
-                    executable.get_definition() for executable in function_tools
-                ]
-                results = await asyncio.gather(*definition_tasks)
-                tool_definitions = [td for td in results if td is not None]
-
-                function_declarations = self.serializer.serialize_tools(
-                    tool_definitions
+            if function_declarations:
+                all_tools_for_request.append(
+                    {"functionDeclarations": function_declarations}
                 )
-
-                if function_declarations:
-                    all_tools_for_request.append(
-                        {"functionDeclarations": function_declarations}
-                    )
-                    has_user_functions = True
+                has_user_functions = True
 
         if all_tools_for_request:
             body["tools"] = all_tools_for_request

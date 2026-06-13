@@ -381,7 +381,8 @@ class BaseAdapter(ABC):
     async def parse_speech_response(
         self, model: LLMModelBase, raw_response: httpx.Response
     ) -> AudioResponse:
-        """解析语音响应并委派给 `audio_handler`。注意传入的是 httpx.Response 的 raw 对象"""
+        """解析语音响应并委派给 `audio_handler`。
+        注意传入的是 httpx.Response 的 raw 对象"""
         if self.audio_handler:
             return await self.audio_handler.parse_speech_response(
                 adapter=self, model=model, raw_response=raw_response

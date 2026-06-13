@@ -1,26 +1,27 @@
 """
-Zhenxun AI Core Facade
-
-提供了大模型交互、智能体编排和工具生态的核心门面入口。
+Zhenxun AI Core Facade (系统唯一对外的超级门面)
 """
 
-from .chat_session import ChatSession
-from .flow import Agent
-from .llm import (
-    IntentBuilder,
-    chat,
-    generate_structured,
-)
+from .core.configs import GenerationConfig
+from .core.exceptions import LLMException
+from .core.messages import LLMMessage, LLMResponse
+from .flow import Agent, Team, Workflow
+from .llm import IntentBuilder, chat, generate_structured
 from .run import Inject, RunContext
 from .tools import Rules, tool
 
 __all__ = [
     "Agent",
-    "ChatSession",
+    "GenerationConfig",
     "Inject",
     "IntentBuilder",
+    "LLMException",
+    "LLMMessage",
+    "LLMResponse",
     "Rules",
     "RunContext",
+    "Team",
+    "Workflow",
     "chat",
     "generate_structured",
     "tool",

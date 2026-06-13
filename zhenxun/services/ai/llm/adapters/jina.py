@@ -1,5 +1,3 @@
-from typing import TYPE_CHECKING
-
 from zhenxun.services.ai.core.configs import LLMEmbeddingConfig
 from zhenxun.services.ai.core.messages import EmbedBatch
 from zhenxun.services.ai.llm.adapters.base import BaseAdapter, RequestData
@@ -8,7 +6,6 @@ from zhenxun.services.ai.llm.adapters.handlers.openai_handlers import (
     OpenAIRerankHandler,
 )
 from zhenxun.services.ai.llm.adapters.openai import OpenAICompatAdapter
-
 from zhenxun.services.ai.protocols.llm import LLMModelBase
 
 
@@ -49,42 +46,24 @@ class JinaEmbeddingHandler(OpenAIEmbeddingHandler):
                     if isinstance(part, TextPart):
                         jina_content.append({"text": part.text})
                     elif isinstance(part, ImagePart):
-                        mime = part.mime_type or "image/png"
                         if part.url:
                             jina_content.append({"image": part.url})
-                        elif part.raw:
-                            b64_str = base64.b64encode(part.raw).decode("utf-8")
-                            jina_content.append(
-                                {"image": f"data:{mime};base64,{b64_str}"}
-                            )
-                        elif part.path:
-                            b64_str = base64.b64encode(part.path.read_bytes()).decode(
-                                "utf-8"
-                            )
-                            jina_content.append(
-                                {"image": f"data:{mime};base64,{b64_str}"}
-                            )
+                        else:
+                            jina_content.append({"image": await part.get_data_uri("image/png")})
                     elif isinstance(part, AudioPart):
-                        mime = part.mime_type or "audio/mp3"
                         if part.url:
                             jina_content.append({"audio": part.url})
-                        elif part.raw:
-                            b64_str = base64.b64encode(part.raw).decode("utf-8")
-                            jina_content.append(
-                                {"audio": f"data:{mime};base64,{b64_str}"}
-                            )
+                        else:
+                            jina_content.append({"audio": await part.get_data_uri("audio/mp3")})
                     elif isinstance(part, VideoPart):
-                        mime = part.mime_type or "video/mp4"
                         if part.url:
                             jina_content.append({"video": part.url})
-                        elif part.raw:
-                            b64_str = base64.b64encode(part.raw).decode("utf-8")
-                            jina_content.append(
-                                {"video": f"data:{mime};base64,{b64_str}"}
-                            )
+                        else:
+                            jina_content.append({"video": await part.get_data_uri("video/mp4")})
                     elif isinstance(part, FilePart):
                         logger.warning(
-                            f"Jina 暂不明确支持 Base64 内联 {type(part).__name__}，已忽略。"
+                            f"Jina 暂不明确支持 Base64 内联 "
+                            f"{type(part).__name__}，已忽略。"
                         )
 
                 if not jina_content:

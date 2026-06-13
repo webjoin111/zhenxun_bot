@@ -3,9 +3,8 @@ from collections.abc import AsyncIterator
 import contextlib
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
-from typing_extensions import Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from zhenxun.services.ai.run.context import RunContext
 
@@ -38,15 +37,6 @@ class BaseRuntimeConfig(BaseModel):
     """是否使用临时会话，不持久化历史记录"""
     concurrency_policy: ConcurrencyPolicy | None = Field(default=None)
     """并发执行策略。如果未显式指定，无状态(stateless=True)默认为ALLOW，有状态(stateless=False)默认为QUEUE。"""
-
-    @model_validator(mode="after")
-    def _set_default_concurrency_policy(self) -> Self:
-        if self.concurrency_policy is None:
-            if self.stateless:
-                self.concurrency_policy = ConcurrencyPolicy.ALLOW
-            else:
-                self.concurrency_policy = ConcurrencyPolicy.QUEUE
-        return self
 
 
 class BaseRunnable(ABC, Generic[T_RunResult]):
@@ -111,10 +101,13 @@ class BaseRunnable(ABC, Generic[T_RunResult]):
         except ControlFlowExit as e:
             logger.info(f"[{self.name}] 触发底层控制流，已安全退出: {e}")
 
-            display_msg = getattr(e, "display", None) or getattr(e, "display_content", None)
+            display_msg = getattr(e, "display", None) or getattr(
+                e, "display_content", None
+            )
             if display_msg:
                 try:
                     from nonebot_plugin_alconna import UniMessage
+
                     if isinstance(display_msg, UniMessage):
                         bot = context.get_bot() if context else None
                         event = context.get_event() if context else None
@@ -122,11 +115,13 @@ class BaseRunnable(ABC, Generic[T_RunResult]):
                             await display_msg.send(event, bot=bot)
                     else:
                         from zhenxun.utils.message import MessageUtils
+
                         await MessageUtils.build_message(str(display_msg)).send()
                 except Exception:
                     pass
 
             import asyncio
+
             raise asyncio.CancelledError()
 
     @abstractmethod

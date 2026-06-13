@@ -1,8 +1,7 @@
 import time
 from typing import Any
 
-from zhenxun.services.ai.core.messages import LLMMessage
-from zhenxun.services.ai.llm import LLMException
+from zhenxun.services.ai import LLMException, LLMMessage
 from zhenxun.services.ai.llm.manager import (
     get_default_model as _get_default_model,
 )

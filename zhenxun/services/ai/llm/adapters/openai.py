@@ -7,7 +7,8 @@ OpenAI API 适配器
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import TYPE_CHECKING
+
+from zhenxun.services.ai.protocols.llm import LLMModelBase
 
 from .base import (
     BaseAdapter,
@@ -20,8 +21,6 @@ from .handlers.openai_handlers import (
     OpenAIImageHandler,
     OpenAIRerankHandler,
 )
-
-from zhenxun.services.ai.protocols.llm import LLMModelBase
 
 
 class OpenAICompatAdapter(BaseAdapter):
@@ -113,7 +112,7 @@ class OpenAIAdapter(OpenAICompatAdapter):
         if model.model_detail.endpoint:
             return model.model_detail.endpoint
 
-        current_api_type = model.model_detail.api_type or model.api_type
+        current_api_type = model._get_effective_api_type()
 
         if current_api_type == "openai_responses":
             return "/v1/responses"
