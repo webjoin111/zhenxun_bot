@@ -452,6 +452,8 @@ class BaseAdapter(ABC):
                     "invalid_model": LLMErrorCode.MODEL_NOT_FOUND,
                     "context_length_exceeded": LLMErrorCode.CONTEXT_LENGTH_EXCEEDED,
                     "max_tokens_exceeded": LLMErrorCode.CONTEXT_LENGTH_EXCEEDED,
+                    "1261": LLMErrorCode.CONTEXT_LENGTH_EXCEEDED,
+                    "string_above_max_length": LLMErrorCode.CONTEXT_LENGTH_EXCEEDED,
                     "invalid_request_error": LLMErrorCode.INVALID_PARAMETER,
                     "invalid_parameter": LLMErrorCode.INVALID_PARAMETER,
                 }
@@ -544,6 +546,14 @@ class BaseAdapter(ABC):
                 error_code = LLMErrorCode.INVALID_PARAMETER
             elif "API_KEY_INVALID" in text_upper or "API KEY NOT VALID" in text_upper:
                 error_code = LLMErrorCode.API_KEY_INVALID
+            elif (
+                status_upper
+                in ["1261", "STRING_ABOVE_MAX_LENGTH", "CONTEXT_LENGTH_EXCEEDED"]
+                or "EXCEEDS MAX LENGTH" in text_upper
+                or "STRING TOO LONG" in text_upper
+                or "MAXIMUM CONTEXT LENGTH" in text_upper
+            ):
+                error_code = LLMErrorCode.CONTEXT_LENGTH_EXCEEDED
             else:
                 error_code = LLMErrorCode.INVALID_PARAMETER
         elif response.status_code in [401, 403]:

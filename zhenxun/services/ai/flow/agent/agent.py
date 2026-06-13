@@ -560,7 +560,6 @@ class Agent(
         except ControlFlowExit as e:
             raise e
         except Exception as e:
-            logger.error(f"Agent '{self.name}' 运行失败: {e}", e=e)
             raise e
         finally:
             context.capabilities = original_capabilities

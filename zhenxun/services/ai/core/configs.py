@@ -272,117 +272,7 @@ class MiniMaxTTSOptions(BaseProviderOption):
     """自定义发音字典 (如: {"tone": ["处理/(chu3)(li3)"]})"""
 
 
-class BaseNativeTool(BaseModel):
-    """云端原生工具多态基类"""
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    def get_tool_name(self) -> str:
-        return cast(str, getattr(self, "type"))
-
-    def to_gemini_payload(self) -> dict[str, Any] | None:
-        return None
-
-    def to_openai_payload(self) -> dict[str, Any] | None:
-        return None
-
-
-class WebSearchTool(BaseNativeTool):
-    """原生网页搜索工具"""
-
-    type: Literal["web_search"] = "web_search"
-    dynamic_threshold: float | None = Field(default=None)
-    """[Gemini专属] 触发网络搜索的概率阈值"""
-    domain_filters: list[str] | None = Field(default=None)
-    """[OpenAI专属] 限定搜索必须在这些域名内进行"""
-
-    def to_gemini_payload(self) -> dict[str, Any]:
-        return {"googleSearch": {}}
-
-    def to_openai_payload(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {"type": "web_search"}
-        if self.domain_filters:
-            payload["filters"] = self.domain_filters
-        return payload
-
-
-class CodeExecutionTool(BaseNativeTool):
-    """原生代码执行/沙箱工具"""
-
-    type: Literal["code_execution"] = "code_execution"
-    timeout: int | None = Field(default=None)
-    """执行代码的最大允许超时时间(秒)"""
-
-    def to_gemini_payload(self) -> dict[str, Any]:
-        return {"codeExecution": {}}
-
-    def to_openai_payload(self) -> dict[str, Any]:
-        return {"type": "code_interpreter"}
-
-
-class ComputerUseTool(BaseNativeTool):
-    """原生的桌面环境控制工具 (Computer Use)"""
-
-    type: Literal["computer_use"] = "computer_use"
-    display_width_px: int = Field(default=1024)
-    """[Claude/OpenAI] 虚拟屏幕宽度像素"""
-    display_height_px: int = Field(default=768)
-    """[Claude/OpenAI] 虚拟屏幕高度像素"""
-
-    def to_openai_payload(self) -> dict[str, Any]:
-        return {
-            "type": "computer_use",
-            "display_width_px": self.display_width_px,
-            "display_height_px": self.display_height_px,
-        }
-
-
-class FileSearchTool(BaseNativeTool):
-    """原生文档/文件搜索工具 (RAG)"""
-
-    type: Literal["file_search"] = "file_search"
-
-    def to_gemini_payload(self) -> dict[str, Any]:
-        return {"fileSearch": {}}
-
-    def to_openai_payload(self) -> dict[str, Any]:
-        return {"type": "file_search"}
-
-
-class GoogleMapsTool(BaseNativeTool):
-    type: Literal["google_map"] = "google_map"
-
-    def to_gemini_payload(self) -> dict[str, Any]:
-        return {"googleMaps": {}}
-
-
-class UrlContextTool(BaseNativeTool):
-    """原生网页内容提取/阅读工具"""
-
-    type: Literal["url_context"] = "url_context"
-
-    def to_gemini_payload(self) -> dict[str, Any]:
-        return {"urlContext": {}}
-
-
-NativeToolUnion = Annotated[
-    WebSearchTool
-    | CodeExecutionTool
-    | ComputerUseTool
-    | FileSearchTool
-    | GoogleMapsTool
-    | UrlContextTool,
-    Field(discriminator="type"),
-]
-
-NATIVE_TOOL_REGISTRY = {
-    "web_search": WebSearchTool,
-    "code_execution": CodeExecutionTool,
-    "computer_use": ComputerUseTool,
-    "file_search": FileSearchTool,
-    "google_map": GoogleMapsTool,
-    "url_context": UrlContextTool,
-}
 
 
 class MediaGenerationConfig(BaseModel):
@@ -439,12 +329,7 @@ class GenerationConfig(BaseModel):
     """自定义验证策略字典"""
     response_validator: Callable[[Any], None] | None = Field(default=None)
     """针对原始返回对象的自定义回调验证器"""
-    system_tools: list[str] = Field(default_factory=list)
-    """意图声明需要启用的系统级内置功能标识列表 (旧版遗留)"""
-    native_tools: list[NativeToolUnion] = Field(default_factory=list)
-    """需要启用的云端原生工具实例列表，如 WebSearchTool、CodeExecutionTool 等"""
-    enable_all_native_tools: bool = Field(default=False)
-    """如果为 True，系统会自动判定当前模型的能力，并将它所支持的所有原生工具悉数开启"""
+
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -503,23 +388,16 @@ class LLMEmbeddingConfig(BaseModel):
 
 
 __all__ = [
-    "NATIVE_TOOL_REGISTRY",
-    "BaseNativeTool",
     "BaseProviderOption",
     "ClaudeOptions",
-    "CodeExecutionTool",
     "CommonLLMConfig",
-    "ComputerUseTool",
     "EmbeddingTaskType",
-    "FileSearchTool",
     "GeminiOptions",
     "GenerationConfig",
-    "GoogleMapsTool",
     "ImageAspectRatio",
     "ImageResolution",
     "LLMEmbeddingConfig",
     "MiniMaxTTSOptions",
-    "NativeToolUnion",
     "OpenAIOptions",
     "OpenAITTSOptions",
     "OutputFormatConfig",
@@ -528,6 +406,4 @@ __all__ = [
     "TTSConfig",
     "ToolCallConfig",
     "ToolOutput",
-    "UrlContextTool",
-    "WebSearchTool",
 ]

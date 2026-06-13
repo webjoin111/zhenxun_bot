@@ -76,12 +76,12 @@ async def chat(
             config=config,
             timeout=timeout,
         )
-    except LLMException:
-        raise
+    except LLMException as e:
+        raise e.with_traceback(None) from None
     except Exception as e:
         friendly_msg = get_user_friendly_error_message(e)
         logger.error(f"执行 chat 函数失败: {e} | 建议: {friendly_msg}", e=e)
-        raise LLMException(f"聊天执行失败: {friendly_msg}", cause=e)
+        raise LLMException(f"聊天执行失败: {friendly_msg}").with_traceback(None) from None
 
 
 @overload
@@ -171,16 +171,15 @@ async def embed(
     try:
         async with await get_model_instance(model, task="embedding") as model_instance:
             return await model_instance.generate_embeddings(batch, config=final_config)
-    except LLMException:
-        raise
+    except LLMException as e:
+        raise e.with_traceback(None) from None
     except Exception as e:
         friendly_msg = get_user_friendly_error_message(e)
         logger.error(f"文本嵌入失败: {e} | 建议: {friendly_msg}", e=e)
         raise LLMException(
             f"文本嵌入失败: {friendly_msg}",
             code=LLMErrorCode.EMBEDDING_FAILED,
-            cause=e,
-        )
+        ).with_traceback(None) from None
 
 
 async def rerank(
@@ -205,7 +204,7 @@ async def rerank(
     except Exception as e:
         friendly_msg = get_user_friendly_error_message(e)
         logger.error(f"文档重排失败: {e} | 建议: {friendly_msg}", e=e)
-        raise LLMException(f"文档重排失败: {friendly_msg}", cause=e)
+        raise LLMException(f"文档重排失败: {friendly_msg}").with_traceback(None) from None
 
 
 async def generate_structured(
@@ -329,12 +328,12 @@ async def generate_structured(
             raise LLMException("结构化输出失败：中间件未返回解析后的对象。")
 
         return response.parsed_obj
-    except LLMException:
-        raise
+    except LLMException as e:
+        raise e.with_traceback(None) from None
     except Exception as e:
         friendly_msg = get_user_friendly_error_message(e)
         logger.error(f"生成结构化响应失败: {e} | 建议: {friendly_msg}", e=e)
-        raise LLMException(f"生成结构化响应失败: {friendly_msg}", cause=e)
+        raise LLMException(f"生成结构化响应失败: {friendly_msg}").with_traceback(None) from None
 
 
 async def generate(
@@ -376,12 +375,12 @@ async def generate(
             )
 
         return response
-    except LLMException:
-        raise
+    except LLMException as e:
+        raise e.with_traceback(None) from None
     except Exception as e:
         friendly_msg = get_user_friendly_error_message(e)
         logger.error(f"生成响应失败: {e} | 建议: {friendly_msg}", e=e)
-        raise LLMException(f"生成响应失败: {friendly_msg}", cause=e)
+        raise LLMException(f"生成响应失败: {friendly_msg}").with_traceback(None) from None
 
 
 @overload
@@ -460,12 +459,12 @@ async def create_image(
                 },
             )
             return await model_instance._execute_core_generation(context)
-    except LLMException:
-        raise
+    except LLMException as e:
+        raise e.with_traceback(None) from None
     except Exception as e:
         friendly_msg = get_user_friendly_error_message(e)
         logger.error(f"图片生成执行发生未知错误: {e} | 建议: {friendly_msg}", e=e)
-        raise LLMException(f"图片生成失败: {friendly_msg}", cause=e)
+        raise LLMException(f"图片生成失败: {friendly_msg}").with_traceback(None) from None
 
 
 async def create_speech(
@@ -490,9 +489,9 @@ async def create_speech(
             return await model_instance.generate_speech(
                 input_text=text, voice=voice, config=config
             )
-    except LLMException:
-        raise
+    except LLMException as e:
+        raise e.with_traceback(None) from None
     except Exception as e:
         friendly_msg = get_user_friendly_error_message(e)
         logger.error(f"语音生成执行发生未知错误: {e} | 建议: {friendly_msg}", e=e)
-        raise LLMException(f"语音生成失败: {friendly_msg}", cause=e)
+        raise LLMException(f"语音生成失败: {friendly_msg}").with_traceback(None) from None

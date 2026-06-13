@@ -302,7 +302,7 @@ SystemContentUnion = TextPart
 UserContentUnion = TextPart | ImagePart | AudioPart | VideoPart | FilePart
 """用户消息允许的多模态内容片段联合类型"""
 
-AssistantContentUnion = TextPart | ThoughtPart | ToolCallPart
+AssistantContentUnion = TextPart | ThoughtPart | ToolCallPart | ToolReturnPart
 """助手回复允许的内容片段联合类型"""
 
 ToolContentUnion = ToolReturnPart | ImagePart | AudioPart | VideoPart | FilePart
@@ -373,7 +373,7 @@ class LLMMessage(BaseModel, Generic[RoleT, ContentT]):
         if isinstance(data, dict):
             content = data.get("content")
             if isinstance(content, str):
-                data["content"] = [{"type": "text", "text": content}]
+                data["content"] = [{"type": "text", "text": content}] if content.strip() else []
             elif content is None:
                 data["content"] = []
             elif isinstance(content, list):
@@ -490,7 +490,7 @@ class LLMMessage(BaseModel, Generic[RoleT, ContentT]):
             scope: 可选，消息关联的会话作用域。
         """
         if isinstance(content, str):
-            content = [TextPart(text=content)]
+            content = [TextPart(text=content)] if content.strip() else []
         elif not isinstance(content, list):
             content = list(content)
         msg = UserMessage(content=cast(Any, content))
@@ -537,7 +537,7 @@ class LLMMessage(BaseModel, Generic[RoleT, ContentT]):
             scope: 可选，消息关联的会话作用域。
         """
         if isinstance(content, str):
-            content = [TextPart(text=content)] if content else []
+            content = [TextPart(text=content)] if content and content.strip() else []
         elif not isinstance(content, list):
             content = list(content)
         msg = AssistantMessage(content=cast(Any, content))
@@ -609,7 +609,7 @@ class LLMMessage(BaseModel, Generic[RoleT, ContentT]):
             scope: 可选，消息关联的会话作用域。
         """
         if isinstance(content, str):
-            content = [TextPart(text=content)]
+            content = [TextPart(text=content)] if content.strip() else []
         elif not isinstance(content, list):
             content = list(content)
         msg = SystemMessage(content=cast(Any, content))

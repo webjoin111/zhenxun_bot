@@ -180,8 +180,6 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
                 dummy_output = StepOutput(content=str(e), success=False)
                 return self._build_result(initial_input, safe_context, dummy_output)
 
-            logger.error(f"Workflow '{self.name}' 执行崩溃: {e}")
-
             raise e
 
     import contextlib
@@ -266,7 +264,7 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
                 )
                 yield AgentRunEnd(result=agent_res)
         except Exception as e:
-            logger.error(f"Workflow '{self.name}' 流式执行崩溃: {e}", e=e)
+            pass # 让其在流中传递 AgentRunError，由调用方负责记录
 
     async def acontinue_run(
         self,

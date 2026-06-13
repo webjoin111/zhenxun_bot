@@ -2,7 +2,7 @@ from collections.abc import Callable
 import hashlib
 import inspect
 import json
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
@@ -43,6 +43,7 @@ class BaseTool:
     name: str
     description: str
     settings: ToolOptions
+    execution_side: Literal["client", "server"] = "client"
     current_usage_count: int = 0
     _dynamic_def: Any = None
     args_schema: type[BaseModel] | None = None
@@ -315,6 +316,32 @@ class BaseTool:
             context.run.tool_retries[self.name] = 0
 
         return final_result
+
+
+class ServerSideTool(BaseTool):
+    """
+    云端原生工具的抽象基类。
+    代表那些由各大模型厂商在云端原生实现的能力（如 Google Search, Code Execution）。
+    此类工具只产生 Schema 提交给大模型用于触发路由，禁止在本地执行。
+    """
+    execution_side: Literal["client", "server"] = "server"
+    type_id: str = ""
+    
+    async def execute(self, context: RunContext | None = None, **kwargs: Any) -> ToolResult:
+        raise ToolFatalError(f"[{self.name}] 是服务端工具，禁止在本地层执行引擎中运行。")
+        
+    async def get_definition(self, context: RunContext | None = None) -> ToolDefinition | None:
+        if hasattr(self, "_dynamic_def") and self._dynamic_def is not None:
+            return self._dynamic_def
+        return ToolDefinition(
+            name=self.name,
+            description=self.description,
+            parameters={"type": "object", "properties": {}},
+            metadata=self.settings.metadata.copy()
+        )
+
+    def to_gemini_payload(self) -> dict[str, Any] | None: return None
+    def to_openai_payload(self) -> dict[str, Any] | None: return None
 
 
 class FunctionTool(BaseTool):

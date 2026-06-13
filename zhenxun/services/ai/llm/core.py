@@ -335,7 +335,6 @@ class HealthManager:
             if self._file_path.exists():
                 self._file_path.unlink()
             os.rename(temp_path, self._file_path)
-            logger.debug("密钥状态已成功持久化到文件。")
         except Exception as e:
             logger.error(f"保存密钥状态到文件失败: {e}", e=e)
 
@@ -489,7 +488,6 @@ class HealthManager:
             stats.status = "HEALTHY"
             stats.last_error = None
             await self._save_to_file_internal()
-        logger.debug(f"记录API密钥成功使用: {self._get_key_id(api_key)}")
 
     async def record_key_failure(
         self,

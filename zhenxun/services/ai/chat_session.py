@@ -42,7 +42,7 @@ class ChatSession:
             tools=[],
             memory=memory,
             generation_config=generation_config,
-            runtime_config=AgentRuntimeConfig(stateless=False),
+            runtime_config=AgentRuntimeConfig(stateless=False, enable_hitl=False),
         )
 
     def _get_implicit_session_id(self, override_sid: str | None) -> str | None:

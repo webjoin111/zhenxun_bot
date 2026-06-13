@@ -227,7 +227,6 @@ class TeamRunner:
                     raise ValueError(f"TeamRunner 遇到了未知的动作类型: {type(action)}")
 
         except Exception as e:
-            logger.error(f"TeamRunner 执行崩溃: {e}", e=e)
             raise e
 
         logger.info(f"🏁 **团队 [{self.team.name}]** 协作圆满结束！")

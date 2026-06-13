@@ -146,7 +146,7 @@ class StreamedRunResult(Generic[OutputDataT]):
                 self._result = cast(AgentRunResult[OutputDataT], event.result)
                 self.is_complete = True
             elif isinstance(event, AgentRunError):
-                raise event.error
+                raise event.error.with_traceback(None) from None
             yield event
 
     async def stream_text(self, delta: bool = False) -> AsyncIterator[str]:

@@ -332,15 +332,11 @@ class TelemetryCapability(AbstractCapability):
                 f"🛑 [Telemetry] 智能体 {agent_name} 正常中止/控制流转移: "
                 f"{type(e).__name__} (耗时: {latency:.2f}ms)"
             )
-            raise e
+            raise e.with_traceback(None) from None
         except Exception as e:
             self.summary.total_latency_ms = (time.monotonic() - self.start_t) * 1000
             latency = self.summary.total_latency_ms
-            logger.error(
-                f"❌ [Telemetry] 智能体 {agent_name} 崩溃，终止遥测 "
-                f"(耗时: {latency:.2f}ms)"
-            )
-            raise e
+            raise e.with_traceback(None) from None
 
         self.summary.total_latency_ms = (time.monotonic() - self.start_t) * 1000
         self.summary.usage = res.usage
@@ -372,6 +368,29 @@ class TelemetryCapability(AbstractCapability):
                 self.summary.chats.by_stop_reason.get(stop_reason, 0) + 1
             )
 
+            for call in response.tool_calls:
+                if llm_context.tools:
+                    tool_inst = next(
+                        (
+                            t
+                            for t in llm_context.tools
+                            if getattr(t, "name", "") == call.tool_name
+                        ),
+                        None,
+                    )
+                    if (
+                        tool_inst
+                        and getattr(tool_inst, "execution_side", "client") == "server"
+                    ):
+                        self.summary.tools.total += 1
+                        self.summary.tools.ok += 1
+                        tool_stat = self.summary.tools.by_name.setdefault(
+                            call.tool_name,
+                            {"total": 0, "ok": 0, "error": 0, "latency_ms": 0.0},
+                        )
+                        tool_stat["total"] += 1
+                        tool_stat["ok"] += 1
+
             logger.debug(
                 f"🧠 [Telemetry] 模型 {model_name} 调用完成 (耗时: {dur:.2f}ms)"
             )
@@ -383,7 +402,7 @@ class TelemetryCapability(AbstractCapability):
             self.summary.chats.by_stop_reason["error"] = (
                 self.summary.chats.by_stop_reason.get("error", 0) + 1
             )
-            raise e
+            raise e.with_traceback(None) from None
 
     async def wrap_tool_execute(
         self,
@@ -425,7 +444,7 @@ class TelemetryCapability(AbstractCapability):
             )
             tool_stat["total"] += 1
             tool_stat["latency_ms"] += dur
-            raise e
+            raise e.with_traceback(None) from None
         except Exception as e:
             dur = (time.monotonic() - start_t) * 1000
             self.summary.tools.total += 1
@@ -438,7 +457,7 @@ class TelemetryCapability(AbstractCapability):
             tool_stat["total"] += 1
             tool_stat["latency_ms"] += dur
             tool_stat["error"] += 1
-            raise e
+            raise e.with_traceback(None) from None
 
 
 class ToolSideEffectCapability(AbstractCapability):
@@ -548,7 +567,7 @@ class ReflexionCapability(AbstractCapability):
                 return ToolResult(
                     output=f"执行失败：{error_msg}",
                 ).as_error()
-            raise error
+            raise error.with_traceback(None) from None
 
     async def wrap_model_request(
         self,
@@ -701,14 +720,14 @@ class ReflexionCapability(AbstractCapability):
                     continue
 
                 if llm_error and not getattr(llm_error, "recoverable", True):
-                    raise llm_error
+                    raise llm_error.with_traceback(None) from None
 
         if last_exception:
-            raise last_exception
+            raise last_exception.with_traceback(None) from None
         raise LLMException(
             "反思循环耗尽，未能生成符合所有校验规则的合法结果。",
             code=LLMErrorCode.GENERATION_FAILED,
-        )
+        ).with_traceback(None) from None
 
 
 GLOBAL_CAPABILITIES: dict[str, list[AbstractCapability]] = defaultdict(list)

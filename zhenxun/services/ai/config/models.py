@@ -1,4 +1,3 @@
-
 from pydantic import BaseModel, Field
 
 from zhenxun.services.ai.core.models import ModelDetail
@@ -79,6 +78,24 @@ class ContextManagementSettings(BaseModel):
     """工具结果过载修剪策略"""
 
 
+class GeminiProviderSettings(BaseModel):
+    """Gemini 厂商专属高级配置"""
+
+    safety_threshold: str = Field(default="BLOCK_NONE")
+    """Gemini 安全过滤阈值 (BLOCK_LOW_AND_ABOVE, BLOCK_MEDIUM_AND_ABOVE,
+    BLOCK_ONLY_HIGH, BLOCK_NONE)"""
+
+    allow_mixed_tools: bool = Field(default=False)
+    """是否允许同时混合使用本地自定义工具和厂商云端内置工具"""
+
+
+class ProviderSettingsGroup(BaseModel):
+    """按厂商划分的高级专属设置组"""
+
+    gemini: GeminiProviderSettings = Field(default_factory=GeminiProviderSettings)
+    """Gemini 相关专属配置"""
+
+
 class ProviderConfig(BaseModel):
     """LLM 服务提供商 (接口方) 配置模型"""
 
@@ -104,6 +121,7 @@ class ProviderConfig(BaseModel):
 
 class DefaultModelsConfig(BaseModel):
     """按任务分类的默认模型配置"""
+
     chat: str | None = Field(default="Gemini/gemini-3.5-flash")
     embedding: str | None = Field(default="Gemini/gemini-embedding-2")
     tts: str | None = Field(default="Gemini/gemini-3.1-flash-tts-preview")
@@ -122,7 +140,7 @@ class AgentEngineSettings(BaseModel):
     """反思重试次数"""
     enable_fallback_summary: bool = True
     """达到最大循环次数时，是否触发大模型兜底总结（而不是直接报错）"""
-    enable_hitl: bool = True
+    enable_hitl: bool = False
     """是否允许智能体主动挂起任务，向用户求助 (Human-in-the-Loop)"""
     mcp_cleanup_timeout: int = 900
     """MCP 服务自动清理的闲置超时时间(秒)。0表示关闭自动清理机制（永久驻留）"""
@@ -169,6 +187,10 @@ class LLMConfig(BaseModel):
     """Agent 执行引擎层核心默认参数配置"""
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)
     """沙箱基础设施环境相关配置"""
+    provider_settings: ProviderSettingsGroup = Field(
+        default_factory=ProviderSettingsGroup
+    )
+    """按厂商划分的专属高级全局开关与策略"""
 
     def validate_model_name(self, provider_model_name: str) -> bool:
         """验证模型名称在当前配置中是否存在"""

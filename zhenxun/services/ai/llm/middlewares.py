@@ -66,13 +66,13 @@ class RetryMiddleware(BaseLLMMiddleware):
                     )
 
                 if not getattr(e, "recoverable", True):
-                    raise e
+                    raise e.with_traceback(None) from None
 
                 if not _should_retry_llm_error(e, attempt, max_retries):
-                    raise e
+                    raise e.with_traceback(None) from None
 
                 if attempt == total_attempts - 1:
-                    raise e
+                    raise e.with_traceback(None) from None
 
                 wait_time = self.retry_config.retry_delay
                 if self.retry_config.exponential_backoff:
@@ -86,11 +86,11 @@ class RetryMiddleware(BaseLLMMiddleware):
 
             except Exception as e:
                 logger.error(f"非预期异常，停止重试: {e}", e=e)
-                raise e
+                raise e.with_traceback(None) from None
 
         if last_exception:
-            raise last_exception
-        raise LLMException("重试循环异常结束")
+            raise last_exception.with_traceback(None) from None
+        raise LLMException("重试循环异常结束").with_traceback(None) from None
 
 
 class KeySelectionMiddleware(BaseLLMMiddleware):
@@ -132,7 +132,7 @@ class KeySelectionMiddleware(BaseLLMMiddleware):
             masked = f"{selected_key[:8]}..."
             if isinstance(e.details, dict):
                 e.details["api_key"] = masked
-            raise e
+            raise e.with_traceback(None) from None
 
 
 class LoggingMiddleware(BaseLLMMiddleware):
@@ -164,8 +164,7 @@ class LoggingMiddleware(BaseLLMMiddleware):
             logger.info(f"🎯 LLM响应成功 [{self.log_context}] 耗时: {duration:.2f}ms")
             return response
         except Exception as e:
-            logger.error(f"❌ 请求异常 [{self.log_context}]: {type(e).__name__} - {e}")
-            raise e
+            raise e.with_traceback(None) from None
 
 
 class EngineExecutionMiddleware(BaseLLMMiddleware):
@@ -246,7 +245,6 @@ class EngineExecutionMiddleware(BaseLLMMiddleware):
             if api_key
             else "N/A"
         )
-        logger.debug(f"🔑 API密钥: {masked_key}")
         logger.debug(f"📡 请求URL: {request_data.url}")
         logger.debug(f"📋 请求头: {dict(request_data.headers)}")
 
@@ -302,7 +300,7 @@ class EngineExecutionMiddleware(BaseLLMMiddleware):
                         raw_engine_output.status_code,
                         error_text,
                     )
-                    raise exception
+                    raise exception.with_traceback(None) from None
                 if context.request_type == "speech_generation":
                     latency = (time.monotonic() - start_time) * 1000
                     await self.health_manager.record_key_success(provider_name, api_key)
@@ -443,8 +441,7 @@ class EngineExecutionMiddleware(BaseLLMMiddleware):
                             f"响应内容未通过自定义验证器: {exc}",
                             code=LLMErrorCode.API_RESPONSE_INVALID,
                             details={"validator_error": str(exc)},
-                            cause=exc,
-                        ) from exc
+                        ).with_traceback(None) from None
 
                 policy = gen_config.validation_policy
                 if policy:
@@ -503,7 +500,7 @@ class EngineExecutionMiddleware(BaseLLMMiddleware):
                 await self.health_manager.record_route_failure(route_id, str(e))
 
             if isinstance(e, LLMException):
-                raise e
+                raise e.with_traceback(None) from None
 
             logger.error(f"解析响应失败或发生未知错误: {e}")
 
@@ -516,5 +513,4 @@ class EngineExecutionMiddleware(BaseLLMMiddleware):
                 f"网络请求异常: {type(e).__name__} - {e}",
                 code=LLMErrorCode.API_REQUEST_FAILED,
                 details={"api_key": masked_key},
-                cause=e,
-            )
+            ).with_traceback(None) from None

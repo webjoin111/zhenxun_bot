@@ -9,7 +9,6 @@ import httpx
 import json_repair
 
 from zhenxun.services.ai.core.configs import (
-    NATIVE_TOOL_REGISTRY,
     GenerationConfig,
     LLMEmbeddingConfig,
     ReasoningEffort,
@@ -676,24 +675,7 @@ class OpenAITextHandler(BaseTextHandler):
             "messages": messages,
         }
 
-    def _inject_native_tools(
-        self,
-        model: LLMModelBase,
-        config: GenerationConfig | None,
-        body: dict[str, Any],
-    ) -> None:
-        if not config:
-            return
-        has_requested_tools = (
-            config.enable_all_native_tools or len(config.native_tools) > 0
-        )
-        if has_requested_tools:
-            logger.warning(
-                f"Chat Completions 协议 (当前模型 {model.model_name}) "
-                "不支持通过 tools 数组调用云端内置工具。\n"
-                "👉 如果你想使用 Web Search、代码解释器等能力，"
-                "请在 WebUI 模型配置中将 api_type 修改为 'openai_responses'。"
-            )
+
 
     async def prepare_text_request(
         self,
@@ -723,16 +705,17 @@ class OpenAITextHandler(BaseTextHandler):
                 else StructuredOutputStrategy.NATIVE
             )
 
-        executables: list[Any] = []
+        client_executables: list[Any] = []
+        server_tools: list[Any] = []
         if tools:
-            if isinstance(tools, dict):
-                executables = list(tools.values())
-            else:
-                for tool in tools:
-                    if hasattr(tool, "get_definition"):
-                        executables.append(tool)
+            raw_tools = list(tools.values()) if isinstance(tools, dict) else tools
+            for tool in raw_tools:
+                if getattr(tool, "execution_side", "client") == "server":
+                    server_tools.append(tool)
+                elif hasattr(tool, "get_definition"):
+                    client_executables.append(tool)
 
-        definition_tasks = [executable.get_definition() for executable in executables]
+        definition_tasks = [executable.get_definition() for executable in client_executables]
         tool_defs: list[Any] = []
         if definition_tasks:
             results = await asyncio.gather(*definition_tasks)
@@ -820,7 +803,14 @@ class OpenAITextHandler(BaseTextHandler):
             )
         body.update(config_params)
 
-        self._inject_native_tools(model, effective_config, body)
+        if server_tools:
+            if openai_tools is None:
+                openai_tools = []
+            for st in server_tools:
+                payload = st.to_openai_payload()
+                if payload:
+                    openai_tools.append(payload)
+            body["tools"] = openai_tools
 
         if "tools" not in body and "tool_choice" in body:
             body.pop("tool_choice")
@@ -884,50 +874,7 @@ class OpenAIResponsesTextHandler(OpenAITextHandler):
             "input": messages,
         }
 
-    def _inject_native_tools(
-        self,
-        model: LLMModelBase,
-        config: GenerationConfig | None,
-        body: dict[str, Any],
-    ) -> None:
-        if not config:
-            return
 
-        supported = model.capabilities.supported_native_tools
-        requested_tools = []
-
-        if config.enable_all_native_tools:
-            for t_name in supported:
-                if t_name in NATIVE_TOOL_REGISTRY:
-                    requested_tools.append(NATIVE_TOOL_REGISTRY[t_name]())
-
-        requested_tools.extend(config.native_tools)
-
-        if not requested_tools:
-            return
-
-        seen = set()
-        unique_requested = []
-        for t in requested_tools:
-            t_name = t.get_tool_name()
-            if t_name not in seen:
-                seen.add(t_name)
-                unique_requested.append(t)
-
-        tools = body.get("tools", [])
-
-        for tool in unique_requested:
-            t_name = tool.get_tool_name()
-            if t_name not in supported:
-                logger.warning(f"模型 {model.model_name} 声明不支持 {t_name}，已跳过。")
-                continue
-
-            payload = tool.to_openai_payload()
-            if payload:
-                tools.append(payload)
-
-        if tools:
-            body["tools"] = tools
 
 
 class OpenAIEmbeddingHandler(BaseEmbeddingHandler):
@@ -1016,12 +963,34 @@ class OpenAIImageHandler(BaseImageHandler):
         if config:
             if config.media.resolution:
                 res_str = str(config.media.resolution).upper()
+                aspect_ratio = (
+                    str(config.media.aspect_ratio).upper()
+                    if config.media.aspect_ratio
+                    else ""
+                )
+
                 if res_str == "1K":
-                    res_str = "1024x1024"
+                    if "16:9" in aspect_ratio or "3:2" in aspect_ratio:
+                        res_str = "1536x1024"
+                    elif "9:16" in aspect_ratio or "2:3" in aspect_ratio:
+                        res_str = "1024x1536"
+                    else:
+                        res_str = "1024x1024"
                 elif res_str == "2K":
-                    res_str = "2048x2048"
+                    if "16:9" in aspect_ratio or "3:2" in aspect_ratio:
+                        res_str = "2048x1152"
+                    elif "9:16" in aspect_ratio or "2:3" in aspect_ratio:
+                        res_str = "1152x2048"
+                    else:
+                        res_str = "2048x2048"
                 elif res_str == "4K":
-                    res_str = "4096x4096"
+                    if "9:16" in aspect_ratio or "2:3" in aspect_ratio:
+                        res_str = "2160x3840"
+                    elif "1:1" in aspect_ratio:
+                        res_str = "2880x2880"
+                    else:
+                        res_str = "3840x2160"
+
                 body["size"] = res_str
 
             if config.media.quality:

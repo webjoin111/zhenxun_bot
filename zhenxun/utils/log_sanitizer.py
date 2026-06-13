@@ -147,6 +147,8 @@ def _sanitize_openai_response(response_json: dict) -> dict:
                             name = t["function"].get("name")
                         if not name and "name" in t:
                             name = t.get("name")
+                        if not name and "type" in t:
+                            name = t.get("type")
                         tool_names.append(name or "unknown")
                 sanitized_json["tools"] = (
                     f"<{len(tool_names)} tools hidden: {', '.join(tool_names)}>"
@@ -201,7 +203,9 @@ def _sanitize_openai_response(response_json: dict) -> dict:
                 if isinstance(item, dict) and "encrypted_content" in item:
                     content_val = item["encrypted_content"]
                     if isinstance(content_val, str) and len(content_val) > 64:
-                        item["encrypted_content"] = f"[encrypted_content_omitted_len={len(content_val)}]"
+                        item["encrypted_content"] = (
+                            f"[encrypted_content_omitted_len={len(content_val)}]"
+                        )
         return sanitized_json
     except Exception:
         return response_json
@@ -233,6 +237,8 @@ def _sanitize_openai_request(body: dict) -> dict:
                             name = t["function"].get("name")
                         if not name and "name" in t:
                             name = t.get("name")
+                        if not name and "type" in t:
+                            name = t.get("type")
                         tool_names.append(name or "unknown")
                 sanitized_json["tools"] = (
                     f"<{len(tool_names)} tools hidden: {', '.join(tool_names)}>"
@@ -449,4 +455,3 @@ def sanitize_for_logging(data: Any, context: str | None = None) -> Any:
             return _sanitize_ui_html(data)
 
     return _recursive_sanitize_any(data)
-

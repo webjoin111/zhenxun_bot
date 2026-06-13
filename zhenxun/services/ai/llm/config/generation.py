@@ -171,53 +171,7 @@ class IntentBuilder:
             self._config.common.top_p = top_p
         return self
 
-    def with_all_native_capabilities(self) -> Self:
-        """
-        自动开启当前模型支持的所有云端原生能力 (Native Capabilities)。
-        如网页搜索、代码执行等。开启的实际能力由底层模型能力声明 (capabilities) 决定。
-        """
-        self._config.enable_all_native_tools = True
-        return self
 
-    def with_web_search(
-        self,
-        dynamic_threshold: float | None = None,
-        domain_filters: list[str] | None = None,
-    ) -> Self:
-        """
-        启用当前模型原生的网页检索/联网能力。
-        底层将自动适配为对应厂商的格式 (如 OpenAI web_search / Gemini google_search)。
-        """
-        from zhenxun.services.ai.core.configs import WebSearchTool
-
-        self._config.native_tools.append(
-            WebSearchTool(
-                dynamic_threshold=dynamic_threshold,
-                domain_filters=domain_filters,
-            )
-        )
-        return self
-
-    def with_code_execution(self, timeout: int | None = None) -> Self:
-        """启用厂商原生的安全沙箱代码执行能力。"""
-        from zhenxun.services.ai.core.configs import CodeExecutionTool
-
-        self._config.native_tools.append(CodeExecutionTool(timeout=timeout))
-        return self
-
-    def with_computer_use(
-        self, display_width_px: int = 1024, display_height_px: int = 768
-    ) -> Self:
-        """启用桌面环境控制 (Computer Use) 能力。"""
-        from zhenxun.services.ai.core.configs import ComputerUseTool
-
-        self._config.native_tools.append(
-            ComputerUseTool(
-                display_width_px=display_width_px,
-                display_height_px=display_height_px,
-            )
-        )
-        return self
 
     def with_safety_level(self, level: str = "moderate") -> Self:
         """

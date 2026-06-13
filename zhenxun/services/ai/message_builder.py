@@ -179,9 +179,10 @@ class MessageBuilder:
     async def unimsg_to_llm_parts(
         cls,
         message: UniMessage,
-        namespace: str = "global",
+        namespace: str | None = None,
         allowed_modalities: set[str] | None = None,
     ) -> list[UserContentUnion]:
+        namespace = namespace or infer_plugin_namespace(default="global")
         parts: list[UserContentUnion] = []
         for seg in message:
             if allowed_modalities is not None:
@@ -230,10 +231,11 @@ class MessageBuilder:
         cls,
         bot: "Bot",
         event: "Event",
-        namespace: str = "global",
+        namespace: str | None = None,
         allowed_modalities: set[str] | None = None,
     ) -> list[LLMContentPart] | None:
         """提取公共引用抓取与解析逻辑"""
+        namespace = namespace or infer_plugin_namespace(default="global")
         try:
             from nonebot.adapters import Message as PlatformMessage
             from nonebot_plugin_alconna import UniMessage
@@ -274,9 +276,10 @@ class MessageBuilder:
         instruction: str | None = None,
         bot: Bot | None = None,
         event: Event | None = None,
-        namespace: str = "global",
+        namespace: str | None = None,
         allowed_modalities: set[str] | None = None,
     ) -> list[LLMMessage]:
+        namespace = namespace or infer_plugin_namespace(default="global")
         messages = []
         if instruction:
             messages.append(SystemMessage(content=[TextPart(text=instruction)]))
@@ -382,9 +385,10 @@ class MessageBuilder:
         item: Any,
         bot: Bot | None = None,
         event: Event | None = None,
-        namespace: str = "global",
+        namespace: str | None = None,
         config: LLMEmbeddingConfig | None = None,
     ) -> list[LLMContentPart]:
+        namespace = namespace or infer_plugin_namespace(default="global")
         """为 Embed 专用提取纯粹的内容片段，忽略工具调用等杂项"""
         allowed_modalities = {"text"}
         if config:
@@ -426,9 +430,10 @@ class MessageBuilder:
         inputs: Any,
         bot: Bot | None = None,
         event: Event | None = None,
-        namespace: str = "global",
+        namespace: str | None = None,
         config: LLMEmbeddingConfig | None = None,
     ) -> "EmbedBatch":
+        namespace = namespace or infer_plugin_namespace(default="global")
         """将任意输入标准化为 EmbedBatch (支持单模态批量与多模态融合)"""
         from nonebot_plugin_alconna import UniMessage
 

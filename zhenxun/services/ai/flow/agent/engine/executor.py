@@ -18,6 +18,7 @@ from zhenxun.services.ai.core.messages import (
     LLMResponse,
     TextPart,
     ToolCallPart,
+    ToolReturnPart,
     UsageInfo,
 )
 from zhenxun.services.ai.flow.agent.models import AgentEngineConfig, AgentLoopContext
@@ -293,6 +294,69 @@ class AgentExecutor:
                         usage=cumulative_usage,
                     )
 
+                completed_call_ids = {
+                    p.tool_call_id for p in response.content_parts if isinstance(p, ToolReturnPart)
+                }
+                client_tool_calls = []
+                for call in response.tool_calls:
+                    tool_inst = tools.get(call.tool_name) if tools else None
+                    is_server_side = (
+                        call.id in completed_call_ids
+                        or (tool_inst and getattr(tool_inst, "execution_side", "client") == "server")
+                    )
+
+                    if is_server_side:
+                        logger.debug(
+                            f"☁️ [AgentExecutor] 检测到云端工具调用: {call.tool_name}，已跳过本地执行。"
+                        )
+                        if event_streamer:
+                            from zhenxun.services.ai.core.stream_events import (
+                                ToolCallResultEvent,
+                                ToolCallStart,
+                            )
+                            from zhenxun.services.ai.tools.models import ToolResult
+
+                            await event_streamer.send(
+                                ToolCallStart(
+                                    tool_name=call.tool_name,
+                                    arguments=call.args
+                                    if isinstance(call.args, dict)
+                                    else {},
+                                    intent=getattr(call, "intent", None),
+                                )
+                            )
+                            return_part = next(
+                                (
+                                    p
+                                    for p in response.content_parts
+                                    if isinstance(p, ToolReturnPart)
+                                    and p.tool_call_id == call.id
+                                ),
+                                None,
+                            )
+                            if return_part:
+                                res_mock = ToolResult(output=return_part.output)
+                                await event_streamer.send(
+                                    ToolCallResultEvent(
+                                        tool_name=call.tool_name,
+                                        result=res_mock,
+                                        is_error=False,
+                                    )
+                                )
+                    else:
+                        client_tool_calls.append(call)
+
+                if not client_tool_calls:
+                    logger.info(
+                        "✅ AgentExecutor：无本地客户端工具需执行，推理循环平滑结束。"
+                    )
+                    return model_construct(
+                        AgentRunResult,
+                        output=None,
+                        messages=execution_history,
+                        usage=cumulative_usage,
+                    )
+
                 val_tasks = [
                     tool_executor.validate_tool_call(
                         call,
@@ -300,7 +364,7 @@ class AgentExecutor:
                         run_context,
                         event_streamer=event_streamer,
                     )
-                    for call in response.tool_calls
+                    for call in client_tool_calls
                 ]
                 validated_calls = await asyncio.gather(*val_tasks)
 
@@ -323,7 +387,7 @@ class AgentExecutor:
                 from zhenxun.services.ai.run.ui_controller import UIController
 
                 for i, res_or_exc in enumerate(tool_results):
-                    original_call = response.tool_calls[i]
+                    original_call = client_tool_calls[i]
                     media_parts = []
                     display_msg = None
                     final_content = "Success"

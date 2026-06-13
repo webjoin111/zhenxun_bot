@@ -13,6 +13,14 @@ from .models import (
     ToolResult,
 )
 from .providers.mcp.provider import mcp_provider
+from .providers.builtin.native import (
+    WebSearchTool,
+    CodeExecutionTool,
+    ComputerUseTool,
+    FileSearchTool,
+    GoogleMapsTool,
+    UrlContextTool
+)
 
 tool_provider_manager.register(mcp_provider)
 
@@ -36,4 +44,10 @@ __all__ = [
     "bind_matcher",
     "register_global_capability",
     "tool",
+    "WebSearchTool",
+    "CodeExecutionTool",
+    "ComputerUseTool",
+    "FileSearchTool",
+    "GoogleMapsTool",
+    "UrlContextTool"
 ]

@@ -125,13 +125,13 @@ class LLMModel(LLMModelBase):
 
         handler: NextCall = cast(NextCall, terminal_handler)
         handler = _wrap(
-            KeySelectionMiddleware(
-                self.health_manager, self.provider_name, self.api_keys
-            ),
+            LoggingMiddleware(self.provider_name, self.model_name),
             handler,
         )
         handler = _wrap(
-            LoggingMiddleware(self.provider_name, self.model_name),
+            KeySelectionMiddleware(
+                self.health_manager, self.provider_name, self.api_keys
+            ),
             handler,
         )
         handler = _wrap(

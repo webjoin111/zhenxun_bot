@@ -1,5 +1,3 @@
-from typing import TYPE_CHECKING
-
 from zhenxun.services.ai.llm.adapters.base import BaseAdapter, RequestData
 from zhenxun.services.ai.llm.adapters.handlers.openai_handlers import (
     OpenAIEmbeddingHandler,
@@ -7,7 +5,6 @@ from zhenxun.services.ai.llm.adapters.handlers.openai_handlers import (
     OpenAITextHandler,
 )
 from zhenxun.services.ai.llm.adapters.openai import OpenAICompatAdapter
-
 from zhenxun.services.ai.protocols.llm import LLMModelBase
 
 

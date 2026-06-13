@@ -139,19 +139,6 @@ def register_llm_configs():
         ),
         type=dict,
     )
-    Config.add_plugin_config(
-        AI_CONFIG_GROUP,
-        "gemini_safety_threshold",
-        "BLOCK_NONE",
-        help=(
-            "Gemini 安全过滤阈值 "
-            "(BLOCK_LOW_AND_ABOVE: 阻止低级别及以上, "
-            "BLOCK_MEDIUM_AND_ABOVE: 阻止中等级别及以上, "
-            "BLOCK_ONLY_HIGH: 只阻止高级别, "
-            "BLOCK_NONE: 不阻止)"
-        ),
-        type=str,
-    )
 
     Config.add_plugin_config(
         AI_CONFIG_GROUP,
@@ -218,6 +205,17 @@ def register_llm_configs():
 
     Config.add_plugin_config(
         AI_CONFIG_GROUP,
+        "provider_settings",
+        model_dump(llm_config.provider_settings),
+        help=(
+            "厂商专属高级设置。\n"
+            "包含各厂商全局的特有策略开关"
+        ),
+        type=dict,
+    )
+
+    Config.add_plugin_config(
+        AI_CONFIG_GROUP,
         PROVIDERS_CONFIG_KEY,
         get_default_providers(),
         help=(
@@ -261,6 +259,7 @@ def get_llm_config() -> LLMConfig:
         "model_groups": ai_config.get("MODEL_GROUPS", {}),
         "agent_settings": ai_config.get("agent_settings", {}),
         "sandbox": ai_config.get("sandbox", {}),
+        "provider_settings": ai_config.get("provider_settings", {}),
     }
 
     return parse_as(LLMConfig, config_data)
@@ -268,8 +267,7 @@ def get_llm_config() -> LLMConfig:
 
 def get_gemini_safety_threshold() -> str:
     """获取 Gemini 安全过滤阈值配置。"""
-    ai_config = get_ai_config()
-    return ai_config.get("gemini_safety_threshold", "BLOCK_MEDIUM_AND_ABOVE")
+    return get_llm_config().provider_settings.gemini.safety_threshold
 
 
 def validate_llm_config() -> tuple[bool, list[str]]:

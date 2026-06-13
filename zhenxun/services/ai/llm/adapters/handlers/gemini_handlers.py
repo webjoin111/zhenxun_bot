@@ -9,7 +9,6 @@ import httpx
 
 from zhenxun.services.ai.config import get_gemini_safety_threshold
 from zhenxun.services.ai.core.configs import (
-    NATIVE_TOOL_REGISTRY,
     GenerationConfig,
     LLMEmbeddingConfig,
     TTSConfig,
@@ -249,7 +248,7 @@ class GeminiMessageConverter(MessageConverter):
             return {"text": part.text}
 
         if isinstance(part, ThoughtPart):
-            return None
+            return {"text": part.thought_text, "thought": True}
 
         if isinstance(part, ImagePart):
             if part.url is not None:
@@ -334,29 +333,31 @@ class GeminiMessageConverter(MessageConverter):
             return payload
 
         if isinstance(part, ToolCallPart):
-            payload = {
-                "functionCall": {
-                    "id": part.id,
-                    "name": part.tool_name,
-                    "args": part.args
-                    if isinstance(part.args, dict)
-                    else (json.loads(part.args) if part.args else {}),
-                }
+            func_call = {
+                "name": part.tool_name,
+                "args": part.args
+                if isinstance(part.args, dict)
+                else (json.loads(part.args) if part.args else {}),
             }
+            if part.id and part.id != "unknown":
+                func_call["id"] = part.id
+
+            payload = {"functionCall": func_call}
             if part.metadata and "thought_signature" in part.metadata:
                 payload["thoughtSignature"] = part.metadata["thought_signature"]
             return payload
 
         if isinstance(part, ToolReturnPart):
-            payload = {
-                "functionResponse": {
-                    "id": part.tool_call_id,
-                    "name": part.tool_name,
-                    "response": part.output
-                    if isinstance(part.output, dict)
-                    else {"result": part.output},
-                }
+            func_resp = {
+                "name": part.tool_name,
+                "response": part.output
+                if isinstance(part.output, dict)
+                else {"result": part.output},
             }
+            if part.tool_call_id and part.tool_call_id != "unknown":
+                func_resp["id"] = part.tool_call_id
+
+            payload = {"functionResponse": func_resp}
             return payload
 
         raise ValueError(f"不支持的内容类型: {part.type}")
@@ -406,15 +407,14 @@ class GeminiMessageConverter(MessageConverter):
                         if not isinstance(result_obj, dict):
                             result_obj = {"result": result_obj}
 
-                        current_parts.append(
-                            {
-                                "functionResponse": {
-                                    "id": part_obj.tool_call_id,
-                                    "name": part_obj.tool_name,
-                                    "response": result_obj,
-                                }
-                            }
-                        )
+                        func_resp = {
+                            "name": part_obj.tool_name,
+                            "response": result_obj,
+                        }
+                        if part_obj.tool_call_id and part_obj.tool_call_id != "unknown":
+                            func_resp["id"] = part_obj.tool_call_id
+
+                        current_parts.append({"functionResponse": func_resp})
                     else:
                         part_dict = await self.convert_part(part_obj)
                         if part_dict is not None:
@@ -568,7 +568,9 @@ class GeminiResponseParser(ResponseParser):
             if part.get("thought") is True:
                 t_text = part.get("text", "")
                 thought_summary_parts.append(t_text)
-                content_parts.append(ThoughtPart(thought_text=t_text))
+                content_parts.append(
+                    ThoughtPart(thought_text=t_text, metadata=part_metadata)
+                )
 
             elif "text" in part:
                 answer_parts.append(part["text"])
@@ -577,7 +579,11 @@ class GeminiResponseParser(ResponseParser):
 
             elif "thoughtSummary" in part:
                 thought_summary_parts.append(part["thoughtSummary"])
-                content_parts.append(ThoughtPart(thought_text=part["thoughtSummary"]))
+                content_parts.append(
+                    ThoughtPart(
+                        thought_text=part["thoughtSummary"], metadata=part_metadata
+                    )
+                )
 
             elif "inlineData" in part:
                 inline_data = part["inlineData"]
@@ -594,12 +600,7 @@ class GeminiResponseParser(ResponseParser):
                 fc_data = part.get("functionCall") or part.get("toolCall")
                 fc_sig = part_signature
                 try:
-                    call_count = sum(
-                        1
-                        for p in content_parts
-                        if getattr(p, "type", "") == "tool_call"
-                    )
-                    call_id = fc_data.get("id", f"call_gemini_{call_count}")
+                    call_id = fc_data.get("id", "")
                     tc_part = ToolCallPart(
                         id=call_id,
                         tool_name=fc_data.get("name")
@@ -613,6 +614,19 @@ class GeminiResponseParser(ResponseParser):
                     logger.warning(
                         f"解析Gemini functionCall时出错: {fc_data}, 错误: {e}"
                     )
+
+            elif "functionResponse" in part or "toolResponse" in part:
+                resp_data = part.get("functionResponse") or part.get("toolResponse")
+                try:
+                    tc_part = ToolReturnPart(
+                        tool_call_id=resp_data.get("id", ""),
+                        tool_name=resp_data.get("name")
+                        or resp_data.get("toolType", ""),
+                        output=resp_data.get("response", {}),
+                    )
+                    content_parts.append(tc_part)
+                except Exception as e:
+                    logger.warning(f"解析Gemini toolResponse时出错: {e}")
 
         grounding_metadata_obj = None
         if grounding_data := candidate.get("groundingMetadata"):
@@ -676,9 +690,34 @@ class GeminiTextHandler(BaseTextHandler):
             config if config is not None else getattr(model, "_generation_config", None)
         )
 
-        has_function_tools = False
+        client_executables = []
+        server_tools = []
         if tools:
-            has_function_tools = any(hasattr(tool, "get_definition") for tool in tools)
+            raw_tools = list(tools.values()) if isinstance(tools, dict) else tools
+            for tool in raw_tools:
+                if getattr(tool, "execution_side", "client") == "server":
+                    server_tools.append(tool)
+                elif hasattr(tool, "get_definition"):
+                    client_executables.append(tool)
+
+        from zhenxun.services.ai.config import get_llm_config
+
+        gemini_settings = get_llm_config().provider_settings.gemini
+
+        if (
+            server_tools
+            and client_executables
+            and not gemini_settings.allow_mixed_tools
+        ):
+            server_tool_names = [getattr(t, "name", "unknown") for t in server_tools]
+            logger.warning(
+                f"🌐 [Gemini Adapter] 检测到请求中混用了本地自定义工具与云端内置工具，"
+                f"但全局开关 (allow_mixed_tools) 已关闭。自动拦截并屏蔽云端"
+                f"内置工具 {server_tool_names} 以防协议冲突。"
+            )
+            server_tools = []
+
+        has_function_tools = len(client_executables) > 0
 
         is_structured = False
         if effective_config and effective_config.output:
@@ -722,13 +761,10 @@ class GeminiTextHandler(BaseTextHandler):
         system_instruction_parts: list[dict[str, Any]] = []
         for msg in messages:
             if isinstance(msg, SystemMessage):
-                if isinstance(msg.content, str):
-                    system_instruction_parts.append({"text": msg.content})
-                elif isinstance(msg.content, list):
-                    for part in msg.content:
-                        part_dict = await self.converter.convert_part(part)
-                        if part_dict is not None:
-                            system_instruction_parts.append(part_dict)
+                for part in msg.content:
+                    part_dict = await self.converter.convert_part(part)
+                    if part_dict is not None:
+                        system_instruction_parts.append(part_dict)
                 continue
 
         gemini_contents = await self.converter.convert_messages_async(messages)
@@ -738,56 +774,34 @@ class GeminiTextHandler(BaseTextHandler):
         if system_instruction_parts:
             body["systemInstruction"] = {"parts": system_instruction_parts}
 
-        native_tools_payload = []
-        if effective_config:
+        all_tools_for_request = []
+
+        if server_tools:
             supported = model.capabilities.supported_native_tools
-            requested_tools = []
-
-            if effective_config.enable_all_native_tools:
-                for t_name in supported:
-                    if t_name in NATIVE_TOOL_REGISTRY:
-                        requested_tools.append(NATIVE_TOOL_REGISTRY[t_name]())
-
-            requested_tools.extend(effective_config.native_tools)
-
-            seen = set()
-            unique_requested = []
-            for t in requested_tools:
-                t_name = t.get_tool_name()
-                if t_name not in seen:
-                    seen.add(t_name)
-                    unique_requested.append(t)
-
-            for tool in unique_requested:
-                t_name = tool.get_tool_name()
-                if t_name not in supported:
+            for st in server_tools:
+                if getattr(st, "type_id", "") not in supported:
                     logger.warning(
-                        f"模型 {model.model_name} 声明不支持 Gemini 云端工具 "
-                        f"{t_name}，已跳过。"
+                        f"模型 {model.model_name} 声明不支持云端工具 {st.name}，已跳过"
                     )
                     continue
-                payload = tool.to_gemini_payload()
+                payload = st.to_gemini_payload()
                 if payload:
-                    native_tools_payload.append(payload)
+                    all_tools_for_request.append(payload)
 
-        if has_function_tools and native_tools_payload:
-            logger.warning(
-                "🚫 [架构约束] 检测到本地工具与云端原生工具混用。"
-                "按照安全策略，已屏蔽云端工具，强制保留本地工具！"
-            )
-            native_tools_payload = []
+            if all_tools_for_request:
+                body.setdefault("toolConfig", {}).update(
+                    {
+                        "includeServerSideToolInvocations": True,
+                    }
+                )
 
-        all_tools_for_request = []
-        all_tools_for_request.extend(native_tools_payload)
         has_user_functions = False
-        if tools:
+        if client_executables:
             from zhenxun.services.ai.protocols.tool import ToolExecutable
 
             function_tools: list[ToolExecutable] = []
-
-            for tool in tools:
-                if hasattr(tool, "get_definition"):
-                    function_tools.append(tool)
+            for tool in client_executables:
+                function_tools.append(tool)
 
             if function_tools:
                 definition_tasks = [
@@ -994,7 +1008,6 @@ class GeminiImageHandler(BaseImageHandler):
                         code=LLMErrorCode.INVALID_PARAMETER,
                         recoverable=False,
                     )
-
                 mime_type = "image/jpeg"
                 if img_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
                     mime_type = "image/png"
@@ -1015,45 +1028,11 @@ class GeminiImageHandler(BaseImageHandler):
         if config is None:
             config = GenerationConfig()
 
-        if not config.output.response_modalities:
-            config.output.response_modalities = ["IMAGE"]
-
         mapper = GeminiConfigMapper()
         gen_config = mapper.map_config(config, model.model_detail, model.capabilities)
 
         if gen_config:
             body["generationConfig"] = gen_config
-
-        if config:
-            native_tools_payload = []
-            supported = model.capabilities.supported_native_tools
-            requested_tools = []
-
-            if config.enable_all_native_tools:
-                for t_name in supported:
-                    if t_name in NATIVE_TOOL_REGISTRY:
-                        requested_tools.append(NATIVE_TOOL_REGISTRY[t_name]())
-
-            requested_tools.extend(config.native_tools)
-
-            seen = set()
-            unique_requested = []
-            for t in requested_tools:
-                t_name = t.get_tool_name()
-                if t_name not in seen:
-                    seen.add(t_name)
-                    unique_requested.append(t)
-
-            for tool in unique_requested:
-                t_name = tool.get_tool_name()
-                if t_name not in supported:
-                    continue
-                payload = tool.to_gemini_payload()
-                if payload:
-                    native_tools_payload.append(payload)
-
-            if native_tools_payload:
-                body["tools"] = native_tools_payload
 
         return RequestData(url=url, headers=headers, body=body)
 
