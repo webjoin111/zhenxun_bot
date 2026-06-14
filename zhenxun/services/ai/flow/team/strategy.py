@@ -69,10 +69,22 @@ class BaseTeamStrategy(ABC):
             stateless=team.runtime_config.stateless if team.runtime_config else True,
             enable_hitl=getattr(team.runtime_config, "leader_enable_hitl", False),
         )
+
+        target_model = getattr(self, "leader_model", None) or getattr(
+            team, "model", None
+        )
+        if not target_model:
+            for m in team.members:
+                if m_model := getattr(m, "model_name", None) or getattr(
+                    m, "model", None
+                ):
+                    target_model = m_model
+                    break
+
         return Agent(
             name=name,
             instruction=instruction,
-            model=getattr(self, "leader_model", None),
+            model=target_model,
             tools=tools,
             runtime_config=leader_config,
         )
@@ -368,7 +380,6 @@ class BroadcastStrategy(BaseTeamStrategy):
             prompt.description if isinstance(prompt, Task) else (prompt or "")
         )
 
-
         if context.run.streamer:
             from zhenxun.services.ai.core.stream_events import ToolStreamChunk
 
@@ -407,7 +418,7 @@ class BroadcastStrategy(BaseTeamStrategy):
         leader_agent = self._build_leader_agent(
             team=team,
             name=f"{team.name}_Leader",
-            instruction=synthesize_prompt,
+            instruction=self.get_prompt(),
             tools=self.leader_tools,
         )
 

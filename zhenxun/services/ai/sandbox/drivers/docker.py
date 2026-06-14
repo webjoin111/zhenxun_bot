@@ -227,9 +227,17 @@ class DockerSandboxSession(BaseSandboxSession):
         env: dict[str, str] | None = None,
         on_output: Any = None,
     ) -> SandboxExecutionResult:
+        from zhenxun.services.ai.core.exceptions import SandboxFatalError
+
         self.touch()
         if not self.container:
-            return SandboxExecutionResult(exit_code=-1, error="容器未启动")
+            raise SandboxFatalError("沙箱容器未启动或句柄已丢失。")
+
+        if not await self.is_alive():
+            raise SandboxFatalError(
+                f"沙箱容器 '{self.state.container_name}' 已意外死亡 "
+                "(可能遭遇 WSL OOMKiller 或被宿主机强杀)。"
+            )
 
         cmd_list = ["/bin/sh", "-c", command] if isinstance(command, str) else command
         env_list = [f"{k}={v}" for k, v in env.items()] if env else None
@@ -432,16 +440,18 @@ class DockerSandboxClient(BaseSandboxClient):
                         "PIP_CACHE_DIR=/tmp/pip_cache",
                         "YARN_CACHE_FOLDER=/tmp/yarn_cache",
                         "HF_HOME=/tmp/hf_cache",
+                        "JUPYTER_RUNTIME_DIR=/tmp/jupyter_runtime",
+                        "JUPYTER_DATA_DIR=/tmp/jupyter_data",
                     ],
                     "Cmd": [
                         "/bin/sh",
                         "-c",
-                        "mkdir -p /workspace && tail -f /dev/null",
+                        "mkdir -p /workspace /tmp/jupyter_runtime /tmp/jupyter_data "
+                        "&& chmod 700 /tmp/jupyter_runtime "
+                        "&& tail -f /dev/null",
                     ],
                     "HostConfig": {
                         "PortBindings": port_bindings,
-                        "Memory": 1024 * 1024 * 1024,
-                        "MemorySwap": 1024 * 1024 * 1024,
                         "Binds": binds,
                     },
                     "Labels": {
@@ -453,11 +463,26 @@ class DockerSandboxClient(BaseSandboxClient):
                 import uuid
 
                 name = f"zx_sandbox_{eff_cname}_{uuid.uuid4().hex[:8]}"
-                container = (
-                    await DockerSandboxClient._global_docker_client.containers.run(
-                        config=container_config, name=name
+
+                try:
+                    container = (
+                        await DockerSandboxClient._global_docker_client.containers.run(
+                            config=container_config, name=name
+                        )
                     )
-                )
+                except Exception as ex:
+                    from zhenxun.services.ai.core.exceptions import SandboxFatalError
+
+                    err_msg = str(ex)
+                    if isinstance(ex, AssertionError):
+                        err_msg = (
+                            "aiodocker AssertionError (可能因宿主机/WSL不支持"
+                            "某些 Docker 挂载特性或端口冲突导致被内核驳回)"
+                        )
+                    raise SandboxFatalError(
+                        f"Docker API 拒绝了容器创建请求。底层原因: {err_msg}"
+                    )
+
                 DockerSandboxClient._containers[eff_cname] = container
                 DockerSandboxClient._jupyter_ports[eff_cname] = jupyter_port
                 logger.info(

@@ -1,7 +1,3 @@
-"""
-Zhenxun AI Core Facade (系统唯一对外的超级门面)
-"""
-
 from .core.configs import GenerationConfig
 from .core.exceptions import LLMException
 from .core.messages import LLMMessage, LLMResponse

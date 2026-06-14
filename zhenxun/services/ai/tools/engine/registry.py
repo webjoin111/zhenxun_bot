@@ -552,16 +552,14 @@ class ToolProviderManager:
                 r = await r
                 resolvers[i] = self._normalize_to_resolver(r, namespace)
 
+        # [Fail-Fast 核心修改]：取消 return_exceptions=True，让依赖解析时的容器崩溃、网络异常等致命错误直接向上抛出，拒绝启动 Agent
         tasks = [r.resolve(context) for r in resolvers]
-        payloads = await asyncio.gather(*tasks, return_exceptions=True)
+        payloads = await asyncio.gather(*tasks, return_exceptions=False)
 
         final_payload = ResolvedToolPayload()
         global_toolkit = BaseToolkit(prefix="")
 
         for p in payloads:
-            if isinstance(p, BaseException):
-                logger.error(f"工具解析器流水线内部错误: {p}")
-                continue
             if not p:
                 continue
             p = cast(ResolvedToolPayload, p)

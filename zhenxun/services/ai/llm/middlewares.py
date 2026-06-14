@@ -2,7 +2,7 @@ import asyncio
 import json
 import re
 import time
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 import httpx
 
@@ -24,13 +24,12 @@ from zhenxun.services.ai.llm.core import (
     _should_retry_llm_error,
 )
 from zhenxun.services.ai.protocols import LLMContext
+from zhenxun.services.ai.protocols.llm import LLMModelBase
 from zhenxun.services.ai.protocols.middleware import BaseLLMMiddleware, NextCall
 from zhenxun.services.log import logger
 from zhenxun.utils.http_utils import AsyncHttpx
 from zhenxun.utils.log_sanitizer import sanitize_for_logging
 from zhenxun.utils.pydantic_compat import dump_json_safely
-
-from zhenxun.services.ai.protocols.llm import LLMModelBase
 
 
 class RetryMiddleware(BaseLLMMiddleware):
@@ -161,7 +160,7 @@ class LoggingMiddleware(BaseLLMMiddleware):
             start_time = time.monotonic()
             response = await next_call(context)
             duration = (time.monotonic() - start_time) * 1000
-            logger.info(f"🎯 LLM响应成功 [{self.log_context}] 耗时: {duration:.2f}ms")
+            logger.debug(f"🎯 LLM响应成功 [{self.log_context}] 耗时: {duration:.2f}ms")
             return response
         except Exception as e:
             raise e.with_traceback(None) from None

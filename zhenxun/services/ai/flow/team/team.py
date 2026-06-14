@@ -32,6 +32,7 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         self,
         name: str,
         members: list[BaseRunnable[Any]],
+        model: str | Callable[[], str] | None = None,
         strategy: BaseTeamStrategy | None = None,
         description: str | None = None,
         persona: "Persona | dict | None" = None,
@@ -45,14 +46,16 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         参数:
             name: 团队的名称标识。
             members: 团队成员列表，可以包含 Agent、Workflow 或其他 Team。
+            model: (可选) 团队的统一默认模型，将自动被内部的 Leader/Router 继承。
             strategy: (可选) 团队协作策略实例。
                 若不传入，必须随后使用 `.with_xxx()` 链式方法配置。
             description: 团队的职能描述，用于上层节点路由。
             persona: 团队的整体人设或宏观设定。
-            runtime_config: 团队级别的运行时宏观配置。
+            runtime_config: 团队级别的运行时宏观配置.
         """
         self.name = name
         self.members = members
+        self.model = model
         self.strategy = strategy
         self.description = (
             description

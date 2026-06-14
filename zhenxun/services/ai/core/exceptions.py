@@ -185,6 +185,11 @@ class WorkspaceIOError(Exception):
         super().__init__(f"沙箱 IO 异常 [{path}]: {message}")
 
 
+class SandboxFatalError(Exception):
+    """沙箱底层容器发生致命崩溃（如 OOM, 被宿主机强杀等）"""
+    pass
+
+
 class LLMException(Exception):
     """LLM 服务相关的基础异常类"""
 

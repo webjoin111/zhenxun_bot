@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any, cast
 
 import nonebot
@@ -23,7 +24,13 @@ class SandboxManager:
 
     def __init__(self):
         self._active_sessions: dict[str, BaseSandboxSession] = {}
+        self._session_locks: dict[str, asyncio.Lock] = {}
         self.lifespan_manager = LifespanManager()
+
+    def _get_lock(self, session_id: str) -> asyncio.Lock:
+        if session_id not in self._session_locks:
+            self._session_locks[session_id] = asyncio.Lock()
+        return self._session_locks[session_id]
 
     def _get_client(
         self,
@@ -51,55 +58,68 @@ class SandboxManager:
     ) -> BaseSandboxSession:
         """根据 Session ID 获取或创建持久化沙箱环境"""
 
-        if not blueprint:
-            blueprint = SandboxBlueprint()
-
-        if blueprint.setup_steps:
-            blueprint.enable_network = True
-
-        cleanup_timeout = get_llm_config().sandbox.cleanup_timeout
-        await self.lifespan_manager.register(
-            session_id, ttl=float(cleanup_timeout), cleanup_callback=self.close_session
-        )
-
-        if session_id in self._active_sessions:
-            session = self._active_sessions[session_id]
-            is_alive = await session.is_alive()
-            if not is_alive:
-                logger.warning(
-                    f"⚠️ Session '{session_id}' 已失去响应，重建中。",
-                    command="SandboxManager",
-                )
-                await self.close_session(session_id)
-            else:
-                session.touch()
-                if blueprint.setup_steps:
-                    await session.install_dependencies(blueprint)
-                await session.apply_blueprint(blueprint)
-                for p in blueprint.required_extensions:
-                    await session.mount_extension(p)
-                return session
-
-        logger.info(
-            f"为 Session '{session_id}' 创建沙箱环境...", command="SandboxManager"
-        )
-        client = self._get_client(blueprint)
-        try:
-            session = await client.create(session_id, blueprint)
-
-            await session.apply_blueprint(blueprint)
+        async with self._get_lock(session_id):
+            if not blueprint:
+                blueprint = SandboxBlueprint()
 
             if blueprint.setup_steps:
-                await session.install_dependencies(blueprint)
+                blueprint.enable_network = True
 
-            for p in blueprint.required_extensions:
-                await session.mount_extension(p)
+            cleanup_timeout = get_llm_config().sandbox.cleanup_timeout
+            await self.lifespan_manager.register(
+                session_id,
+                ttl=float(cleanup_timeout),
+                cleanup_callback=self.close_session,
+            )
 
-            self._active_sessions[session_id] = session
-            return session
-        except Exception as e:
-            logger.error(f"创建 Session 失败: {e}", command="SandboxManager")
-            raise e
+            if session_id in self._active_sessions:
+                session = self._active_sessions[session_id]
+                is_alive = await session.is_alive()
+                if not is_alive:
+                    logger.warning(
+                        f"⚠️ Session '{session_id}' 容器已死亡，重建中。",
+                        command="SandboxManager",
+                    )
+                    await self.release_resource(session_id)
+                else:
+                    session.touch()
+                    if blueprint.setup_steps:
+                        await session.install_dependencies(blueprint)
+                    await session.apply_blueprint(blueprint)
+                    for p in blueprint.required_extensions:
+                        await session.mount_extension(p)
+                    return session
+
+            logger.info(
+                f"为 Session '{session_id}' 创建沙箱环境...", command="SandboxManager"
+            )
+            client = self._get_client(blueprint)
+            try:
+                session = await client.create(session_id, blueprint)
+
+                await session.apply_blueprint(blueprint)
+
+                if blueprint.setup_steps:
+                    await session.install_dependencies(blueprint)
+
+                for p in blueprint.required_extensions:
+                    await session.mount_extension(p)
+
+                self._active_sessions[session_id] = session
+                return session
+            except Exception as e:
+                import traceback
+
+                from zhenxun.services.ai.core.exceptions import SandboxFatalError
+
+                err_msg = str(e) or type(e).__name__
+                logger.error(
+                    f"创建 Session 失败: {err_msg}\n{traceback.format_exc()}",
+                    command="SandboxManager",
+                )
+                if not isinstance(e, SandboxFatalError):
+                    raise SandboxFatalError(f"沙箱初始化异常: {err_msg}") from e
+                raise e
 
     async def setup_workspace_environment(
         self, session_id: str, workspace_dir: str

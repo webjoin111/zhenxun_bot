@@ -206,7 +206,17 @@ class NodeSetup(BaseSetupStep):
 
         pkg_str = " ".join(missing_packages)
         logger.info(f"[Sandbox] 正在安装缺失的 Node 依赖: {pkg_str}")
-        await session.run_process(f"npm install -g {pkg_str}", timeout=180)
+        res = await session.run_process(
+            f"npm install -g {pkg_str} --no-fund --no-audit --cache /tmp/npm-cache",
+            timeout=180,
+        )
+        if res.exit_code != 0:
+            from zhenxun.services.ai.core.exceptions import SandboxFatalError
+
+            raise SandboxFatalError(
+                f"Node 依赖安装失败 (Exit Code: {res.exit_code}): "
+                f"{res.stderr or res.error}"
+            )
 
 
 class ShellSetup(BaseSetupStep):
@@ -216,7 +226,13 @@ class ShellSetup(BaseSetupStep):
     async def apply(self, session: Any) -> None:
         for script in self.scripts:
             logger.info(f"[Sandbox] 正在执行自定义装配脚本: {script}")
-            await session.run_process(script, timeout=300)
+            res = await session.run_process(script, timeout=300)
+            if res.exit_code != 0:
+                from zhenxun.services.ai.core.exceptions import SandboxFatalError
+
+                raise SandboxFatalError(
+                    f"自定义装配脚本执行失败: {res.stderr or res.error}"
+                )
 
 
 class BindMount(BaseModel):

@@ -518,11 +518,16 @@ class MCPToolkit(BaseToolkit):
                         return
 
                 except Exception as e:
+                    from zhenxun.services.ai.core.exceptions import SandboxFatalError
+                    if isinstance(e, SandboxFatalError):
+                        raise e
+
                     if attempt < max_attempts:
                         logger.warning(
                             f"⚠️ [{self.server_name}] 进程启动或运行异常崩溃，"
                             "疑似环境损坏。触发自愈机制 (准备重试)..."
                         )
+                        self._init_exception = e
                         self._shared_session = None
                         if not self._is_initialized:
                             self._is_initialized = False

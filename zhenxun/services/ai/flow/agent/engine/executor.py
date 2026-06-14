@@ -286,7 +286,7 @@ class AgentExecutor:
                 run_context.session.append_only_manager.sync_messages(execution_history)
 
                 if not response.tool_calls:
-                    logger.info("✅ AgentExecutor：模型未请求工具调用，推理循环结束。")
+                    logger.debug("✅ AgentExecutor：模型未请求工具调用，推理循环结束。")
                     return model_construct(
                         AgentRunResult,
                         output=None,

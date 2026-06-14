@@ -94,7 +94,11 @@ class Presenters:
 
         temp_value = model.temperature or provider.temperature or "未设置"
         input_tokens = caps.max_input_tokens
-        context_window = f"{int(input_tokens / 1000)}K" if input_tokens >= 1000 else str(input_tokens)
+        context_window = (
+            f"{int(input_tokens / 1000)}K"
+            if input_tokens >= 1000
+            else str(input_tokens)
+        )
 
         md.text(f"- **名称**: {model.model_name}")
         md.text(f"- **默认温度**: {temp_value}")
@@ -131,7 +135,8 @@ class Presenters:
                 )
             else:
                 status_map: dict[
-                    str, tuple[str, Literal["ok", "error", "warning", "info", "success"]]
+                    str,
+                    tuple[str, Literal["ok", "error", "warning", "info", "success"]],
                 ] = {
                     "DISABLED": ("永久禁用", "error"),
                     "ERROR": ("错误", "error"),
@@ -193,4 +198,39 @@ class Presenters:
             ]
         )
         table.add_rows(data_list)
+        return await renderer_service.render(table, use_cache=False)
+
+    @staticmethod
+    async def format_mcp_list_as_image(mcp_list: list[dict[str, Any]]) -> bytes:
+        """将MCP列表格式化为表格图片"""
+        title = "MCP 服务管理列表"
+        if not mcp_list:
+            table = ui.table(title=title, tip="当前未配置任何 MCP 服务。").set_headers(
+                ["ID", "MCP名称", "协议", "状态", "目标"]
+            )
+            return await renderer_service.render(table)
+
+        column_name = ["ID", "MCP名称", "协议", "状态", "目标"]
+        rows_data = []
+        for mcp in mcp_list:
+            is_enable = mcp["enabled"]
+            status_type = "success" if is_enable else "info"
+            status_text = "开启" if is_enable else "关闭"
+            rows_data.append(
+                [
+                    TextCell(content=str(mcp["id"])),
+                    TextCell(content=mcp["name"]),
+                    TextCell(content=mcp["transport"]),
+                    StatusBadgeCell(text=status_text, status_type=status_type),
+                    TextCell(content=mcp["target"]),
+                ]
+            )
+
+        table = ui.table(
+            title=title,
+            tip="使用 `llm mcp 开启/关闭 <ID/名称>` 来修改状态，支持批量操作",
+        )
+        table.set_headers(column_name)
+        table.set_column_alignments(["center", "left", "left", "center", "left"])
+        table.add_rows(rows_data)
         return await renderer_service.render(table, use_cache=False)

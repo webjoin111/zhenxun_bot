@@ -177,10 +177,17 @@ class LLMRouter(BaseRouter):
             enable_hitl=getattr(self.runtime_config, "leader_enable_hitl", False),
         )
 
+        target_model = self.leader_model
+        if not target_model:
+            for m in self.members:
+                if m_model := getattr(m, "model_name", None) or getattr(m, "model", None):
+                    target_model = m_model
+                    break
+
         router_agent = Agent(
             name=f"{self.team_name}_Router",
             instruction=route_prompt,
-            model=self.leader_model,
+            model=target_model,
             tools=self.leader_tools,
             runtime_config=leader_config,
         )

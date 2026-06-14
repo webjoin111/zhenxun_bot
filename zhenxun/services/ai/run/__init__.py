@@ -1,5 +1,6 @@
 from .blackboard import BlackboardManager
 from .context import (
+    NoneBotDeps,
     RunContext,
     TemplateStr,
     get_current_run_context,
@@ -21,6 +22,7 @@ __all__ = [
     "HITLController",
     "Hidden",
     "Inject",
+    "NoneBotDeps",
     "RunContext",
     "StreamedRunResult",
     "Task",
