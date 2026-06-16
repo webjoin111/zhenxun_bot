@@ -9,7 +9,7 @@ from typing import Any, Literal, cast
 from pydantic import BaseModel, Field, model_validator
 
 from zhenxun.configs.path_config import DATA_PATH
-from zhenxun.services.ai.protocols.tool import (
+from zhenxun.services.ai.core.protocols.tool import (
     ToolExecutable,
     ToolProvider,
     ToolResolvable,

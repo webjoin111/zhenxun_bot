@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from zhenxun.services.ai.protocols.capabilities import AbstractCapability
+from zhenxun.services.ai.capabilities import AbstractCapability
 from zhenxun.services.ai.run import RunContext
 from zhenxun.services.ai.tools.models import ToolOptions
 
@@ -51,7 +51,7 @@ def tool(
     settings: ToolOptions | None = None,
     tags: list[str] | None = None,
     auto_register: bool = False,
-    require_prefix: bool = True,
+    require_prefix: bool = False,
 ):
     """
     将普通函数或类方法注册为 LLM 工具的统一装饰器大一统。
@@ -67,7 +67,7 @@ def tool(
             用于被 Agent 的智能字符串路由识别并进行能力注入。
         auto_register: 是否自动注册到当前命名空间的工具注册表。
             默认为 False，开发者需要显式传递实例。若为 True 方可通过字符串调用。
-        require_prefix: 是否自动添加插件命名空间前缀（仅对游离函数生效）。默认为 True。
+        require_prefix: 是否自动添加插件命名空间前缀（仅对游离函数生效）。默认为 False。
     返回:
         Callable | FunctionTool: 包装后的函数或方法。
     """

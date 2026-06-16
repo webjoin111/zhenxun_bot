@@ -6,19 +6,24 @@ from typing import Any, Generic, cast
 
 from nonebot.utils import is_coroutine_callable
 
-from zhenxun.services.ai.core.configs import (
-    BaseOutputDefinition,
-    GenerationConfig,
-)
+from zhenxun.services.ai.capabilities import AbstractCapability
+from zhenxun.services.ai.context.knowledge.base import BaseKnowledge
+from zhenxun.services.ai.context.memory.builder import MemoryBuilder
+from zhenxun.services.ai.context.memory.models import MemoryConfig
 from zhenxun.services.ai.core.exceptions import (
     ControlFlowExit,
 )
-from zhenxun.services.ai.core.guardrails import GuardrailSource
 from zhenxun.services.ai.core.messages import (
     LLMMessage,
     PromptInput,
 )
+from zhenxun.services.ai.core.options import (
+    BaseOutputDefinition,
+    GenerationConfig,
+)
+from zhenxun.services.ai.core.protocols.tool import ToolExecutable, ToolResolvable
 from zhenxun.services.ai.core.stream_events import EventStreamer
+from zhenxun.services.ai.core.templates import PromptTemplate
 from zhenxun.services.ai.flow.agent.engine.builders import ToolBuilder
 from zhenxun.services.ai.flow.agent.models import (
     AgentEngineConfig,
@@ -26,17 +31,12 @@ from zhenxun.services.ai.flow.agent.models import (
     Persona,
 )
 from zhenxun.services.ai.flow.base import BaseRunnable
-from zhenxun.services.ai.knowledge.base import BaseKnowledge
+from zhenxun.services.ai.guardrails import GuardrailSource
 from zhenxun.services.ai.llm.config.generation import IntentBuilder
-from zhenxun.services.ai.memory.builder import MemoryBuilder
-from zhenxun.services.ai.memory.models import MemoryConfig
-from zhenxun.services.ai.protocols.capabilities import AbstractCapability
-from zhenxun.services.ai.protocols.tool import ToolExecutable, ToolResolvable
 from zhenxun.services.ai.run import (
     AgentRunResult,
     RunContext,
     Task,
-    TemplateStr,
 )
 from zhenxun.services.ai.run.context import AgentDepsT, ToolsPrepareFunc
 from zhenxun.services.ai.run.models import (
@@ -74,7 +74,7 @@ class Agent(
     def __init__(
         self,
         name: str,
-        instruction: str | TemplateStr = "",
+        instruction: str | PromptTemplate = "",
         description: str | None = None,
         persona: Persona | dict | None = None,
         model: str | Callable[[], str] | None = None,
@@ -156,7 +156,7 @@ class Agent(
 
         self.dynamic_prompts = dynamic_prompts or []
         self.toolset_funcs = []
-        from zhenxun.services.ai.core.guardrails import parse_guardrails
+        from zhenxun.services.ai.guardrails import parse_guardrails
 
         self._guardrails = parse_guardrails(guardrails)
         self.prepare_tools = prepare_tools
@@ -179,7 +179,7 @@ class Agent(
         self.capabilities: list[AbstractCapability] = []
 
         if capabilities:
-            from zhenxun.services.ai.protocols.capabilities import DynamicCapability
+            from zhenxun.services.ai.capabilities.wrappers import DynamicCapability
 
             for cap in capabilities:
                 if isinstance(cap, AbstractCapability):
@@ -268,14 +268,14 @@ class Agent(
         if func is None:
 
             def decorator(f: Callable):
-                from zhenxun.services.ai.core.guardrails import parse_guardrails
+                from zhenxun.services.ai.guardrails import parse_guardrails
 
                 self._guardrails.extend(parse_guardrails([f]))
                 return f
 
             return decorator
         else:
-            from zhenxun.services.ai.core.guardrails import parse_guardrails
+            from zhenxun.services.ai.guardrails import parse_guardrails
 
             self._guardrails.extend(parse_guardrails([func]))
             return func

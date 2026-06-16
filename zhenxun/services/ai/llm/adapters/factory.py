@@ -7,11 +7,11 @@ from __future__ import annotations
 import fnmatch
 from typing import Any, ClassVar
 
-from zhenxun.services.ai.core.configs import GenerationConfig, LLMEmbeddingConfig
 from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
 from zhenxun.services.ai.core.messages import EmbedBatch, LLMMessage
 from zhenxun.services.ai.core.models import ToolChoice
-from zhenxun.services.ai.protocols.llm import LLMModelBase
+from zhenxun.services.ai.core.options import GenerationConfig, LLMEmbeddingConfig
+from zhenxun.services.ai.core.protocols.llm import LLMModelBase
 
 from .base import BaseAdapter, RequestData, ResponseData
 
@@ -33,6 +33,7 @@ class LLMAdapterFactory:
         from .gemini import GeminiAdapter
         from .glm import GLMAdapter
         from .jina import JinaAdapter
+        from .mimo import MiMoAdapter
         from .minimax import MiniMaxAdapter
         from .openai import OpenAIAdapter
 
@@ -42,6 +43,7 @@ class LLMAdapterFactory:
         cls.register_adapter(GeminiAdapter())
         cls.register_adapter(GLMAdapter())
         cls.register_adapter(SmartAdapter())
+        cls.register_adapter(MiMoAdapter())
         cls.register_adapter(MiniMaxAdapter())
         cls.register_adapter(DoubaoAdapter())
 

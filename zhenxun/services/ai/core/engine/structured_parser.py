@@ -12,7 +12,7 @@ from zhenxun.services.ai.core.exceptions import (
     SchemaParseError,
 )
 from zhenxun.services.ai.core.models import ToolDefinition
-from zhenxun.services.ai.protocols.tool import ToolExecutable
+from zhenxun.services.ai.core.protocols.tool import ToolExecutable
 from zhenxun.services.ai.run.models import OutputDataT
 from zhenxun.services.ai.tools.models import ToolResult
 from zhenxun.services.log import logger
@@ -60,26 +60,11 @@ class BaseOutputProcessor(Generic[OutputDataT]):
         if origin not in union_types:
             return union_type, False
 
-        args = get_args(union_type)
-        branch_models = []
-        for i, arg in enumerate(args):
-            name = getattr(arg, "__name__", f"Option_{i}")
-            branch_model = create_model(
-                f"UnionBranch_{name}",
-                kind=(
-                    Literal[name],
-                    Field(default=name, description=f"选择输出结构为: {name}"),
-                ),
-                data=(arg, Field(..., description=f"{name} 的具体数据")),
-            )
-            branch_models.append(branch_model)
-
-        UnionOfBranches = reduce(lambda left, right: left | right, branch_models)
         UnionWrapper = create_model(
             "UnionResponseWrapper",
             result=(
-                UnionOfBranches,
-                Field(..., description="根据你的决策，选择一种格式输出"),
+                union_type,
+                Field(..., description="根据你的决策，输出对应的结构化数据"),
             ),
         )
         return UnionWrapper, True
@@ -120,8 +105,7 @@ class BaseOutputProcessor(Generic[OutputDataT]):
             current_obj = parsed_obj
 
             if getattr(self, "is_union_wrapped", False):
-                branch = getattr(current_obj, "result")
-                current_obj = getattr(branch, "data")
+                current_obj = getattr(current_obj, "result")
 
             final_obj = cast(OutputDataT, current_obj)
 
@@ -176,7 +160,7 @@ class SubmitFinalResultExecutable(ToolExecutable):
             final_obj = await self.output_processor.validate_and_parse(
                 json_str, context=context
             )
-            from zhenxun.services.ai.core.guardrails import GuardrailPipeline
+            from zhenxun.services.ai.guardrails import GuardrailPipeline
 
             pipeline = GuardrailPipeline(self.guardrails)
             json_str, final_obj = await pipeline.run_output_pipeline(

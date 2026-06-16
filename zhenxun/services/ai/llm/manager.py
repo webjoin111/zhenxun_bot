@@ -8,14 +8,13 @@ import hashlib
 import time
 from typing import Any
 
-from zhenxun.configs.config import Config
-from zhenxun.services.ai.config import ProviderConfig, get_llm_config
-from zhenxun.services.ai.core.configs import GenerationConfig, LLMEmbeddingConfig
+from zhenxun.services.ai.config import ProviderConfig, get_ai_config, get_llm_config
 from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
 from zhenxun.services.ai.core.messages import EmbedBatch, EmbeddingResponse, LLMResponse
 from zhenxun.services.ai.core.models import ModelDetail, ModelModality, ToolChoice
+from zhenxun.services.ai.core.options import GenerationConfig, LLMEmbeddingConfig
+from zhenxun.services.ai.core.protocols.llm import LLMModelBase
 from zhenxun.services.ai.llm.capabilities import get_model_capabilities
-from zhenxun.services.ai.protocols.llm import LLMModelBase
 from zhenxun.services.ai.run.models import CancellationToken
 from zhenxun.services.log import logger
 from zhenxun.utils.manager.priority_manager import PriorityLifecycle
@@ -25,9 +24,6 @@ from .config import validate_override_params
 from .core import health_manager, http_client_manager
 from .engine import HttpEngine
 from .service import LLMModel
-
-AI_CONFIG_GROUP = "AI"
-PROVIDERS_CONFIG_KEY = "PROVIDERS"
 
 _model_cache: dict[str, tuple[LLMModel, float]] = {}
 _cache_ttl = 3600
@@ -210,11 +206,6 @@ class RoutedLLMModel(LLMModelBase):
         raise LLMException(f"路由组 '{self.group_name}' Rerank 均失败: {errors}")
 
 
-def get_ai_config():
-    """获取 AI 配置组"""
-    return Config.get(AI_CONFIG_GROUP)
-
-
 def parse_provider_model_string(name_str: str | None) -> tuple[str | None, str | None]:
     """解析 'ProviderName/ModelName' 格式的字符串"""
     if not name_str or "/" not in name_str:
@@ -285,7 +276,7 @@ def clear_model_cache():
     """清空模型缓存并释放已缓存的模型实例。"""
     global _model_cache
     _model_cache.clear()
-    logger.info("已清空模型缓存")
+    logger.debug("已清空模型缓存")
 
 
 def get_cache_stats() -> dict[str, Any]:
@@ -316,15 +307,12 @@ def get_default_api_base_for_type(api_type: str) -> str | None:
 
 
 def get_configured_providers() -> list[ProviderConfig]:
-    """从配置中获取Provider列表 - 简化和修正版本"""
+    """从配置中获取Provider列表"""
     ai_config = get_ai_config()
-    providers = ai_config.get(PROVIDERS_CONFIG_KEY, [])
+    providers = ai_config.get("PROVIDERS", [])
 
     if not isinstance(providers, list):
-        logger.error(
-            f"配置项 {AI_CONFIG_GROUP}.{PROVIDERS_CONFIG_KEY} 的值不是一个列表，"
-            f"将使用空列表。"
-        )
+        logger.error("配置项 AI.PROVIDERS 的值不是一个列表，将使用空列表。")
         return []
 
     valid_providers = []
@@ -658,13 +646,10 @@ async def _init_llm_config_on_startup():
     try:
         get_llm_config()
         await health_manager.initialize()
-        logger.debug("LLM 配置和遥测状态初始化完成。")
 
         from zhenxun.services.ai.tools.engine.registry import tool_provider_manager
 
-        logger.debug("正在预热 LLM 工具提供者管理器...")
         await tool_provider_manager.initialize()
-        logger.debug("LLM 工具提供者管理器预热完成。")
 
     except Exception as e:
         logger.error(f"LLM 配置或遥测状态初始化时发生错误: {e}", e=e)

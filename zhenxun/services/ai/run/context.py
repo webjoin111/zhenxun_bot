@@ -11,23 +11,13 @@ from nonebot.adapters import Bot, Event
 from nonebot.matcher import Matcher
 from pydantic import BaseModel, ConfigDict, Field
 
-from zhenxun.services.ai.core.templates import PromptTemplate
 from zhenxun.services.ai.utils.runtime_utils import ContextUtils
-from zhenxun.utils.pydantic_compat import model_dump
 from zhenxun.utils.utils import infer_plugin_namespace
 
 AgentDepsT = TypeVar("AgentDepsT", default=Any)
 """泛型类型变量：外部环境依赖对象 (Agent Dependencies)。"""
 ProviderFunc = Callable[["RunContext"], Any | Awaitable[Any]]
 """函数签名类型别名：依赖提供者函数 (Dependency Provider)。"""
-SystemPromptFunc = Callable[
-    ["RunContext[AgentDepsT]"], str | None | Awaitable[str | None]
-]
-"""动态系统提示词函数类型。接收 RunContext，返回字符串或 None。"""
-
-ToolsetFunc = Callable[["RunContext[AgentDepsT]"], Any | Awaitable[Any]]
-"""动态工具集工厂函数类型。接收 RunContext，返回 Toolkit, 工具列表或 None。"""
-
 ToolsPrepareFunc = Callable[["RunContext[AgentDepsT]", list[Any]], Any | Awaitable[Any]]
 """全局/Agent 级动态工具干预函数类型"""
 
@@ -83,6 +73,28 @@ class SessionContext(Generic[AgentDepsT]):
     """触发事件的插件命名空间"""
     append_only_manager: Any = dataclasses.field(default=None)
     """用于大模型前缀缓存命中优化的追加写入管理器。"""
+
+    @property
+    def memory(self) -> Any:
+        """
+        获取当前会话的持久化记忆访问门面 (AgentSessionFacade)。
+        提供极简的 history 和 slots 操作 API。
+        """
+        from zhenxun.services.ai.context.memory.manager import AgentSessionFacade
+        from zhenxun.services.ai.context.memory.types import SessionMetadata
+
+        user_id = ContextUtils.extract_user_id(self.deps)
+        group_id = ContextUtils.extract_group_id(self.deps)
+        platform = ContextUtils.extract_platform(self.deps)
+
+        meta = SessionMetadata(
+            session_id=self.session_id,
+            user_id=user_id,
+            group_id=group_id,
+            platform=platform,
+            namespace=self.namespace,
+        )
+        return AgentSessionFacade(meta)
 
 
 @dataclasses.dataclass
@@ -228,10 +240,10 @@ class RunContext(Generic[AgentDepsT]):
             self.deps = cast(AgentDepsT, NoneBotDeps.get_current())
 
         if not self.session_id and self.deps:
-            from zhenxun.services.ai.memory.types import (
+            from zhenxun.services.ai.context.memory.types import (
                 MemoryIsolationLevel,
             )
-            from zhenxun.services.ai.memory.utils import generate_session_meta
+            from zhenxun.services.ai.context.memory.utils import generate_session_meta
 
             bot = self.get_bot()
             event = self.get_event()
@@ -269,6 +281,7 @@ class RunContext(Generic[AgentDepsT]):
         from zhenxun.services.ai.core.engine.append_only import (
             AppendOnlyContextManager,
         )
+
         self.session.append_only_manager = AppendOnlyContextManager()
 
         self.run = AgentRunContext(session=self.session, state=self.state)
@@ -282,7 +295,7 @@ class RunContext(Generic[AgentDepsT]):
         if "shared_state" not in changes:
             changes["shared_state"] = self.shared_state
 
-        new_ctx = dataclasses.replace(self, **changes)
+        new_ctx = dataclasses.replace(cast(Any, self), **changes)
         new_ctx.upstream_results = self.upstream_results.copy()
         new_ctx.di_cache = self.di_cache.copy()
 
@@ -308,7 +321,7 @@ class RunContext(Generic[AgentDepsT]):
         """
         为每个并发的工具调用派生绝对独立的 ToolCallContext。消除多工具并行时的属性污染。
         """
-        new_ctx = dataclasses.replace(self)
+        new_ctx = dataclasses.replace(cast(Any, self))
         new_ctx.di_cache = self.di_cache.copy()
         new_ctx.session = self.session
         new_ctx.run = self.run
@@ -335,35 +348,6 @@ class RunContext(Generic[AgentDepsT]):
         new_ctx.session_id = f"{base_sid}/sub_{member_name}_{uuid.uuid4().hex[:6]}"
         new_ctx.session.session_id = new_ctx.session_id
         return new_ctx
-
-
-class TemplateStr(Generic[AgentDepsT]):
-    """
-    延迟渲染的模版字符串。
-    支持 Jinja2 语法。在 Agent 运行时，将自动合并提取
-    RunContext.deps 和 RunContext.state 进行渲染。
-    """
-
-    def __init__(self, template: str):
-        self.template = template
-
-    def render(self, context: RunContext[AgentDepsT]) -> str:
-        vars_dict = {}
-        if context.deps is not None:
-            if hasattr(context.deps, "model_dump"):
-                vars_dict.update(model_dump(cast(Any, context.deps), exclude_none=True))
-            elif hasattr(context.deps, "__dict__"):
-                vars_dict.update(context.deps.__dict__)
-            elif isinstance(context.deps, dict):
-                vars_dict.update(context.deps)
-
-        if context.state:
-            vars_dict.update(context.state)
-
-        return PromptTemplate(self.template).render(**vars_dict)
-
-    def __str__(self) -> str:
-        return self.template
 
 
 _CURRENT_RUN_CONTEXT: ContextVar[RunContext | None] = ContextVar(
@@ -410,11 +394,8 @@ __all__ = [
     "NoneBotDeps",
     "RunContext",
     "SessionContext",
-    "SystemPromptFunc",
-    "TemplateStr",
     "ToolCallContext",
     "ToolsPrepareFunc",
-    "ToolsetFunc",
     "get_current_run_context",
     "set_run_context",
 ]

@@ -1,15 +1,14 @@
 from collections import defaultdict
 import inspect
-from typing import TYPE_CHECKING, Annotated, Any, ClassVar
+from typing import Annotated, Any, ClassVar
 
 from nonebot.adapters import Bot, Event
-
-if TYPE_CHECKING:
-    from zhenxun.services.ai.run.blackboard import BlackboardManager
 from nonebot.matcher import Matcher
 from nonebot.utils import is_coroutine_callable
 from nonebot_plugin_session import EventSession, extract_session
 
+from zhenxun.services.ai.context.memory.manager import AgentSessionFacade
+from zhenxun.services.ai.run.blackboard import BlackboardManager
 from zhenxun.utils.utils import infer_plugin_namespace
 
 from .context import ProviderFunc, RunContext, _is_run_context_type
@@ -57,8 +56,9 @@ CurrentOriginalInput = Annotated[str, Hidden(), _InjectMarker("original_input")]
 UpstreamResults = Annotated[dict[str, Any], Hidden(), _InjectMarker("upstream_results")]
 ToolkitState = Annotated[Any, Hidden(), _InjectMarker("toolkit_state")]
 CurrentBlackboard = Annotated[
-    "BlackboardManager | None", Hidden(), _InjectMarker("blackboard")
+    BlackboardManager | None, Hidden(), _InjectMarker("blackboard")
 ]
+CurrentMemory = Annotated[AgentSessionFacade, Hidden(), _InjectMarker("memory")]
 CurrentSandbox = Annotated[Any, Hidden(), _InjectMarker("sandbox")]
 
 
@@ -154,6 +154,9 @@ class Inject:
 
     Blackboard = CurrentBlackboard
     """自动注入：当前工作流/团队挂载的强类型黑板 (BlackboardManager) 实例"""
+
+    Memory = CurrentMemory
+    """自动注入：当前会话的持久化记忆存取门面 (AgentSessionFacade) 实例"""
 
     Sandbox = CurrentSandbox
     """自动注入：当前沙箱环境管理器实例"""
@@ -326,6 +329,7 @@ Inject.register_provider(
 Inject.register_provider(
     "shared_state", lambda ctx: ctx.session.shared_state, scope="global"
 )
+Inject.register_provider("memory", lambda ctx: ctx.session.memory, scope="global")
 
 
 def _resolve_blackboard(ctx: RunContext):

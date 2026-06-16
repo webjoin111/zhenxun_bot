@@ -1,18 +1,18 @@
 from typing import Any, cast
 import uuid
 
-from zhenxun.services.ai.core.configs import GenerationConfig
+from zhenxun.services.ai.core.options import GenerationConfig
 from zhenxun.services.ai.core.messages import LLMMessage
 from zhenxun.services.ai.flow.agent.engine.builders import ContextBuilder, ToolBuilder
 from zhenxun.services.ai.flow.agent.models import AgentEngineConfig, AgentLoopContext
-from zhenxun.services.ai.memory.engine import MemoryReader, MemoryWriter
-from zhenxun.services.ai.memory.models import (
+from zhenxun.services.ai.context.memory.engine import MemoryReader, MemoryWriter
+from zhenxun.services.ai.context.memory.models import (
     MemoryConfig,
 )
-from zhenxun.services.ai.memory.types import MemoryIsolationLevel, SessionMetadata
-from zhenxun.services.ai.memory.utils import generate_session_meta
-from zhenxun.services.ai.protocols.capabilities import (
-    AbstractCapability,
+from zhenxun.services.ai.context.memory.types import MemoryIsolationLevel, SessionMetadata
+from zhenxun.services.ai.context.memory.utils import generate_session_meta
+from zhenxun.services.ai.capabilities import AbstractCapability
+from zhenxun.services.ai.capabilities.wrappers import (
     CombinedCapability,
     DynamicCapability,
 )
@@ -116,7 +116,7 @@ class AgentHarness:
 
             dynamic_caps.append(OutputValidationCapability(None, combined_guardrails))
 
-        from zhenxun.services.ai.memory.builder import MemoryBuilder
+        from zhenxun.services.ai.context.memory.builder import MemoryBuilder
 
         effective_memory = (
             MemoryBuilder.resolve(memory)
@@ -233,7 +233,7 @@ class AgentHarness:
             effective_tools.extend(extra_tools)
 
         if effective_memory and effective_memory.long_term.enable:
-            from zhenxun.services.ai.memory.manager import memory_manager
+            from zhenxun.services.ai.context.memory.manager import memory_manager
 
             ltm_scope = memory_manager.get_long_term_memory(effective_memory)
             if ltm_scope:

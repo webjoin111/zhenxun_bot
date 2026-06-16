@@ -245,7 +245,7 @@ class Task(BaseModel):
 
     @model_validator(mode="after")
     def _parse_and_set_guardrails(self) -> "Task":
-        from zhenxun.services.ai.core.guardrails import parse_guardrails
+        from zhenxun.services.ai.guardrails import parse_guardrails
 
         self._parsed_guardrails = parse_guardrails(self.guardrails)
         return self

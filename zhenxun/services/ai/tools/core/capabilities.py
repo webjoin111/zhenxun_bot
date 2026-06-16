@@ -5,7 +5,7 @@ from typing import Any
 from nonebot.permission import SUPERUSER
 from nonebot.utils import is_coroutine_callable
 
-from zhenxun.services.ai.protocols.capabilities import (
+from zhenxun.services.ai.capabilities import (
     AbstractCapability,
     WrapToolExecuteHandler,
     WrapToolValidateHandler,

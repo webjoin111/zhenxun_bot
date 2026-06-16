@@ -2,7 +2,7 @@ import asyncio
 import json
 from typing import Any, cast
 
-from zhenxun.services.ai.core.configs import GenerationConfig
+from zhenxun.services.ai.core.options import GenerationConfig
 from zhenxun.services.ai.core.engine.token_counter import (
     parse_usage_info,
     token_counter,

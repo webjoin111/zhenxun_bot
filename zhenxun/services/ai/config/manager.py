@@ -8,13 +8,9 @@ from zhenxun.utils.pydantic_compat import model_dump
 
 from .models import DebugLogOptions, LLMConfig, ProviderConfig
 
-AI_CONFIG_GROUP = "AI"
-PROVIDERS_CONFIG_KEY = "PROVIDERS"
-
-
 def get_ai_config():
     """获取 AI 配置组"""
-    return Config.get(AI_CONFIG_GROUP)
+    return Config.get("AI")
 
 
 def get_default_providers() -> list[dict[str, Any]]:
@@ -113,6 +109,17 @@ def get_default_providers() -> list[dict[str, Any]]:
                 {"model_name": "MiniMax-M2.7-highspeed"},
             ],
         },
+        {
+            "name": "MiMo",
+            "api_key": "YOUR_MIMO_API_KEY",
+            "api_base": "https://api.xiaomimimo.com",
+            "api_type": "mimo",
+            "models": [
+                {"model_name": "mimo-v2.5-pro"},
+                {"model_name": "mimo-v2.5"},
+                {"model_name": "mimo-v2.5-tts"},
+            ],
+        },
     ]
 
 
@@ -123,14 +130,14 @@ def register_llm_configs():
     llm_config = LLMConfig()
 
     Config.add_plugin_config(
-        AI_CONFIG_GROUP,
+        "AI",
         "default_models",
         model_dump(llm_config.default_models),
         help="不同任务类型的全局默认模型配置字典",
         type=dict,
     )
     Config.add_plugin_config(
-        AI_CONFIG_GROUP,
+        "AI",
         "client_settings",
         model_dump(llm_config.client_settings),
         help=(
@@ -141,7 +148,7 @@ def register_llm_configs():
         type=dict,
     )
     Config.add_plugin_config(
-        AI_CONFIG_GROUP,
+        "AI",
         "debug_log",
         model_dump(llm_config.debug_log),
         help=(
@@ -152,7 +159,7 @@ def register_llm_configs():
     )
 
     Config.add_plugin_config(
-        AI_CONFIG_GROUP,
+        "AI",
         "context_settings",
         model_dump(llm_config.context_settings),
         help=(
@@ -176,7 +183,7 @@ def register_llm_configs():
     )
 
     Config.add_plugin_config(
-        AI_CONFIG_GROUP,
+        "AI",
         "MODEL_GROUPS",
         llm_config.model_groups,
         help=(
@@ -188,7 +195,7 @@ def register_llm_configs():
     )
 
     Config.add_plugin_config(
-        AI_CONFIG_GROUP,
+        "AI",
         "agent_settings",
         model_dump(llm_config.agent_settings),
         help=(
@@ -203,7 +210,7 @@ def register_llm_configs():
     )
 
     Config.add_plugin_config(
-        AI_CONFIG_GROUP,
+        "AI",
         "sandbox",
         model_dump(llm_config.sandbox),
         help=(
@@ -215,7 +222,7 @@ def register_llm_configs():
     )
 
     Config.add_plugin_config(
-        AI_CONFIG_GROUP,
+        "AI",
         "provider_settings",
         model_dump(llm_config.provider_settings),
         help=(
@@ -226,8 +233,8 @@ def register_llm_configs():
     )
 
     Config.add_plugin_config(
-        AI_CONFIG_GROUP,
-        PROVIDERS_CONFIG_KEY,
+        "AI",
+        "PROVIDERS",
         get_default_providers(),
         help=(
             "配置多个 AI 服务提供商及其模型信息。\n"
@@ -265,7 +272,7 @@ def get_llm_config() -> LLMConfig:
         "default_models": ai_config.get("default_models", {}),
         "client_settings": ai_config.get("client_settings", {}),
         "debug_log": debug_log_val,
-        PROVIDERS_CONFIG_KEY: ai_config.get(PROVIDERS_CONFIG_KEY, []),
+        "PROVIDERS": ai_config.get("PROVIDERS", []),
         "context_settings": ai_config.get("context_settings", {}),
         "model_groups": ai_config.get("MODEL_GROUPS", {}),
         "agent_settings": ai_config.get("agent_settings", {}),
@@ -345,7 +352,7 @@ def set_default_model(task: str, provider_model_name: str | None) -> bool:
     current_defaults[task] = provider_model_name
 
     Config.set_config(
-        AI_CONFIG_GROUP, "default_models", current_defaults, auto_save=True
+        "AI", "default_models", current_defaults, auto_save=True
     )
 
     if provider_model_name:

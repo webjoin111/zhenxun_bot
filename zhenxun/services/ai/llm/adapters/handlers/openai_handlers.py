@@ -7,13 +7,6 @@ from typing import Any
 import httpx
 import json_repair
 
-from zhenxun.services.ai.core.configs import (
-    GenerationConfig,
-    LLMEmbeddingConfig,
-    ReasoningEffort,
-    StructuredOutputStrategy,
-    TTSConfig,
-)
 from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
 from zhenxun.services.ai.core.messages import (
     AssistantMessage,
@@ -37,6 +30,14 @@ from zhenxun.services.ai.core.models import (
     ToolChoice,
     ToolDefinition,
 )
+from zhenxun.services.ai.core.options import (
+    GenerationConfig,
+    LLMEmbeddingConfig,
+    ReasoningEffort,
+    StructuredOutputStrategy,
+    TTSConfig,
+)
+from zhenxun.services.ai.core.protocols.llm import LLMModelBase
 from zhenxun.services.ai.llm.adapters.base import (
     BaseAdapter,
     RequestData,
@@ -54,7 +55,6 @@ from zhenxun.services.ai.llm.adapters.handlers.base import (
     ResponseParser,
     ToolSerializer,
 )
-from zhenxun.services.ai.protocols.llm import LLMModelBase
 from zhenxun.services.log import logger
 
 
@@ -266,11 +266,11 @@ class OpenAIToolSerializer(ToolSerializer):
         pipeline = SchemaPipeline(
             [
                 RootRefInlineTransformer(),
-                RefComplianceTransformer(),
                 OpenAIUnionFlattenTransformer(),
                 TypeEnforcerTransformer(),
                 RemoveUnsupportedKeysTransformer(unsupported_keys),
                 StrictObjectTransformer(),
+                RefComplianceTransformer(),
             ]
         )
         return pipeline.run(schema)

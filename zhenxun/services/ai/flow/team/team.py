@@ -67,10 +67,8 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
 
         self.capabilities: list[Any] = []
         if capabilities:
-            from zhenxun.services.ai.protocols.capabilities import (
-                AbstractCapability,
-                DynamicCapability,
-            )
+            from zhenxun.services.ai.capabilities import AbstractCapability
+            from zhenxun.services.ai.capabilities.wrappers import DynamicCapability
 
             for cap in capabilities:
                 if isinstance(cap, AbstractCapability):
@@ -312,10 +310,8 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
             )
 
         if capabilities:
-            from zhenxun.services.ai.protocols.capabilities import (
-                AbstractCapability,
-                DynamicCapability,
-            )
+            from zhenxun.services.ai.capabilities import AbstractCapability
+            from zhenxun.services.ai.capabilities.wrappers import DynamicCapability
 
             for cap in capabilities:
                 if isinstance(cap, AbstractCapability):

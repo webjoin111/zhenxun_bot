@@ -8,6 +8,12 @@ from typing import Any, ClassVar
 from nonebot.permission import SUPERUSER
 
 from zhenxun.models.user_console import UserConsole
+from zhenxun.services.ai.capabilities import (
+    AbstractCapability,
+    WrapModelRequestHandler,
+    WrapRunHandler,
+    WrapToolExecuteHandler,
+)
 from zhenxun.services.ai.core.exceptions import (
     AbortException,
     ControlFlowExit,
@@ -20,13 +26,7 @@ from zhenxun.services.ai.core.exceptions import (
     ToolFatalError,
 )
 from zhenxun.services.ai.core.messages import LLMResponse
-from zhenxun.services.ai.protocols.capabilities import (
-    AbstractCapability,
-    WrapModelRequestHandler,
-    WrapRunHandler,
-    WrapToolExecuteHandler,
-)
-from zhenxun.services.ai.protocols.middleware import LLMContext
+from zhenxun.services.ai.core.protocols.middleware import LLMContext
 from zhenxun.services.ai.run import AgentRunResult, RunContext
 from zhenxun.services.ai.run.models import AgentRunSummary
 from zhenxun.services.ai.tools.models import ToolResult
@@ -589,7 +589,7 @@ class ReflexionCapability(AbstractCapability):
         ivr_messages = list(llm_context.messages)
         last_exception: Exception | None = None
 
-        from zhenxun.services.ai.core.guardrails import GuardrailPipeline
+        from zhenxun.services.ai.guardrails import GuardrailPipeline
 
         pipeline = GuardrailPipeline(guardrails) if guardrails else None
 

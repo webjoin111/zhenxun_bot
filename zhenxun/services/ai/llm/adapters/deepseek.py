@@ -1,18 +1,18 @@
 from typing import Any
 
-from zhenxun.services.ai.core.configs import GenerationConfig
 from zhenxun.services.ai.core.models import (
     ModelCapabilities,
     ModelDetail,
     ToolDefinition,
 )
+from zhenxun.services.ai.core.options import GenerationConfig
+from zhenxun.services.ai.core.protocols.llm import LLMModelBase
 from zhenxun.services.ai.llm.adapters.handlers.openai_handlers import (
     OpenAIConfigMapper,
     OpenAITextHandler,
     OpenAIToolSerializer,
 )
 from zhenxun.services.ai.llm.adapters.openai import OpenAICompatAdapter
-from zhenxun.services.ai.protocols.llm import LLMModelBase
 
 
 class DeepSeekToolSerializer(OpenAIToolSerializer):
@@ -57,12 +57,12 @@ class DeepSeekToolSerializer(OpenAIToolSerializer):
         pipeline = SchemaPipeline(
             [
                 RootRefInlineTransformer(),
-                RefComplianceTransformer(),
                 OpenAIUnionFlattenTransformer(),
                 TypeEnforcerTransformer(),
                 RemoveUnsupportedKeysTransformer(unsupported_keys),
                 StrictObjectTransformer(),
                 DeepSeekFallbackTransformer(),
+                RefComplianceTransformer(),
             ]
         )
         return pipeline.run(schema)

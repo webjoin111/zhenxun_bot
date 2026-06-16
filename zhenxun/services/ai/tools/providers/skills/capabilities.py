@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from zhenxun.services.ai.protocols.capabilities import AbstractCapability
+from zhenxun.services.ai.capabilities import AbstractCapability
 from zhenxun.services.ai.run import RunContext
 from zhenxun.services.ai.tools.providers.skills.manager import skill_manager
 from zhenxun.services.ai.tools.providers.skills.models import Skill, SkillSource

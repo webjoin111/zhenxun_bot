@@ -4,7 +4,7 @@ from typing import Any, cast
 
 from nonebot.utils import is_coroutine_callable
 
-from zhenxun.services.ai.protocols.capabilities import AbstractCapability
+from zhenxun.services.ai.capabilities import AbstractCapability
 from zhenxun.services.ai.run import RunContext
 from zhenxun.services.ai.tools.bridges.handoff import HandoffTool
 

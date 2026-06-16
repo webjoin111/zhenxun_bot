@@ -5,9 +5,9 @@ from typing import Any
 
 import httpx
 
+from zhenxun.services.ai.core.protocols.middleware import LLMContext
 from zhenxun.services.ai.llm.adapters.base import RequestData
 from zhenxun.services.ai.llm.core import LLMHttpClient
-from zhenxun.services.ai.protocols.middleware import LLMContext
 
 
 class BaseEngine(ABC):

@@ -2,23 +2,16 @@
 LLM 服务的高级 API 接口 - 便捷函数入口 (无状态)
 """
 
-from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Literal, TypeVar, overload
 
 from pydantic import BaseModel
 
-from zhenxun.services.ai.core.configs import (
-    GenerationConfig,
-    LLMEmbeddingConfig,
-    TTSConfig,
-)
 from zhenxun.services.ai.core.exceptions import (
     LLMErrorCode,
     LLMException,
     get_user_friendly_error_message,
 )
-from zhenxun.services.ai.core.guardrails import GuardrailSource
 from zhenxun.services.ai.core.messages import (
     AudioResponse,
     EmbeddingResponse,
@@ -28,6 +21,12 @@ from zhenxun.services.ai.core.messages import (
     RerankResult,
 )
 from zhenxun.services.ai.core.models import ModelModality, ModelName
+from zhenxun.services.ai.core.options import (
+    GenerationConfig,
+    LLMEmbeddingConfig,
+    TTSConfig,
+)
+from zhenxun.services.ai.guardrails import GuardrailSource
 from zhenxun.services.log import logger
 
 from .config import IntentBuilder
@@ -81,7 +80,9 @@ async def chat(
     except Exception as e:
         friendly_msg = get_user_friendly_error_message(e)
         logger.error(f"执行 chat 函数失败: {e} | 建议: {friendly_msg}", e=e)
-        raise LLMException(f"聊天执行失败: {friendly_msg}").with_traceback(None) from None
+        raise LLMException(f"聊天执行失败: {friendly_msg}").with_traceback(
+            None
+        ) from None
 
 
 @overload
@@ -204,7 +205,9 @@ async def rerank(
     except Exception as e:
         friendly_msg = get_user_friendly_error_message(e)
         logger.error(f"文档重排失败: {e} | 建议: {friendly_msg}", e=e)
-        raise LLMException(f"文档重排失败: {friendly_msg}").with_traceback(None) from None
+        raise LLMException(f"文档重排失败: {friendly_msg}").with_traceback(
+            None
+        ) from None
 
 
 async def generate_structured(
@@ -215,7 +218,6 @@ async def generate_structured(
     model: ModelName = None,
     config: GenerationConfig | IntentBuilder | None = None,
     max_retries: int | None = None,
-    validation_callback: Callable[[T], Any | Awaitable[Any]] | None = None,
     error_prompt_template: str | None = None,
     instruction: str | None = None,
     timeout: float | None = None,
@@ -229,39 +231,36 @@ async def generate_structured(
         info = await generate_structured("提取张三的信息", response_model=UserInfo)
 
     参数:
-        message: 用户输入的消息内容，支持多种格式。
-        response_model: 用于解析和验证响应的Pydantic模型类。
-        max_retries: 解析与护栏校验失败时的最大重试次数，默认为 None (使用全局配置)。
-        validation_callback: 自定义校验回调函数，抛出异常视为校验失败。
-        error_prompt_template: 自定义错误反馈提示词模板。
-        model: 要使用的模型名称，如果为None则使用默认模型。
-        instruction: 系统指令，用于指导AI生成符合要求的结构化输出。
-        timeout: HTTP 请求超时时间（秒）。
+        message: 输入的消息内容，支持纯文本、UniMessage、消息对象列表等。
+        response_model: 目标结构化输出的强类型 Pydantic 模型类。
+        guardrails: 护栏来源列表，支持自然语言规则、自定义校验函数
+        model: 强制指定调用的模型路由或名称，若为空则使用默认模型。
+        config: 大模型生成的通用配置或意图构建器。
+        max_retries: 格式解析或护栏校验失败时的最大自我反思重试次数（IVR），若为空则使用全局配置。
+        error_prompt_template: 自定义校验失败时引导大模型自我修正的提示词模板。
+        instruction: 注入到系统提示词中的全局任务指令或前置设定。
+        timeout: 本次 API 请求的超时时间限制（秒）。
 
     返回:
-        T: 解析后的Pydantic模型实例，类型为response_model指定的类型。
-    """
+        T: 解析验证通过后的 Pydantic 模型实例。
+    """  # noqa: E501
     try:
         from zhenxun.services.ai.config import get_llm_config
-        from zhenxun.services.ai.core.configs import (
-            OutputFormatConfig,
-            StructuredOutputStrategy,
-        )
         from zhenxun.services.ai.core.engine.structured_parser import (
             BaseOutputProcessor,
         )
         from zhenxun.services.ai.core.messages import ResponseFormat
+        from zhenxun.services.ai.core.options import (
+            OutputFormatConfig,
+            StructuredOutputStrategy,
+        )
 
         if max_retries is None:
             max_retries = get_llm_config().client_settings.structured_retries
 
-        v_list = guardrails or []
-        if validation_callback:
-            v_list.append(validation_callback)
+        from zhenxun.services.ai.guardrails import parse_guardrails
 
-        from zhenxun.services.ai.core.guardrails import parse_guardrails
-
-        parsed_guardrails = parse_guardrails(v_list)
+        parsed_guardrails = parse_guardrails(guardrails)
 
         output_processor = BaseOutputProcessor(
             response_model=response_model,
@@ -333,7 +332,9 @@ async def generate_structured(
     except Exception as e:
         friendly_msg = get_user_friendly_error_message(e)
         logger.error(f"生成结构化响应失败: {e} | 建议: {friendly_msg}", e=e)
-        raise LLMException(f"生成结构化响应失败: {friendly_msg}").with_traceback(None) from None
+        raise LLMException(f"生成结构化响应失败: {friendly_msg}").with_traceback(
+            None
+        ) from None
 
 
 async def generate(
@@ -380,7 +381,9 @@ async def generate(
     except Exception as e:
         friendly_msg = get_user_friendly_error_message(e)
         logger.error(f"生成响应失败: {e} | 建议: {friendly_msg}", e=e)
-        raise LLMException(f"生成响应失败: {friendly_msg}").with_traceback(None) from None
+        raise LLMException(f"生成响应失败: {friendly_msg}").with_traceback(
+            None
+        ) from None
 
 
 @overload
@@ -437,7 +440,7 @@ async def create_image(
     config = config or GenerationConfig()
 
     try:
-        from zhenxun.services.ai.protocols.middleware import LLMContext
+        from zhenxun.services.ai.core.protocols.middleware import LLMContext
 
         async with await get_model_instance(model, task="image") as model_instance:
             if not model_instance.capabilities.accepts_output(ModelModality.IMAGE):
@@ -464,7 +467,9 @@ async def create_image(
     except Exception as e:
         friendly_msg = get_user_friendly_error_message(e)
         logger.error(f"图片生成执行发生未知错误: {e} | 建议: {friendly_msg}", e=e)
-        raise LLMException(f"图片生成失败: {friendly_msg}").with_traceback(None) from None
+        raise LLMException(f"图片生成失败: {friendly_msg}").with_traceback(
+            None
+        ) from None
 
 
 async def create_speech(
@@ -494,4 +499,6 @@ async def create_speech(
     except Exception as e:
         friendly_msg = get_user_friendly_error_message(e)
         logger.error(f"语音生成执行发生未知错误: {e} | 建议: {friendly_msg}", e=e)
-        raise LLMException(f"语音生成失败: {friendly_msg}").with_traceback(None) from None
+        raise LLMException(f"语音生成失败: {friendly_msg}").with_traceback(
+            None
+        ) from None

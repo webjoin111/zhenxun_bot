@@ -4,8 +4,8 @@ Gemini API 适配器
 
 from __future__ import annotations
 
-from zhenxun.services.ai.core.configs import GenerationConfig
-from zhenxun.services.ai.protocols.llm import LLMModelBase
+from zhenxun.services.ai.core.options import GenerationConfig
+from zhenxun.services.ai.core.protocols.llm import LLMModelBase
 
 from .base import BaseAdapter
 from .handlers.gemini_handlers import (

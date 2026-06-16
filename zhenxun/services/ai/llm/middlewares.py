@@ -6,13 +6,16 @@ from typing import Any, cast
 
 import httpx
 
-from zhenxun.services.ai.core.configs import (
+from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
+from zhenxun.services.ai.core.messages import EmbedBatch, LLMResponse
+from zhenxun.services.ai.core.options import (
     GenerationConfig,
     LLMEmbeddingConfig,
     TTSConfig,
 )
-from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
-from zhenxun.services.ai.core.messages import EmbedBatch, LLMResponse
+from zhenxun.services.ai.core.protocols import LLMContext
+from zhenxun.services.ai.core.protocols.llm import LLMModelBase
+from zhenxun.services.ai.core.protocols.middleware import BaseLLMMiddleware, NextCall
 from zhenxun.services.ai.llm.adapters.base import (
     BaseAdapter,
     RequestData,
@@ -23,9 +26,6 @@ from zhenxun.services.ai.llm.core import (
     RetryConfig,
     _should_retry_llm_error,
 )
-from zhenxun.services.ai.protocols import LLMContext
-from zhenxun.services.ai.protocols.llm import LLMModelBase
-from zhenxun.services.ai.protocols.middleware import BaseLLMMiddleware, NextCall
 from zhenxun.services.log import logger
 from zhenxun.utils.http_utils import AsyncHttpx
 from zhenxun.utils.log_sanitizer import sanitize_for_logging

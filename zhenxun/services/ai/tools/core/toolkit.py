@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from zhenxun.configs.path_config import DATA_PATH
 from zhenxun.services.ai.core.exceptions import NeedsAuthException
-from zhenxun.services.ai.protocols.tool import ToolExecutable
+from zhenxun.services.ai.core.protocols.tool import ToolExecutable
 from zhenxun.services.ai.run import RunContext
 from zhenxun.services.ai.tools.models import (
     ResolvedToolPayload,
@@ -38,7 +38,8 @@ class BaseToolkit:
 
     default_instructions: str = ""
     default_prefix: str | None = None
-    """默认名称前缀。为空(None)时自动推导命名空间，空字符串("")表示关闭前缀机制。"""
+    """默认名称前缀。若设为 "auto"，则自动推导并使用插件命名空间
+    作为前缀。为空(None)或空字符串("")均不添加前缀。"""
     config: ToolkitConfig
     _class_tools_meta: ClassVar[dict[str, dict[str, Any]]] = {}
     _default_config: ClassVar[ToolkitConfig] = ToolkitConfig()
@@ -76,14 +77,6 @@ class BaseToolkit:
         instructions: str | None = None,
         **kwargs: Any,
     ):
-
-        raw_namespace = infer_plugin_namespace()
-
-        if raw_namespace in ("asyncio", "zhenxun", "zhenxun_bot", "unknown"):
-            self._inferred_namespace = "unknown"
-        else:
-            self._inferred_namespace = raw_namespace
-
         if config is not None:
             merged_dict = {
                 **self._default_config.model_dump(exclude_unset=True),
@@ -93,14 +86,20 @@ class BaseToolkit:
         else:
             self.config = model_copy(self._default_config, deep=True)
 
-        if self.config.prefix is None:
-            if self._inferred_namespace != "unknown":
-                self.config.prefix = f"{self._inferred_namespace}_"
-            else:
+        if self.config.prefix == "auto":
+            raw_namespace = infer_plugin_namespace()
+            if raw_namespace in (
+                "asyncio",
+                "zhenxun",
+                "zhenxun_bot",
+                "unknown",
+                "global",
+            ):
                 self.config.prefix = ""
-        else:
-            if self.config.prefix == "":
-                self._inferred_namespace = "unknown"
+            else:
+                self.config.prefix = f"{raw_namespace}_"
+        elif self.config.prefix is None:
+            self.config.prefix = ""
 
         self._instance_filter: Callable[[BaseTool], bool] | None = None
         self._injected_tools: list[BaseTool] = []

@@ -8,7 +8,7 @@ from typing_extensions import Self
 
 from nonebot.utils import is_coroutine_callable
 
-from zhenxun.services.ai.protocols.tool import (
+from zhenxun.services.ai.core.protocols.tool import (
     ToolExecutable,
     ToolProvider,
 )
@@ -552,7 +552,6 @@ class ToolProviderManager:
                 r = await r
                 resolvers[i] = self._normalize_to_resolver(r, namespace)
 
-        # [Fail-Fast 核心修改]：取消 return_exceptions=True，让依赖解析时的容器崩溃、网络异常等致命错误直接向上抛出，拒绝启动 Agent
         tasks = [r.resolve(context) for r in resolvers]
         payloads = await asyncio.gather(*tasks, return_exceptions=False)
 

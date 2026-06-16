@@ -118,9 +118,9 @@ class AgentSessionManager:
     async def delete(self, session_id: str):
         async with self._get_lock(session_id):
             self._sessions.pop(session_id, None)
-            from zhenxun.services.ai.memory.manager import memory_manager
-            from zhenxun.services.ai.memory.models import MemoryConfig
-            from zhenxun.services.ai.memory.types import SessionMetadata
+            from zhenxun.services.ai.context.memory.manager import memory_manager
+            from zhenxun.services.ai.context.memory.models import MemoryConfig
+            from zhenxun.services.ai.context.memory.types import SessionMetadata
 
             default_ctx = memory_manager.get_chat_context(MemoryConfig())
             if default_ctx:

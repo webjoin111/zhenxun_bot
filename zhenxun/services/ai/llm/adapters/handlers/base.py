@@ -5,11 +5,6 @@ from typing import Any
 
 import httpx
 
-from zhenxun.services.ai.core.configs import (
-    GenerationConfig,
-    LLMEmbeddingConfig,
-    TTSConfig,
-)
 from zhenxun.services.ai.core.messages import (
     AudioResponse,
     EmbedBatch,
@@ -22,8 +17,13 @@ from zhenxun.services.ai.core.models import (
     ToolChoice,
     ToolDefinition,
 )
+from zhenxun.services.ai.core.options import (
+    GenerationConfig,
+    LLMEmbeddingConfig,
+    TTSConfig,
+)
+from zhenxun.services.ai.core.protocols.llm import LLMModelBase
 from zhenxun.services.ai.llm.adapters.base import BaseAdapter, RequestData, ResponseData
-from zhenxun.services.ai.protocols.llm import LLMModelBase
 
 
 class ConfigMapper(ABC):
@@ -89,6 +89,7 @@ class BaseTextHandler(ABC):
         client_executables, server_tools, tool_defs = [], [], []
         if tools:
             import asyncio
+
             raw_tools = list(tools.values()) if isinstance(tools, dict) else tools
             for tool in raw_tools:
                 if getattr(tool, "execution_side", "client") == "server":

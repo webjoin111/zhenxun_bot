@@ -152,7 +152,7 @@ class MCPRemoteTool(BaseTool):
             metadata=self.metadata or {},
         )
         if context and self.settings.capabilities:
-            from zhenxun.services.ai.protocols.capabilities import (
+            from zhenxun.services.ai.capabilities.wrappers import (
                 CombinedCapability,
             )
 

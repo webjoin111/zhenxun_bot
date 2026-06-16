@@ -5,7 +5,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from zhenxun.services.ai.core.configs import BaseOutputDefinition
+from zhenxun.services.ai.core.options import BaseOutputDefinition
 from zhenxun.services.ai.core.messages import LLMMessage
 from zhenxun.services.ai.flow.base import BaseRuntimeConfig
 

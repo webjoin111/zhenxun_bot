@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from zhenxun.services.ai.protocols.llm import LLMModelBase
+from zhenxun.services.ai.core.protocols.llm import LLMModelBase
 
 from .handlers.openai_handlers import (
     OpenAITextHandler,

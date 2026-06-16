@@ -1,12 +1,12 @@
 from typing import Any, cast
 
-from zhenxun.services.ai.core.configs import BaseOutputDefinition, ToolOutput
+from zhenxun.services.ai.core.options import BaseOutputDefinition, ToolOutput
 from zhenxun.services.ai.core.engine.structured_parser import (
     BaseOutputProcessor,
     SubmitFinalResultExecutable,
 )
 from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
-from zhenxun.services.ai.protocols.capabilities import AbstractCapability
+from zhenxun.services.ai.capabilities import AbstractCapability
 from zhenxun.services.ai.run import AgentRunResult, RunContext, Task
 from zhenxun.services.log import logger
 
@@ -15,7 +15,7 @@ class OutputValidationCapability(AbstractCapability):
     """输出拦截与校验能力组件 (支持纯文本及结构化护栏)"""
 
     def get_ordering(self) -> Any:
-        from zhenxun.services.ai.protocols.capabilities import CapabilityOrdering
+        from zhenxun.services.ai.capabilities.base import CapabilityOrdering
         from zhenxun.services.ai.tools.engine.global_capabilities import (
             ReflexionCapability,
         )
@@ -27,7 +27,7 @@ class OutputValidationCapability(AbstractCapability):
     ):
         self.output_type = output_type
 
-        from zhenxun.services.ai.core.guardrails import parse_guardrails
+        from zhenxun.services.ai.guardrails import parse_guardrails
 
         self.guardrails = parse_guardrails(guardrails)
         self.processor = None

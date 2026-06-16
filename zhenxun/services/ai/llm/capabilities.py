@@ -128,6 +128,26 @@ CAP_MINIMAX_MULTIMODAL = ModelCapabilities(
     supports_tool_calling=True,
 )
 
+CAP_MIMO_TEXT = ModelCapabilities(
+    input_modalities={ModelModality.TEXT},
+    output_modalities={ModelModality.TEXT},
+    supports_tool_calling=True,
+    supported_native_tools={"web_search"},
+)
+
+CAP_MIMO_MULTIMODAL = ModelCapabilities(
+    input_modalities={
+        ModelModality.TEXT,
+        ModelModality.IMAGE,
+        ModelModality.AUDIO,
+        ModelModality.VIDEO,
+    },
+    output_modalities={ModelModality.TEXT, ModelModality.AUDIO},
+    supports_tool_calling=True,
+    supported_native_tools={"web_search"},
+)
+
+
 CAP_TEXT_EMBEDDING = ModelCapabilities(
     input_modalities={ModelModality.TEXT},
     is_embedding_model=True,
@@ -180,7 +200,8 @@ _ROUTING_TABLE: list[tuple[list[str], ModelCapabilities, int]] = [
     (["deepseek-v4-pro*", "deepseek-v4-flash*"], CAP_DEEPSEEK_V4, CTX_1M),
     (["glm-4-long*"], STANDARD_TEXT_TOOL_CAPABILITIES, CTX_1M),
     (["*MiniMax-M3*"], CAP_MINIMAX_MULTIMODAL, CTX_1M),
-    (["mimo-v2.5*", "mimo-v2-pro*"], DEFAULT_PERMISSIVE_CAPABILITIES, CTX_1M),
+    (["mimo-v2.5-pro*", "mimo-v2-pro*", "mimo-v2-flash*"], CAP_MIMO_TEXT, CTX_1M),
+    (["mimo-v2.5", "mimo-v2-omni*"], CAP_MIMO_MULTIMODAL, CTX_1M),
     (["gpt-5.5*", "gpt-5.4*"], CAP_OPENAI_MULTIMODAL, CTX_1M),
     (["gemini-3*", "gemini-2.5-pro*"], CAP_GEMINI_3, CTX_1M),
     (["gemini-2.5-flash*", "gemini-flash*", "gemini*lite*"], CAP_GEMINI_2_5, CTX_1M),

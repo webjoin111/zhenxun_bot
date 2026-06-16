@@ -14,11 +14,6 @@ if TYPE_CHECKING:
 from pydantic import BaseModel
 
 from zhenxun.services.ai.config import ProviderConfig, get_llm_config
-from zhenxun.services.ai.core.configs import (
-    GenerationConfig,
-    LLMEmbeddingConfig,
-    TTSConfig,
-)
 from zhenxun.services.ai.core.engine.token_counter import parse_usage_info
 from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
 from zhenxun.services.ai.core.messages import (
@@ -35,10 +30,15 @@ from zhenxun.services.ai.core.models import (
     ModelModality,
     ToolChoice,
 )
+from zhenxun.services.ai.core.options import (
+    GenerationConfig,
+    LLMEmbeddingConfig,
+    TTSConfig,
+)
+from zhenxun.services.ai.core.protocols import LLMContext
+from zhenxun.services.ai.core.protocols.llm import LLMModelBase
+from zhenxun.services.ai.core.protocols.middleware import LLMMiddleware, NextCall
 from zhenxun.services.ai.llm.engine import BaseEngine
-from zhenxun.services.ai.protocols import LLMContext
-from zhenxun.services.ai.protocols.llm import LLMModelBase
-from zhenxun.services.ai.protocols.middleware import LLMMiddleware, NextCall
 from zhenxun.services.log import logger
 
 from .core import (
@@ -262,7 +262,7 @@ class LLMModel(LLMModelBase):
                 ):
                     if not _warned_image:
                         logger.warning(
-                            f"模型 {self.model_name} 不支持图像输入，已自动过滤图片内容。"
+                            f"模型 {self.model_name} 不支持图像输入，已自动过滤图片内容"
                         )
                         _warned_image = True
                     continue
@@ -272,7 +272,7 @@ class LLMModel(LLMModelBase):
                 ):
                     if not _warned_audio:
                         logger.warning(
-                            f"模型 {self.model_name} 不支持音频输入，已自动过滤音频内容。"
+                            f"模型 {self.model_name} 不支持音频输入，已自动过滤音频内容"
                         )
                         _warned_audio = True
                     continue
@@ -282,7 +282,7 @@ class LLMModel(LLMModelBase):
                 ):
                     if not _warned_video:
                         logger.warning(
-                            f"模型 {self.model_name} 不支持视频输入，已自动过滤视频内容。"
+                            f"模型 {self.model_name} 不支持视频输入，已自动过滤视频内容"
                         )
                         _warned_video = True
                     continue
@@ -323,7 +323,7 @@ class LLMModel(LLMModelBase):
 
             run_ctx = RunContext()
 
-        from zhenxun.services.ai.protocols.capabilities import CombinedCapability
+        from zhenxun.services.ai.capabilities.wrappers import CombinedCapability
 
         combined_cap = CombinedCapability(capabilities)
 

@@ -5,10 +5,10 @@ from typing import Any
 
 from nonebot.utils import is_coroutine_callable
 
+from zhenxun.services.ai.capabilities.wrappers import CombinedCapability
 from zhenxun.services.ai.core.templates import PromptTemplate
 from zhenxun.services.ai.flow.agent.models import Persona
-from zhenxun.services.ai.protocols.capabilities import CombinedCapability
-from zhenxun.services.ai.run import RunContext, TemplateStr
+from zhenxun.services.ai.run import RunContext
 from zhenxun.services.ai.run.di import DependencyInjector
 from zhenxun.services.ai.tools.engine.registry import (
     ToolCollection,
@@ -22,7 +22,7 @@ class ContextBuilder:
 
     @staticmethod
     async def build_prompts(
-        instruction: str | TemplateStr,
+        instruction: str | PromptTemplate,
         system_prompts: list[Any],
         run_context: RunContext,
         run_scoped_cap: CombinedCapability,
@@ -64,8 +64,8 @@ class ContextBuilder:
                 static_instructions.append("## 本次任务指令 (Task)")
 
         if instruction:
-            if isinstance(instruction, TemplateStr):
-                static_instructions.append(instruction.render(run_context))
+            if isinstance(instruction, PromptTemplate):
+                static_instructions.append(instruction.format_with_context(run_context))
             else:
                 static_instructions.append(str(instruction))
 
@@ -94,7 +94,7 @@ class ContextBuilder:
 
         return (
             PromptTemplate(static_text).render(**render_context),
-            PromptTemplate(dynamic_text).render(**render_context)
+            PromptTemplate(dynamic_text).render(**render_context),
         )
 
 

@@ -47,15 +47,6 @@ class AgentRuntimeConfig(BaseRuntimeConfig):
     """
 
 
-class CapabilitySpec(BaseModel):
-    """插件/拦截器声明契约，用于 YAML/JSON 配置序列化"""
-
-    name: str = Field(...)
-    """Capability 子类的注册标识符名称"""
-
-    model_config = ConfigDict(extra="allow")
-
-
 class AgentLoopContext(BaseModel):
     """传递给执行循环的静态上下文快照 (Data Contract)"""
 

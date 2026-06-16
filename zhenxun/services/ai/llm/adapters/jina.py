@@ -1,12 +1,12 @@
-from zhenxun.services.ai.core.configs import LLMEmbeddingConfig
 from zhenxun.services.ai.core.messages import EmbedBatch
+from zhenxun.services.ai.core.options import LLMEmbeddingConfig
+from zhenxun.services.ai.core.protocols.llm import LLMModelBase
 from zhenxun.services.ai.llm.adapters.base import BaseAdapter, RequestData
 from zhenxun.services.ai.llm.adapters.handlers.openai_handlers import (
     OpenAIEmbeddingHandler,
     OpenAIRerankHandler,
 )
 from zhenxun.services.ai.llm.adapters.openai import OpenAICompatAdapter
-from zhenxun.services.ai.protocols.llm import LLMModelBase
 
 
 class JinaEmbeddingHandler(OpenAIEmbeddingHandler):
@@ -29,8 +29,6 @@ class JinaEmbeddingHandler(OpenAIEmbeddingHandler):
         inputs_payload = []
 
         if is_omni:
-            import base64
-
             from zhenxun.services.ai.core.messages import (
                 AudioPart,
                 FilePart,
@@ -49,17 +47,23 @@ class JinaEmbeddingHandler(OpenAIEmbeddingHandler):
                         if part.url:
                             jina_content.append({"image": part.url})
                         else:
-                            jina_content.append({"image": await part.get_data_uri("image/png")})
+                            jina_content.append(
+                                {"image": await part.get_data_uri("image/png")}
+                            )
                     elif isinstance(part, AudioPart):
                         if part.url:
                             jina_content.append({"audio": part.url})
                         else:
-                            jina_content.append({"audio": await part.get_data_uri("audio/mp3")})
+                            jina_content.append(
+                                {"audio": await part.get_data_uri("audio/mp3")}
+                            )
                     elif isinstance(part, VideoPart):
                         if part.url:
                             jina_content.append({"video": part.url})
                         else:
-                            jina_content.append({"video": await part.get_data_uri("video/mp4")})
+                            jina_content.append(
+                                {"video": await part.get_data_uri("video/mp4")}
+                            )
                     elif isinstance(part, FilePart):
                         logger.warning(
                             f"Jina 暂不明确支持 Base64 内联 "

@@ -2,11 +2,11 @@ from .blackboard import BlackboardManager
 from .context import (
     NoneBotDeps,
     RunContext,
-    TemplateStr,
     get_current_run_context,
 )
 from .di import Hidden, Inject
 from .hitl import HITLController
+from .hooks import Hooks
 from .models import (
     AgentRunResult,
     CancellationToken,
@@ -21,12 +21,12 @@ __all__ = [
     "CancellationToken",
     "HITLController",
     "Hidden",
+    "Hooks",
     "Inject",
     "NoneBotDeps",
     "RunContext",
     "StreamedRunResult",
     "Task",
-    "TemplateStr",
     "UIController",
     "get_current_run_context",
 ]

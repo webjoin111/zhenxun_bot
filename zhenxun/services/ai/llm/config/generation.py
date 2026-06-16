@@ -5,11 +5,11 @@ LLM 生成配置相关类和函数
 from typing import Any, Literal
 from typing_extensions import Self
 
-from zhenxun.services.ai.core.configs import (
-    GenerationConfig,
-)
 from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
 from zhenxun.services.ai.core.messages import ResponseFormat
+from zhenxun.services.ai.core.options import (
+    GenerationConfig,
+)
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_validate
 
@@ -97,7 +97,8 @@ class IntentBuilder:
     ) -> Self:
         """
         跨厂商的思考/推理意图声明。
-        自动翻译为 OpenAI (reasoning_effort), Gemini (thinking_level, thinking_budget), Claude (effort, budget)
+        自动翻译为 OpenAI (reasoning_effort), Gemini (thinking_level, thinking_budget)
+        , Claude (effort, budget)
         """
         if level:
             from typing import Literal, cast
@@ -136,7 +137,7 @@ class IntentBuilder:
 
         from pydantic import BaseModel
 
-        from zhenxun.services.ai.core.configs import StructuredOutputStrategy
+        from zhenxun.services.ai.core.options import StructuredOutputStrategy
         from zhenxun.utils.pydantic_compat import model_json_schema
 
         self._config.output.response_format = ResponseFormat.JSON
@@ -170,8 +171,6 @@ class IntentBuilder:
         if top_p is not None:
             self._config.common.top_p = top_p
         return self
-
-
 
     def with_safety_level(self, level: str = "moderate") -> Self:
         """

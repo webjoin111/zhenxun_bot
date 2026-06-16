@@ -17,24 +17,24 @@ logger.warning(
 )
 
 import zhenxun.services.ai.core
-import zhenxun.services.ai.core.configs
+import zhenxun.services.ai.core.options
 import zhenxun.services.ai.core.exceptions
 import zhenxun.services.ai.core.messages
 import zhenxun.services.ai.core.models
+import zhenxun.services.ai.core.protocols
 import zhenxun.services.ai.llm
 import zhenxun.services.ai.llm.capabilities
 import zhenxun.services.ai.llm.config
 import zhenxun.services.ai.llm.config.generation
-import zhenxun.services.ai.protocols
 import zhenxun.services.ai.tools
 
 zhenxun.services.ai.llm.config.LLMGenerationConfig = (  # type: ignore
-    zhenxun.services.ai.core.configs.GenerationConfig
+    zhenxun.services.ai.core.options.GenerationConfig
 )
 
 _legacy_types_module = ModuleType("zhenxun.services.llm.types")
 for _mod in (
-    zhenxun.services.ai.core.configs,
+    zhenxun.services.ai.core.options,
     zhenxun.services.ai.core.exceptions,
     zhenxun.services.ai.core.messages,
     zhenxun.services.ai.core.models,
@@ -45,7 +45,7 @@ for _mod in (
 
 sys.modules["zhenxun.services.llm.types"] = _legacy_types_module
 sys.modules["zhenxun.services.llm.types.models"] = zhenxun.services.ai.core.models
-sys.modules["zhenxun.services.llm.types.protocols"] = zhenxun.services.ai.protocols
+sys.modules["zhenxun.services.llm.types.protocols"] = zhenxun.services.ai.core.protocols
 sys.modules["zhenxun.services.llm.types.exceptions"] = (
     zhenxun.services.ai.core.exceptions
 )
@@ -85,7 +85,7 @@ class CommonOverrides:
     gemini_high_res = _fallback
 
 
-from zhenxun.services.ai.core.configs import GenerationConfig, OutputFormatConfig
+from zhenxun.services.ai.core.options import GenerationConfig, OutputFormatConfig
 
 
 class OutputConfig(OutputFormatConfig):

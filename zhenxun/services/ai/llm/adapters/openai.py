@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
-from zhenxun.services.ai.protocols.llm import LLMModelBase
+from zhenxun.services.ai.core.protocols.llm import LLMModelBase
 
 from .base import (
     BaseAdapter,

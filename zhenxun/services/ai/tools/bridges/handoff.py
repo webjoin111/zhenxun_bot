@@ -29,7 +29,7 @@ class HandoffTool(BaseTool):
 
         actual_schema = None
         if input_schema:
-            from zhenxun.services.ai.core.configs import BaseOutputDefinition
+            from zhenxun.services.ai.core.options import BaseOutputDefinition
 
             if isinstance(input_schema, BaseOutputDefinition):
                 actual_schema = input_schema.type_

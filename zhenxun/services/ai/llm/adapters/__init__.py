@@ -11,6 +11,7 @@ from .factory import LLMAdapterFactory, get_adapter_for_api_type, register_adapt
 from .gemini import GeminiAdapter
 from .glm import GLMAdapter
 from .jina import JinaAdapter
+from .mimo import MiMoAdapter
 from .minimax import MiniMaxAdapter
 from .openai import OpenAIAdapter, OpenAICompatAdapter
 
@@ -24,6 +25,7 @@ __all__ = [
     "GeminiAdapter",
     "JinaAdapter",
     "LLMAdapterFactory",
+    "MiMoAdapter",
     "MiniMaxAdapter",
     "OpenAIAdapter",
     "OpenAICompatAdapter",

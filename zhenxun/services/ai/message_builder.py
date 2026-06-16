@@ -18,7 +18,6 @@ from nonebot_plugin_alconna.uniseg import (
 )
 from PIL.Image import Image as PILImageType
 
-from zhenxun.services.ai.core.configs import LLMEmbeddingConfig
 from zhenxun.services.ai.core.messages import (
     AudioPart,
     BaseContentPart,
@@ -34,6 +33,7 @@ from zhenxun.services.ai.core.messages import (
     UserContentUnion,
     VideoPart,
 )
+from zhenxun.services.ai.core.options import LLMEmbeddingConfig
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_dump
 from zhenxun.utils.utils import infer_plugin_namespace
