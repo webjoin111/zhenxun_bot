@@ -267,7 +267,8 @@ class RouteStrategy(BaseTeamStrategy):
 
             if fast_routed:
                 logger.info(
-                    f"🛣️ **路由决策**: 委派给专员 👨💼`{current_target}` (系统拦截：正则/函数状态流发生转移)"
+                    f"🛣️ **路由决策**: 委派给专员 👨💼`{current_target}`"
+                    "(系统拦截：正则/函数状态流发生转移)"
                 )
                 continue
 
@@ -551,12 +552,18 @@ class TaskStrategy(BaseTeamStrategy):
             if not available_tasks:
                 if iteration > 0:
                     board_str = board.render_board_to_string()
-                    planner_prompt = f"""### 📋 当前看板最新状态
+                    goal_str = getattr(prompt, "description", None) or (
+                        str(prompt) if prompt else ""
+                    )
+                    planner_prompt = f"""### 🎯 用户的终极目标 (Original Goal)
+{goal_str}
+
+### 📋 当前看板最新状态
 {board_str}
 
 **系统指令**：底层执行引擎的回合已结束。当前没有可立即执行的 pending 任务。
 请检查是否有 failed 的任务需要修复重新指派？或者如果所有任务均已 completed，
-请立刻调用 `mark_all_complete` 汇报结果。"""
+请立刻调用 `mark_all_complete` 汇报总结。"""
 
                 logger.info(f"🧠 [TaskStrategy] 唤醒 Planner (Iter: {iteration})")
                 leader_res = yield CallAction(agent=leader_agent, task=planner_prompt)

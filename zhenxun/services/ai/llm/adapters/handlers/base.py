@@ -48,9 +48,30 @@ class MessageConverter(ABC):
 
 
 class ToolSerializer(ABC):
+    def serialize_tools(
+        self, tools: list[ToolDefinition]
+    ) -> list[dict[str, Any]] | None:
+        """将通用工具定义转换为特定 API 的工具格式 (模板方法)"""
+        if not tools:
+            return None
+
+        serialized_tools = []
+        for tool in tools:
+            raw_schema = tool.parameters.copy() if tool.parameters else {}
+            sanitized_schema = self.sanitize_schema(raw_schema)
+            tool_payload = self.format_tool_payload(
+                tool_name=tool.name,
+                tool_description=tool.description or "",
+                sanitized_schema=sanitized_schema,
+            )
+            serialized_tools.append(tool_payload)
+        return serialized_tools
+
     @abstractmethod
-    def serialize_tools(self, tools: list[ToolDefinition]) -> Any:
-        """将通用工具定义转换为特定 API 的工具格式"""
+    def format_tool_payload(
+        self, tool_name: str, tool_description: str, sanitized_schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        """由子类实现：格式化单一工具的 Payload"""
         ...
 
     @abstractmethod

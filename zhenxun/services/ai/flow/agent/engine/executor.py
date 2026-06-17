@@ -2,7 +2,6 @@ import asyncio
 import json
 from typing import Any, cast
 
-from zhenxun.services.ai.core.options import GenerationConfig
 from zhenxun.services.ai.core.engine.token_counter import (
     parse_usage_info,
     token_counter,
@@ -21,6 +20,7 @@ from zhenxun.services.ai.core.messages import (
     ToolReturnPart,
     UsageInfo,
 )
+from zhenxun.services.ai.core.options import GenerationConfig
 from zhenxun.services.ai.flow.agent.models import AgentEngineConfig, AgentLoopContext
 from zhenxun.services.ai.run import AgentRunResult, RunContext
 from zhenxun.services.ai.tools.engine.executor import ToolExecutor
@@ -218,16 +218,24 @@ class AgentExecutor:
                 if loop_ctx.static_system_prompt:
                     if isinstance(loop_ctx.static_system_prompt, list):
                         for sp in loop_ctx.static_system_prompt:
-                            messages_to_send.append(LLMMessage.system(sp))
+                            if sp and sp.strip():
+                                messages_to_send.append(LLMMessage.system(sp))
                     else:
-                        messages_to_send.append(
-                            LLMMessage.system(loop_ctx.static_system_prompt)
-                        )
+                        if (
+                            loop_ctx.static_system_prompt
+                            and loop_ctx.static_system_prompt.strip()
+                        ):
+                            messages_to_send.append(
+                                LLMMessage.system(loop_ctx.static_system_prompt)
+                            )
 
                 messages_to_send.extend(execution_history)
 
                 dynamic_parts = []
-                if loop_ctx.dynamic_system_prompt:
+                if (
+                    loop_ctx.dynamic_system_prompt
+                    and loop_ctx.dynamic_system_prompt.strip()
+                ):
                     dynamic_parts.append(loop_ctx.dynamic_system_prompt)
                 if (
                     hasattr(run_context.run, "dynamic_prompts")

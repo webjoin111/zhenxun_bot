@@ -28,7 +28,6 @@ from zhenxun.services.ai.core.models import (
     ModelCapabilities,
     ModelDetail,
     ToolChoice,
-    ToolDefinition,
 )
 from zhenxun.services.ai.core.options import (
     GenerationConfig,
@@ -207,9 +206,6 @@ class OpenAIMessageConverter(MessageConverter):
                 else:
                     openai_msg["reasoning_content"] = ""
 
-                if not openai_msg.get("content"):
-                    openai_msg["content"] = ""
-
             if isinstance(msg, AssistantMessage) and msg.tool_calls:
                 assistant_tool_calls = []
                 for call in msg.tool_calls:
@@ -226,6 +222,18 @@ class OpenAIMessageConverter(MessageConverter):
                         }
                     )
                 openai_msg["tool_calls"] = assistant_tool_calls
+
+            if not openai_msg.get("content") and not isinstance(
+                openai_msg.get("content"), str
+            ):
+                openai_msg["content"] = ""
+
+            if (
+                openai_msg.get("content") == ""
+                and not openai_msg.get("tool_calls")
+                and "tool_call_id" not in openai_msg
+            ):
+                continue
 
             openai_messages.append(openai_msg)
         return openai_messages
@@ -275,26 +283,18 @@ class OpenAIToolSerializer(ToolSerializer):
         )
         return pipeline.run(schema)
 
-    def serialize_tools(
-        self, tools: list[ToolDefinition]
-    ) -> list[dict[str, Any]] | None:
-        if not tools:
-            return None
-
-        openai_tools = []
-        for tool in tools:
-            raw_schema = tool.parameters.copy() if tool.parameters else {}
-            sanitized_schema = self.sanitize_schema(raw_schema)
-
-            tool_payload = {
-                "name": tool.name,
-                "description": tool.description or "",
+    def format_tool_payload(
+        self, tool_name: str, tool_description: str, sanitized_schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": tool_name,
+                "description": tool_description,
                 "parameters": sanitized_schema,
-            }
-            tool_payload["strict"] = True
-
-            openai_tools.append({"type": "function", "function": tool_payload})
-        return openai_tools
+                "strict": True,
+            },
+        }
 
     def serialize_server_tools(
         self, tools: list[Any], capabilities: ModelCapabilities
@@ -350,6 +350,7 @@ class OpenAIResponseParser(ResponseParser):
         message = choice.get("message", {})
         content = message.get("content", "")
         reasoning_content = message.get("reasoning_content", None)
+        reasoning_details = message.get("reasoning_details", None)
         refusal = message.get("refusal")
 
         if refusal:
@@ -407,7 +408,19 @@ class OpenAIResponseParser(ResponseParser):
         content_parts = []
         if content:
             content_parts.append(TextPart(text=content))
-        if reasoning_content:
+        if reasoning_details:
+            combined_thought_text = ""
+            for detail in reasoning_details:
+                if isinstance(detail, dict) and "text" in detail:
+                    combined_thought_text += detail["text"]
+            if combined_thought_text:
+                content_parts.append(
+                    ThoughtPart(
+                        thought_text=combined_thought_text,
+                        metadata={"raw_reasoning_details": reasoning_details}
+                    )
+                )
+        elif reasoning_content:
             content_parts.append(ThoughtPart(thought_text=reasoning_content))
         for img in images_payload:
             content_parts.append(
@@ -555,24 +568,16 @@ class ResponsesMessageConverter(MessageConverter):
 class ResponsesToolSerializer(OpenAIToolSerializer):
     """针对 OpenAI Responses API 的工具序列化器"""
 
-    def serialize_tools(
-        self, tools: list[ToolDefinition]
-    ) -> list[dict[str, Any]] | None:
-        if not tools:
-            return None
-        res_tools = []
-        for tool in tools:
-            raw_schema = tool.parameters.copy() if tool.parameters else {}
-            sanitized_schema = self.sanitize_schema(raw_schema)
-            tool_payload = {
-                "type": "function",
-                "name": tool.name,
-                "description": tool.description or "",
-                "parameters": sanitized_schema,
-            }
-            tool_payload["strict"] = True
-            res_tools.append(tool_payload)
-        return res_tools
+    def format_tool_payload(
+        self, tool_name: str, tool_description: str, sanitized_schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "name": tool_name,
+            "description": tool_description,
+            "parameters": sanitized_schema,
+            "strict": True,
+        }
 
     def serialize_server_tools(
         self, tools: list[Any], capabilities: ModelCapabilities

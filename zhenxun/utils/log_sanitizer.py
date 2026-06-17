@@ -58,7 +58,7 @@ def _recursive_sanitize_any(obj: Any) -> Any:
     elif isinstance(obj, str):
         if len(obj) > 2048 and set(obj).issubset(
             set(
-                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\r\n\t "
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\r\n\t"
             )
         ):
             return f"[heuristic_base64_omitted_len={len(obj)}]"

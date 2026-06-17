@@ -1,3 +1,7 @@
+from abc import abstractmethod
+from collections.abc import Callable
+from typing import Any, Generic, TypeVar
+
 from pydantic import BaseModel, Field
 
 from zhenxun.services.ai.context.memory.interfaces import (
@@ -225,25 +229,29 @@ class ToolPrunerReducer(BaseMemoryReducer):
         return new_messages, True, new_total
 
 
-class LLMSummarizerReducer(BaseMemoryReducer):
-    """大模型总结压缩器：将较早的历史对话记录通过 LLM 压缩合并为一段文本摘要。"""
+class AbstractSummarizerReducer(BaseMemoryReducer):
+    """抽象总结压缩器：提取阈值判断与上下文分流的公共逻辑"""
 
     def __init__(
         self,
+        strategy_name: str,
         keep_recent_turns: int = 0,
         trigger_tokens: int = 4000,
         max_turns: int | None = None,
         summarization_model: str | None = None,
-        summarization_prompt: str = (
-            "请概括以下对话内容，保留关键的约束条件、用户偏好、"
-            "已完成的任务状态和未解决的问题。"
-        ),
     ):
+        self.strategy_name = strategy_name
         self.keep_recent_turns = keep_recent_turns
         self.trigger_tokens = trigger_tokens
         self.max_turns = max_turns
         self.summarization_model = summarization_model
-        self.summarization_prompt = summarization_prompt
+
+    @abstractmethod
+    async def _execute_summarization(
+        self, to_summarize: list[LLMMessage], prev_summary: str
+    ) -> LLMMessage | None:
+        """由子类实现具体的 LLM 调用逻辑，返回新的总结消息"""
+        pass
 
     async def reduce(self, messages, current_tokens, model_name, base_overhead=0):
         user_turns = sum(
@@ -268,7 +276,7 @@ class LLMSummarizerReducer(BaseMemoryReducer):
         if is_turn_exceeded:
             reasons.append(f"有效对话轮次超限 ({user_turns} > {self.max_turns})")
         logger.info(
-            "🔄 [MemoryCompression] 触发历史对话合并总结策略 | 原因: "
+            f"🔄 [MemoryCompression] 触发{self.strategy_name}策略 | 原因: "
             f"{' 且 '.join(reasons)}"
         )
 
@@ -297,6 +305,44 @@ class LLMSummarizerReducer(BaseMemoryReducer):
         to_summarize = working_msgs[:split_idx]
         to_keep = working_msgs[split_idx:]
 
+        new_summary_msg = await self._execute_summarization(to_summarize, prev_summary)
+        if not new_summary_msg:
+            return messages, False, current_tokens
+
+        new_messages = [*pinned_msgs, new_summary_msg, *to_keep]
+        return (
+            new_messages,
+            True,
+            token_counter.count_context(new_messages, model_name, base_overhead),
+        )
+
+
+class LLMSummarizerReducer(AbstractSummarizerReducer):
+    """大模型总结压缩器：将较早的历史对话记录通过 LLM 压缩合并为一段文本摘要。"""
+
+    def __init__(
+        self,
+        keep_recent_turns: int = 0,
+        trigger_tokens: int = 4000,
+        max_turns: int | None = None,
+        summarization_model: str | None = None,
+        summarization_prompt: str = (
+            "请概括以下对话内容，保留关键的约束条件、用户偏好、"
+            "已完成的任务状态和未解决的问题。"
+        ),
+    ):
+        super().__init__(
+            strategy_name="历史对话合并总结",
+            keep_recent_turns=keep_recent_turns,
+            trigger_tokens=trigger_tokens,
+            max_turns=max_turns,
+            summarization_model=summarization_model,
+        )
+        self.summarization_prompt = summarization_prompt
+
+    async def _execute_summarization(
+        self, to_summarize: list[LLMMessage], prev_summary: str
+    ) -> LLMMessage | None:
         prompt_text = f"### 📋 [对话摘要任务]\n{self.summarization_prompt}\n\n"
         if prev_summary:
             prompt_text += "####  önceki_summary (参考先前的快照):\n"
@@ -321,149 +367,81 @@ class LLMSummarizerReducer(BaseMemoryReducer):
                 f"【历史对话摘要记忆】\n{response.text}"
             )
             new_summary_msg.metadata = {"is_summary": True, "pinned": True}
+            return new_summary_msg
         except Exception as e:
             logger.error(
-                f"[LLMSummarizerReducer] 压缩总结调用失败，已跳过本次压缩: {e}"
+                f"[{self.__class__.__name__}] 压缩总结调用失败，已跳过本次压缩: {e}"
             )
-            return messages, False, current_tokens
-
-        new_messages = [*pinned_msgs, new_summary_msg, *to_keep]
-        return (
-            new_messages,
-            True,
-            token_counter.count_context(new_messages, model_name, base_overhead),
-        )
+            return None
 
 
-class StructuredSummaryReducer(BaseMemoryReducer):
-    """结构化总结压缩器：基于 JSON Schema 格式化抽取全局长上下文状态信息并合并。"""
+_T_Summary = TypeVar("_T_Summary", bound=BaseModel)
+
+
+class StructuredSummaryReducer(AbstractSummarizerReducer, Generic[_T_Summary]):
+    """结构化总结压缩器：基于 JSON Schema 格式化抽取长上下文状态信息并合并"""
 
     def __init__(
         self,
+        response_model: type[_T_Summary],
+        prompt_template: str,
+        format_callback: Callable[[_T_Summary], str],
         keep_recent_turns: int = 0,
         trigger_tokens: int = 4000,
         max_turns: int | None = None,
         summarization_model: str | None = None,
+        instruction: str = (
+            "请提取并合并先前的状态和最新的对话内容，保持精简，不要编造事实"
+        ),
     ):
-        self.keep_recent_turns = keep_recent_turns
-        self.trigger_tokens = trigger_tokens
-        self.max_turns = max_turns
-        self.summarization_model = summarization_model
-
-    async def reduce(self, messages, current_tokens, model_name, base_overhead=0):
-        user_turns = sum(
-            1
-            for m in messages
-            if m.role == "user"
-            and not (m.metadata and m.metadata.get("is_summary", False))
+        super().__init__(
+            strategy_name="结构化状态抽取压缩",
+            keep_recent_turns=keep_recent_turns,
+            trigger_tokens=trigger_tokens,
+            max_turns=max_turns,
+            summarization_model=summarization_model,
         )
-        is_token_exceeded = current_tokens > self.trigger_tokens
-        is_turn_exceeded = (
-            self.max_turns is not None
-            and self.max_turns > 0
-            and user_turns > self.max_turns
-        )
+        self.response_model = response_model
+        self.prompt_template = prompt_template
+        self.format_callback = format_callback
+        self.instruction = instruction
 
-        if not (is_token_exceeded or is_turn_exceeded):
-            return messages, False, current_tokens
-
-        reasons = []
-        if is_token_exceeded:
-            reasons.append(f"Token 预估超限 ({current_tokens} > {self.trigger_tokens})")
-        if is_turn_exceeded:
-            reasons.append(f"有效对话轮次超限 ({user_turns} > {self.max_turns})")
-        logger.info(
-            "🔄 [MemoryCompression] 触发结构化状态抽取压缩策略 | 原因: "
-            f"{' 且 '.join(reasons)}"
-        )
-
-        pinned_msgs, working_msgs, prev_summary = [], [], ""
-        for msg in messages:
-            is_pinned = isinstance(msg, SystemMessage) or (
-                msg.metadata and msg.metadata.get("pinned", False)
-            )
-            if msg.metadata and msg.metadata.get("is_summary", False):
-                prev_summary = msg.extract_text
-            elif is_pinned:
-                pinned_msgs.append(msg)
-            else:
-                working_msgs.append(msg)
-
-        user_indices = [i for i, m in enumerate(working_msgs) if m.role == "user"]
-
-        if len(user_indices) <= self.keep_recent_turns:
-            return messages, False, current_tokens
-
-        split_idx = (
-            user_indices[-self.keep_recent_turns]
-            if self.keep_recent_turns > 0
-            else len(working_msgs)
-        )
-        to_summarize = working_msgs[:split_idx]
-        to_keep = working_msgs[split_idx:]
-
-        prompt_text = (
-            "你是一个专门用于长上下文状态压缩的引擎。请阅读以下先前的总结和"
-            "旧对话，提取核心状态信息，并合并它们。\n\n"
-        )
-        if prev_summary:
-            prompt_text += f"<之前的状态摘要>\n{prev_summary}\n</之前的状态摘要>\n\n"
-        prompt_text += "<需要合并的旧对话记录>\n"
+    async def _execute_summarization(
+        self, to_summarize: list[LLMMessage], prev_summary: str
+    ) -> LLMMessage | None:
+        dialogue_text = ""
         for m in to_summarize:
             c_str = m.extract_text[:1500]
             speaker = m.source_name if m.source_name else m.role.capitalize()
-            prompt_text += f"[{speaker}]: {c_str}\n"
-        prompt_text += "</需要合并的旧对话记录>\n"
+            dialogue_text += f"[{speaker}]: {c_str}\n"
+
+        prompt_text = self.prompt_template.format(
+            prev_summary=prev_summary, dialogue=dialogue_text
+        )
 
         from zhenxun.services.ai.llm.api import generate_structured
 
         try:
-
-            class StateSummary(BaseModel):
-                user_context: str = Field(
-                    description="用户的核心意图、诉求、人设或长期记忆规则。"
-                )
-                completed_tasks: str = Field(
-                    description="已完成的操作或已经确认的情节。"
-                )
-                pending_tasks: str = Field(
-                    description="正在进行中的任务或尚未解答的问题。"
-                )
-                current_state: str = Field(
-                    description="当前状态，如重要变量、玩家血量、关键物品坐标等。"
-                )
-
             model_to_use = self.summarization_model or get_default_model("chat")
             summary_obj = await generate_structured(
                 prompt_text,
-                response_model=StateSummary,
+                response_model=self.response_model,
                 model=model_to_use,
-                instruction="请提取并合并先前的状态和最新的对话内容，保持精简，不要编造事实。",
+                instruction=self.instruction,
             )
 
-            summary_text = (
-                f"👤 用户上下文: {summary_obj.user_context}\n"
-                f"✅ 已完成/确认: {summary_obj.completed_tasks}\n"
-                f"⏳ 待处理/疑问: {summary_obj.pending_tasks}\n"
-                f"📌 当前状态: {summary_obj.current_state}"
-            )
+            summary_text = self.format_callback(summary_obj)
 
             new_summary_msg = LLMMessage.assistant_text_response(
                 f"【历史状态摘要记忆】\n{summary_text}"
             )
             new_summary_msg.metadata = {"is_summary": True, "pinned": True}
+            return new_summary_msg
         except Exception as e:
             logger.error(
-                f"[StructuredSummaryReducer] 结构化总结失败，已跳过本次压缩: {e}"
+                f"[{self.__class__.__name__}] 结构化总结失败，已跳过本次压缩: {e}"
             )
-            return messages, False, current_tokens
-
-        new_messages = [*pinned_msgs, new_summary_msg, *to_keep]
-        return (
-            new_messages,
-            True,
-            token_counter.count_context(new_messages, model_name, base_overhead),
-        )
+            return None
 
 
 class CondenserPipeline:
@@ -471,6 +449,75 @@ class CondenserPipeline:
 
     def __init__(self, reducers: list[BaseMemoryReducer]):
         self.reducers = reducers
+
+    @classmethod
+    def create_from_configs(
+        cls, memory_config: Any, model_name: str
+    ) -> "CondenserPipeline":
+        """基于全局和局部配置组装压缩管线工厂方法"""
+        from zhenxun.services.ai.config import get_llm_config
+        from zhenxun.services.ai.llm.capabilities import get_model_capabilities
+
+        config = get_llm_config().context_settings
+        pipeline_reducers = []
+        caps = get_model_capabilities(model_name)
+
+        vw = config.vision_window_size
+        if memory_config and memory_config.compression.vision_window is not None:
+            vw = memory_config.compression.vision_window
+        if vw > 0:
+            pipeline_reducers.append(MultimodalPlaceholderReducer(window_size=vw))
+
+        tp = config.tool_pruning
+        if tp.enable:
+            tp_limit = (
+                int(caps.max_input_tokens * tp.trigger_threshold)
+                if tp.trigger_threshold <= 1.0
+                else int(tp.trigger_threshold)
+            )
+            pipeline_reducers.append(
+                ToolPrunerReducer(
+                    keep_recent_turns=tp.keep_recent_turns,
+                    trigger_tokens=tp_limit,
+                    max_turns=tp.max_history_turns,
+                )
+            )
+
+        policy = memory_config.compression.policy if memory_config else None
+        if policy is not None:
+            pipeline_reducers.extend(policy)
+        else:
+            threshold = config.llm_summary.trigger_threshold
+            if memory_config and memory_config.compression.threshold is not None:
+                threshold = memory_config.compression.threshold
+
+            limit = (
+                int(caps.max_input_tokens * threshold)
+                if threshold <= 1.0
+                else int(threshold)
+            )
+
+            max_turns = config.llm_summary.max_history_turns
+            if (
+                memory_config
+                and memory_config.compression.max_history_turns is not None
+            ):
+                max_turns = memory_config.compression.max_history_turns
+
+            if config.llm_summary.enable:
+                pipeline_reducers.extend(
+                    MemoryPolicy.llm_summarize(
+                        trigger_tokens=limit,
+                        max_turns=max_turns,
+                        keep_recent_turns=config.llm_summary.keep_recent_turns,
+                        summarization_model=config.llm_summary.summarization_model,
+                        summarization_prompt=config.llm_summary.summarization_prompt,
+                    )
+                )
+            else:
+                pipeline_reducers.extend(MemoryPolicy.unlimited())
+
+        return cls(pipeline_reducers)
 
     async def run(
         self, messages, model_name, base_overhead=0
@@ -533,10 +580,44 @@ class MemoryPolicy:
         max_turns: int | None = None,
         keep_recent_turns: int = 0,
         summarization_model: str | None = None,
+        response_model: type[BaseModel] | None = None,
+        prompt_template: str | None = None,
+        format_callback: Callable[[Any], str] | None = None,
     ) -> list[BaseMemoryReducer]:
         """结构化总结压缩模式。使用 JSON Schema 强制大模型提取核心状态。"""
+
+        class DefaultStateSummary(BaseModel):
+            user_context: str = Field(
+                description="用户的核心意图、诉求、人设或长期记忆规则。"
+            )
+            completed_tasks: str = Field(description="已完成的操作或已经确认的情节。")
+            pending_tasks: str = Field(description="正在进行中的任务或尚未解答的问题。")
+            current_state: str = Field(
+                description="当前状态，如重要变量、玩家血量、关键物品坐标等。"
+            )
+
+        def default_format(obj: DefaultStateSummary) -> str:
+            return (
+                f"👤 用户上下文: {obj.user_context}\n"
+                f"✅ 已完成/确认: {obj.completed_tasks}\n"
+                f"⏳ 待处理/疑问: {obj.pending_tasks}\n"
+                f"📌 当前状态: {obj.current_state}"
+            )
+
+        default_prompt = (
+            "你是一个专门用于长上下文状态压缩的引擎。请阅读以下先前的总结和旧对话，"
+            "提取核心状态信息，并合并它们。\n\n"
+            "<之前的状态摘要>\n{prev_summary}\n</之前的状态摘要>\n\n"
+            "<需要合并的旧对话记录>\n"
+            "{dialogue}"
+            "</需要合并的旧对话记录>\n"
+        )
+
         return [
             StructuredSummaryReducer(
+                response_model=response_model or DefaultStateSummary,
+                prompt_template=prompt_template or default_prompt,
+                format_callback=format_callback or default_format,
                 keep_recent_turns=keep_recent_turns,
                 trigger_tokens=trigger_tokens,
                 max_turns=max_turns,

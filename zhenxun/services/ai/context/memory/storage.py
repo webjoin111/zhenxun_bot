@@ -35,6 +35,61 @@ from zhenxun.services.db_context import Model
 from zhenxun.utils.pydantic_compat import model_dump
 
 
+class DBMessageSerializer:
+    """将 LLMMessage 与数据库 JSON 格式进行序列化/反序列化的帮助类"""
+
+    @staticmethod
+    def deserialize_content(content_raw: Any) -> list[LLMContentPart]:
+        from zhenxun.services.ai.core.messages import TextPart
+
+        content_parts: list[LLMContentPart] = []
+        if isinstance(content_raw, list):
+            adapter = TypeAdapter(LLMContentPart)
+            for p in content_raw:
+                if isinstance(p, dict):
+                    for k in list(p.keys()):
+                        if k.startswith("_is_b64_"):
+                            orig_k = k[8:]
+                            if orig_k in p and isinstance(p[orig_k], str):
+                                p[orig_k] = base64.b64decode(p[orig_k])
+                            p.pop(k, None)
+                    content_parts.append(adapter.validate_python(p))
+        elif isinstance(content_raw, str):
+            content_parts.append(TextPart(text=content_raw))
+        return content_parts
+
+    @staticmethod
+    def serialize_content(content_payload: Any) -> list[dict[str, Any]]:
+        from pathlib import Path
+
+        if isinstance(content_payload, str):
+            return [{"type": "text", "text": content_payload}]
+        elif isinstance(content_payload, list):
+            processed_content = []
+            for p in content_payload:
+                p_dump = (
+                    model_dump(p, exclude_none=True)
+                    if hasattr(p, "model_dump")
+                    else (p.copy() if isinstance(p, dict) else p)
+                )
+                if isinstance(p_dump, dict):
+                    for k, v in list(p_dump.items()):
+                        if isinstance(v, bytes):
+                            p_dump[k] = base64.b64encode(v).decode("utf-8")
+                            p_dump[f"_is_b64_{k}"] = True
+                        elif isinstance(v, Path):
+                            p_dump[k] = str(v)
+                processed_content.append(p_dump)
+            return (
+                processed_content
+                if processed_content
+                else [
+                    {"type": "text", "text": "[仅包含思维链或工具调度，无实质文本输出]"}
+                ]
+            )
+        return []
+
+
 class MemoryScope:
     """长期记忆的作用域视图与 RAG 管线。"""
 
@@ -220,28 +275,19 @@ class InMemorySlotContext(BaseSlotContext):
     def __init__(self):
         self._slots: dict[str, dict[str, MemorySlot]] = {}
 
-    def _get_target_session_id(self, session: SessionMetadata, scope: SlotScope) -> str:
-        if scope == SlotScope.GLOBAL:
-            return (
-                f"global_u_{session.user_id}"
-                if session.user_id
-                else f"global_s_{session.session_id}"
-            )
-        return session.session_id
-
     async def get_slot(self, session: SessionMetadata, label: str) -> MemorySlot | None:
-        session_sid = self._get_target_session_id(session, SlotScope.SESSION)
+        session_sid = session.get_slot_id(SlotScope.SESSION)
         if session_sid in self._slots and label in self._slots[session_sid]:
             return self._slots[session_sid][label]
 
-        global_sid = self._get_target_session_id(session, SlotScope.GLOBAL)
+        global_sid = session.get_slot_id(SlotScope.GLOBAL)
         if global_sid in self._slots and label in self._slots[global_sid]:
             return self._slots[global_sid][label]
 
         return None
 
     async def set_slot(self, session: SessionMetadata, slot: MemorySlot) -> None:
-        target_sid = self._get_target_session_id(session, slot.scope)
+        target_sid = session.get_slot_id(slot.scope)
         if target_sid not in self._slots:
             self._slots[target_sid] = {}
         self._slots[target_sid][slot.label] = slot
@@ -249,13 +295,13 @@ class InMemorySlotContext(BaseSlotContext):
     async def delete_slot(
         self, session: SessionMetadata, label: str, scope: str
     ) -> None:
-        target_sid = self._get_target_session_id(session, SlotScope(scope))
+        target_sid = session.get_slot_id(SlotScope(scope))
         if target_sid in self._slots:
             self._slots[target_sid].pop(label, None)
 
     async def list_pinned_slots(self, session: SessionMetadata) -> list[MemorySlot]:
-        global_sid = self._get_target_session_id(session, SlotScope.GLOBAL)
-        session_sid = self._get_target_session_id(session, SlotScope.SESSION)
+        global_sid = session.get_slot_id(SlotScope.GLOBAL)
+        session_sid = session.get_slot_id(SlotScope.SESSION)
 
         merged = {}
         if global_sid in self._slots:
@@ -309,25 +355,7 @@ class TortoiseChatContext(BaseChatContext):
         self.custom_save_hook = custom_save_hook
 
     def _row_to_message(self, row: AbstractMemoryRecord) -> LLMMessage:
-        content_raw = row.content
-        from zhenxun.services.ai.core.messages import TextPart
-
-        content_parts: list[LLMContentPart] = []
-        if isinstance(content_raw, list):
-            adapter = TypeAdapter(LLMContentPart)
-            for p in content_raw:
-                if isinstance(p, dict):
-                    for k in list(p.keys()):
-                        if k.startswith("_is_b64_"):
-                            orig_k = k[8:]
-                            if orig_k in p and isinstance(p[orig_k], str):
-                                p[orig_k] = base64.b64decode(p[orig_k])
-                            p.pop(k, None)
-
-                    content_parts.append(adapter.validate_python(p))
-        elif isinstance(content_raw, str):
-            content_parts.append(TextPart(text=content_raw))
-
+        content_parts = DBMessageSerializer.deserialize_content(row.content)
         metadata: dict[str, Any] | None = (
             row.metadata if isinstance(row.metadata, dict) else None
         )
@@ -386,40 +414,7 @@ class TortoiseChatContext(BaseChatContext):
 
         orm_objects = []
         for i, msg in enumerate(messages):
-            content_payload = msg.content
-            if isinstance(content_payload, str):
-                content_payload = [{"type": "text", "text": content_payload}]
-            elif isinstance(content_payload, list):
-                processed_content = []
-
-                for p in content_payload:
-                    p_dump = (
-                        model_dump(p, exclude_none=True)
-                        if hasattr(p, "model_dump")
-                        else (p.copy() if isinstance(p, dict) else p)
-                    )
-
-                    from pathlib import Path
-
-                    if isinstance(p_dump, dict):
-                        for k, v in list(p_dump.items()):
-                            if isinstance(v, bytes):
-                                p_dump[k] = base64.b64encode(v).decode("utf-8")
-                                p_dump[f"_is_b64_{k}"] = True
-                            elif isinstance(v, Path):
-                                p_dump[k] = str(v)
-
-                    processed_content.append(p_dump)
-                content_payload = (
-                    processed_content
-                    if processed_content
-                    else [
-                        {
-                            "type": "text",
-                            "text": "[仅包含思维链或工具调度，无实质文本输出]",
-                        }
-                    ]
-                )
+            content_payload = DBMessageSerializer.serialize_content(msg.content)
 
             msg_time = base_time + datetime.timedelta(milliseconds=i * 10)
             orm_obj = self.model_class(
@@ -491,15 +486,6 @@ class TortoiseSlotContext(BaseSlotContext):
     def __init__(self, model_class: type[AbstractSlotRecord]):
         self.model_class = model_class
 
-    def _get_target_session_id(self, session: SessionMetadata, scope: SlotScope) -> str:
-        if scope == SlotScope.GLOBAL:
-            return (
-                f"global_u_{session.user_id}"
-                if session.user_id
-                else f"global_s_{session.session_id}"
-            )
-        return session.session_id
-
     def _row_to_slot(self, row: AbstractSlotRecord) -> MemorySlot:
         return MemorySlot(
             label=row.label,
@@ -512,19 +498,19 @@ class TortoiseSlotContext(BaseSlotContext):
         )
 
     async def get_slot(self, session: SessionMetadata, label: str) -> MemorySlot | None:
-        session_sid = self._get_target_session_id(session, SlotScope.SESSION)
+        session_sid = session.get_slot_id(SlotScope.SESSION)
         row = await self.model_class.filter(session_id=session_sid, label=label).first()
         if row:
             return self._row_to_slot(row)
 
-        global_sid = self._get_target_session_id(session, SlotScope.GLOBAL)
+        global_sid = session.get_slot_id(SlotScope.GLOBAL)
         row = await self.model_class.filter(session_id=global_sid, label=label).first()
         if row:
             return self._row_to_slot(row)
         return None
 
     async def set_slot(self, session: SessionMetadata, slot: MemorySlot) -> None:
-        target_sid = self._get_target_session_id(session, slot.scope)
+        target_sid = session.get_slot_id(slot.scope)
         composite_id = f"{target_sid}_{slot.label}"
 
         await self.model_class.update_or_create(
@@ -544,13 +530,13 @@ class TortoiseSlotContext(BaseSlotContext):
     async def delete_slot(
         self, session: SessionMetadata, label: str, scope: str
     ) -> None:
-        target_sid = self._get_target_session_id(session, SlotScope(scope))
+        target_sid = session.get_slot_id(SlotScope(scope))
         composite_id = f"{target_sid}_{label}"
         await self.model_class.filter(id=composite_id).delete()
 
     async def list_pinned_slots(self, session: SessionMetadata) -> list[MemorySlot]:
-        global_sid = self._get_target_session_id(session, SlotScope.GLOBAL)
-        session_sid = self._get_target_session_id(session, SlotScope.SESSION)
+        global_sid = session.get_slot_id(SlotScope.GLOBAL)
+        session_sid = session.get_slot_id(SlotScope.SESSION)
 
         rows = await self.model_class.filter(
             session_id__in=[global_sid, session_sid], pinned=True

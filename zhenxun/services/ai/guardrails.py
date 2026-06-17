@@ -46,8 +46,33 @@ class GuardrailResult(BaseModel):
         return self.action == GuardrailAction.PASS
 
 
+def input_guardrail(func: Callable | None = None, *, max_attempts: int = 0):
+    """显式标记为输入护栏。支持指定最大评估次数 (max_attempts)"""
+
+    def decorator(f: Callable):
+        setattr(f, "__guardrail_type__", "input")
+        setattr(f, "__guardrail_max_attempts__", max_attempts)
+        return f
+
+    return decorator(func) if func else decorator
+
+
+def output_guardrail(func: Callable | None = None, *, max_attempts: int = 0):
+    """显式标记为输出护栏。支持指定最大评估次数 (max_attempts)"""
+
+    def decorator(f: Callable):
+        setattr(f, "__guardrail_type__", "output")
+        setattr(f, "__guardrail_max_attempts__", max_attempts)
+        return f
+
+    return decorator(func) if func else decorator
+
+
 class BaseGuardrail(ABC):
     """大一统的业务逻辑护栏抽象基类"""
+
+    max_attempts: int = 0
+    """当前护栏在单次上下文中允许触发的最大评估/拦截次数。0 代表无限制。"""
 
     async def validate_input(
         self, messages: list[LLMMessage], context: RunContext | None = None
@@ -70,35 +95,109 @@ class FunctionalGuardrail(BaseGuardrail):
 
     def __init__(self, func: Callable[..., Any]):
         self.func = func
-        sig = inspect.signature(func)
-        params = list(sig.parameters.keys())
-        self.is_input = bool(params and params[0] == "messages")
+        self.guardrail_type = getattr(func, "__guardrail_type__", None)
+        self.max_attempts = getattr(func, "__guardrail_max_attempts__", 0)
+
+        if not self.guardrail_type:
+            sig = inspect.signature(func)
+            is_input = False
+            is_output = False
+            for param in sig.parameters.values():
+                if param.annotation == inspect.Parameter.empty:
+                    continue
+                anno_str = str(param.annotation)
+                if "LLMMessage" in anno_str:
+                    is_input = True
+                if "LLMResponse" in anno_str:
+                    is_output = True
+
+            if is_input and not is_output:
+                self.guardrail_type = "input"
+            elif is_output and not is_input:
+                self.guardrail_type = "output"
+            else:
+                raise ValueError(
+                    f"无法自动推断护栏函数 '{func.__name__}' 的作用阶段。\n"
+                    "请使用明确的类型注解 (如 list[LLMMessage] 或 LLMResponse)，\n"
+                    "或使用 @input_guardrail / @output_guardrail 装饰器明确声明。"
+                )
+
+    def _bind_core_args(
+        self, sig: inspect.Signature, core_arg_dict: dict[str, Any]
+    ) -> dict[str, Any]:
+        """将框架提供的核心参数按名称或位置绑定到用户的签名上"""
+        from zhenxun.services.ai.run.di import DependencyInjector
+
+        bound_kwargs = {}
+
+        unmapped_cores = []
+        for core_name, core_val in core_arg_dict.items():
+            if core_name in sig.parameters:
+                bound_kwargs[core_name] = core_val
+            else:
+                unmapped_cores.append(core_val)
+
+        if unmapped_cores:
+            val_idx = 0
+            for name, param in sig.parameters.items():
+                if name in ("self", "cls") or name in bound_kwargs:
+                    continue
+                if DependencyInjector.can_resolve_statically(param):
+                    continue
+
+                bound_kwargs[name] = unmapped_cores[val_idx]
+                val_idx += 1
+                if val_idx >= len(unmapped_cores):
+                    break
+
+        return bound_kwargs
+
+    async def _execute_with_di(
+        self, core_args: dict[str, Any], context: RunContext | None, is_input: bool
+    ) -> GuardrailResult:
+        """统一执行带有 DI 依赖注入的护栏逻辑"""
+        from zhenxun.services.ai.run.di import DependencyInjector
+
+        safe_context = context or RunContext()
+
+        try:
+            sig = inspect.signature(self.func)
+            call_kwargs = self._bind_core_args(sig, core_args)
+            resolved_kwargs = await DependencyInjector.resolve_all(
+                sig=sig, call_kwargs=call_kwargs, context=safe_context
+            )
+            filtered_kwargs = {
+                k: v for k, v in resolved_kwargs.items() if k in sig.parameters
+            }
+
+            res = (
+                await self.func(**filtered_kwargs)
+                if is_coroutine_callable(self.func)
+                else self.func(**filtered_kwargs)
+            )
+            return self._parse_result(res, is_input=is_input)
+        except (ValueError, AssertionError) as e:
+            action = GuardrailAction.REJECT if is_input else GuardrailAction.REFLECT
+            return GuardrailResult(action=action, feedback=str(e))
+        except Exception as e:
+            from zhenxun.services.ai.core.exceptions import ControlFlowExit
+
+            if isinstance(e, ControlFlowExit):
+                raise
+            action = GuardrailAction.REJECT if is_input else GuardrailAction.REFLECT
+            stage_str = "输入" if is_input else "输出"
+            return GuardrailResult(
+                action=action, feedback=f"{stage_str}护栏执行异常: {e}"
+            )
 
     async def validate_input(
         self, messages: list[LLMMessage], context: RunContext | None = None
     ) -> GuardrailResult:
-        if not self.is_input:
+        if self.guardrail_type != "input":
             return GuardrailResult(action=GuardrailAction.PASS)
-
-        sig = inspect.signature(self.func)
-        takes_ctx = len(sig.parameters) > 1
-        try:
-            res = (
-                (
-                    await self.func(messages, context)
-                    if is_coroutine_callable(self.func)
-                    else self.func(messages, context)
-                )
-                if takes_ctx
-                else (
-                    await self.func(messages)
-                    if is_coroutine_callable(self.func)
-                    else self.func(messages)
-                )
-            )
-            return self._parse_result(res, is_input=True)
-        except (ValueError, AssertionError) as e:
-            return GuardrailResult(action=GuardrailAction.REJECT, feedback=str(e))
+        return await self._execute_with_di(
+            {"messages": messages}, context, is_input=True
+        )
 
     async def validate_output(
         self,
@@ -106,28 +205,11 @@ class FunctionalGuardrail(BaseGuardrail):
         parsed_obj: Any,
         context: RunContext | None = None,
     ) -> GuardrailResult:
-        if self.is_input:
+        if self.guardrail_type != "output":
             return GuardrailResult(action=GuardrailAction.PASS)
-
-        sig = inspect.signature(self.func)
-        takes_ctx = len(sig.parameters) > 1
-        try:
-            res = (
-                (
-                    await self.func(context, parsed_obj)
-                    if is_coroutine_callable(self.func)
-                    else self.func(context, parsed_obj)
-                )
-                if takes_ctx
-                else (
-                    await self.func(parsed_obj)
-                    if is_coroutine_callable(self.func)
-                    else self.func(parsed_obj)
-                )
-            )
-            return self._parse_result(res, is_input=False)
-        except (ValueError, AssertionError) as e:
-            return GuardrailResult(action=GuardrailAction.REFLECT, feedback=str(e))
+        return await self._execute_with_di(
+            {"response": response, "parsed_obj": parsed_obj}, context, is_input=False
+        )
 
     def _parse_result(self, res: Any, is_input: bool) -> GuardrailResult:
         """统一处理返回值类型推导"""
@@ -172,6 +254,9 @@ class LLMJudgeConfig(BaseModel):
     system_prompt_template: str | None = None
     """自定义裁判 Prompt 模板。必须包含 {rules} 和 {text} 占位符"""
 
+    max_attempts: int = 0
+    """最大裁判评估次数。超过该次数后大模型裁判自动放弃并放行 (0 表示无限制)"""
+
 
 class LLMGuardrail(BaseGuardrail):
     """基于 LLM-as-a-Judge 的自然语言规则裁判护栏"""
@@ -179,6 +264,7 @@ class LLMGuardrail(BaseGuardrail):
     def __init__(self, rules: list[str], config: LLMJudgeConfig | None = None):
         self.rules = rules
         self.config = config or LLMJudgeConfig()
+        self.max_attempts = self.config.max_attempts
 
     async def validate_output(
         self,
@@ -268,6 +354,13 @@ class GuardrailPipeline:
     ) -> list[LLMMessage]:
         """执行 Input 护栏拦截与变异"""
         for g in self.guardrails:
+            if g.max_attempts > 0 and context:
+                counts = context.state.setdefault("__guardrail_input_counts__", {})
+                g_id = id(g)
+                if counts.get(g_id, 0) >= g.max_attempts:
+                    continue
+                counts[g_id] = counts.get(g_id, 0) + 1
+
             res = await g.validate_input(messages, context)
             if res.action == GuardrailAction.REJECT:
                 raise GuardrailFatalException(
@@ -300,6 +393,13 @@ class GuardrailPipeline:
         current_obj = parsed_obj
 
         for g in self.guardrails:
+            if g.max_attempts > 0 and context:
+                counts = context.state.setdefault("__guardrail_output_counts__", {})
+                g_id = id(g)
+                if counts.get(g_id, 0) >= g.max_attempts:
+                    continue
+                counts[g_id] = counts.get(g_id, 0) + 1
+
             res = await g.validate_output(current_response, current_obj, context)
             if res.action == GuardrailAction.REJECT:
                 raise GuardrailFatalException(

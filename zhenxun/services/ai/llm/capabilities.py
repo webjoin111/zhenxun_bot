@@ -72,6 +72,10 @@ CAP_GEMINI_3 = ModelCapabilities(
         "google_map",
         "url_context",
     },
+    features={
+        "mixed_tools",
+        "server_side_tool_invocations",
+    },
 )
 CAP_OPENAI_REASONING = ModelCapabilities(
     input_modalities={ModelModality.TEXT, ModelModality.IMAGE},
@@ -203,8 +207,12 @@ _ROUTING_TABLE: list[tuple[list[str], ModelCapabilities, int]] = [
     (["mimo-v2.5-pro*", "mimo-v2-pro*", "mimo-v2-flash*"], CAP_MIMO_TEXT, CTX_1M),
     (["mimo-v2.5", "mimo-v2-omni*"], CAP_MIMO_MULTIMODAL, CTX_1M),
     (["gpt-5.5*", "gpt-5.4*"], CAP_OPENAI_MULTIMODAL, CTX_1M),
-    (["gemini-3*", "gemini-2.5-pro*"], CAP_GEMINI_3, CTX_1M),
-    (["gemini-2.5-flash*", "gemini-flash*", "gemini*lite*"], CAP_GEMINI_2_5, CTX_1M),
+    (["gemini-3*"], CAP_GEMINI_3, CTX_1M),
+    (
+        ["gemini-2.5-pro*", "gemini-2.5-flash*"],
+        CAP_GEMINI_2_5,
+        CTX_1M,
+    ),
     (
         ["gpt-5*", "gpt-5-mini*", "gpt-5-nano*", "*codex*"],
         CAP_OPENAI_MULTIMODAL,

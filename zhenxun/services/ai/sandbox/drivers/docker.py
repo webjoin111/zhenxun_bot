@@ -396,7 +396,20 @@ class DockerSandboxClient(BaseSandboxClient):
 
         async with self._init_lock:
             if DockerSandboxClient._global_docker_client is None:
-                DockerSandboxClient._global_docker_client = aiodocker.Docker()
+                import aiodocker
+
+                temp_client = aiodocker.Docker()
+                try:
+                    await asyncio.wait_for(temp_client.system.info(), timeout=5.0)
+                    DockerSandboxClient._global_docker_client = temp_client
+                    DockerSandboxClient._engine_available = True
+                except Exception as e:
+                    await temp_client.close()
+                    from zhenxun.services.ai.core.exceptions import SandboxFatalError
+
+                    raise SandboxFatalError(
+                        f"无法连接到本地 Docker 引擎 (引擎未启动或无权限): {e}"
+                    )
 
             if eff_cname not in DockerSandboxClient._containers:
                 port_bindings = {}
@@ -570,47 +583,30 @@ class DockerSandboxClient(BaseSandboxClient):
             cls._global_docker_client = None
 
     @classmethod
-    async def check_engine_alive(cls):
-        import aiodocker
-
-        if cls._global_docker_client is None:
-            async with cls._init_lock:
-                if cls._global_docker_client is None:
-                    cls._global_docker_client = aiodocker.Docker()
-        await cls._global_docker_client.system.info()
-        return True
-
-    @classmethod
-    async def prune_orphan_containers(cls):
-        if not cls._global_docker_client:
-            return
+    async def silent_prune_orphans(cls):
+        """供 manager 后台延迟调用的静默清理函数"""
         try:
-            containers = await cls._global_docker_client.containers.list(
-                filters={"label": ["zhenxun_component=sandbox"]}, all=True
-            )
-            count = 0
-            for c in containers:
-                try:
-                    await c.delete(force=True)
-                    count += 1
-                except Exception:
-                    pass
-            if count > 0:
-                from zhenxun.services.log import logger
-
-                logger.info(
-                    "启动检测：已成功清理 "
-                    f"{count} 个由于上次异常退出遗留的孤儿沙箱容器。",
-                    command="SandboxManager",
+            async with aiodocker.Docker() as docker:
+                await asyncio.wait_for(docker.system.info(), timeout=2.0)
+                containers = await docker.containers.list(
+                    filters={"label": ["zhenxun_component=sandbox"]}, all=True
                 )
-        except Exception as e:
-            from zhenxun.services.log import logger
+                count = 0
+                for c in containers:
+                    try:
+                        await c.delete(force=True)
+                        count += 1
+                    except Exception:
+                        pass
+                if count > 0:
+                    from zhenxun.services.log import logger
 
-            logger.warning(f"清理孤儿容器失败: {e}", command="SandboxManager")
-
-    @classmethod
-    def set_engine_status(cls, status: bool):
-        cls._engine_available = status
+                    logger.info(
+                        f"静默清理：已成功回收 {count} 个上次异常退出遗留的沙箱容器。",
+                        command="SandboxManager",
+                    )
+        except Exception:
+            pass
 
 
 from zhenxun.services.ai.sandbox.registry import SandboxRegistry

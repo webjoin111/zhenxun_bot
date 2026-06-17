@@ -73,6 +73,16 @@ class SessionMetadata(BaseModel):
     自动推导，包含从全局根路径到最深层路径的所有父节点。
     """
 
+    def get_slot_id(self, scope: SlotScope) -> str:
+        """根据作用域生成目标存储的映射 ID。"""
+        if scope == SlotScope.GLOBAL:
+            return (
+                f"global_u_{self.user_id}"
+                if self.user_id
+                else f"global_s_{self.session_id}"
+            )
+        return self.session_id
+
     def __str__(self) -> str:
         return self.session_id
 

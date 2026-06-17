@@ -293,61 +293,26 @@ class ConsolidationNode(BaseMapNode):
         return results
 
 
-class EmbeddingNode(BaseBatchNode):
-    """并发向量化节点"""
+class BaseEmbeddingBatchNode(BaseBatchNode):
+    """批量向量化抽象基类：提取文本、分批请求 API 并将结果写回的公共逻辑"""
 
     def __init__(self, embedder):
         self.embedder = embedder
+
+    @abstractmethod
+    def _filter_target_records(self, records: list[BaseRecord]) -> list[BaseRecord]:
+        """由子类实现：筛选出本次需要进行向量化的目标记录"""
+        pass
 
     async def process_batch(self, records: list[BaseRecord]) -> list[BaseRecord]:
         if not self.embedder or not records:
             return records
 
-        texts_to_embed = [r.content for r in records if r.content.strip()]
-        if not texts_to_embed:
+        target_records = self._filter_target_records(records)
+        if not target_records:
             return records
 
-        try:
-            vecs = []
-            batch_size = 80
-            for i in range(0, len(texts_to_embed), batch_size):
-                batch_texts = texts_to_embed[i : i + batch_size]
-                batch_vecs = await self.embedder(batch_texts, task="document")
-                vecs.extend(batch_vecs)
-
-            vec_idx = 0
-            for r in records:
-                if r.content.strip():
-                    if vecs and vec_idx < len(vecs) and vecs[vec_idx]:
-                        r.embedding = vecs[vec_idx]
-                    vec_idx += 1
-        except Exception as e:
-            logger.error(f"批量向量化失败: {e}")
-
-        return records
-
-
-class UpdateEmbeddingNode(BaseBatchNode):
-    """
-    更新向量化节点。
-    专门负责为被 Consolidator 融合更新 (action == 'update') 的记录重新生成 Embedding。
-    彻底解耦模型推理与数据库提交。
-    """
-
-    def __init__(self, embedder):
-        self.embedder = embedder
-
-    async def process_batch(self, records: list[BaseRecord]) -> list[BaseRecord]:
-        if not self.embedder or not records:
-            return records
-
-        records_to_re_embed = [
-            r for r in records if r.action == "update" and r.content.strip()
-        ]
-        if not records_to_re_embed:
-            return records
-
-        texts = [r.content for r in records_to_re_embed]
+        texts = [r.content for r in target_records]
         try:
             vecs = []
             batch_size = 80
@@ -356,13 +321,33 @@ class UpdateEmbeddingNode(BaseBatchNode):
                 batch_vecs = await self.embedder(batch_texts, task="document")
                 vecs.extend(batch_vecs)
 
-            for i, r in enumerate(records_to_re_embed):
+            for i, r in enumerate(target_records):
                 if vecs and i < len(vecs) and vecs[i]:
                     r.embedding = vecs[i]
         except Exception as e:
-            logger.error(f"融合更新记录时重新向量化失败: {e}")
+            logger.error(f"[{self.__class__.__name__}] 批量向量化失败: {e}")
 
         return records
+
+
+class EmbeddingNode(BaseEmbeddingBatchNode):
+    """并发向量化初次构建节点"""
+
+    def _filter_target_records(self, records: list[BaseRecord]) -> list[BaseRecord]:
+        return [r for r in records if r.content.strip()]
+
+
+class UpdateEmbeddingNode(BaseEmbeddingBatchNode):
+    """
+    更新向量化节点。
+    专门负责为被 Consolidator 融合更新 (action == 'update') 的记录重新生成 Embedding。
+    彻底解耦模型推理与数据库提交。
+    """
+
+    def _filter_target_records(self, records: list[BaseRecord]) -> list[BaseRecord]:
+        return [
+            r for r in records if r.action == "update" and r.content.strip()
+        ]
 
 
 class DedupNode(BaseBatchNode):

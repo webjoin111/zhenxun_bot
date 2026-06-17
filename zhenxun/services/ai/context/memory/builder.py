@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 from typing_extensions import Self
+
+from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from zhenxun.services.ai.context.memory.interfaces import (
@@ -201,17 +204,22 @@ class MemoryBuilder:
         max_turns: int = 0,
         keep_recent_turns: int = 0,
         summarization_model: str | None = None,
+        response_model: type[BaseModel] | None = None,
+        prompt_template: str | None = None,
+        format_callback: Callable[[Any], str] | None = None,
     ) -> Self:
         """
-        配置使用结构化 JSON 提取作为上下文压缩策略。
-
-        通过结构化的大模型调用，强制提取会话中的待办任务、执行状态与核心偏好等。
+        配置使用自定义结构化 JSON 提取作为上下文压缩策略。
 
         参数:
             trigger_tokens: 触发压缩的 Token 门槛。
             max_turns: 压缩策略作用的最大历史对话轮数上限。
             keep_recent_turns: 强制保留的最近原始对话轮数。
             summarization_model: 负责生成结构化总结的大模型名称。
+            response_model: (可选) 自定义的 Pydantic 数据模型，用于指导提取的结构。
+            prompt_template: (可选) 提取提示词模板，
+                支持 {prev_summary} 和 {dialogue} 变量。
+            format_callback: (可选) 将提取出的 Pydantic 实例格式化为字符串的回调函数。
 
         返回:
             Self: 链式构建器自身，用于链式调用。
@@ -221,6 +229,9 @@ class MemoryBuilder:
             max_turns=max_turns,
             keep_recent_turns=keep_recent_turns,
             summarization_model=summarization_model,
+            response_model=response_model,
+            prompt_template=prompt_template,
+            format_callback=format_callback,
         )
         return self
 

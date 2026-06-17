@@ -3,7 +3,6 @@ from typing import Any
 from zhenxun.services.ai.core.models import (
     ModelCapabilities,
     ModelDetail,
-    ToolDefinition,
 )
 from zhenxun.services.ai.core.options import GenerationConfig
 from zhenxun.services.ai.core.protocols.llm import LLMModelBase
@@ -66,28 +65,6 @@ class DeepSeekToolSerializer(OpenAIToolSerializer):
             ]
         )
         return pipeline.run(schema)
-
-    def serialize_tools(
-        self, tools: list[ToolDefinition]
-    ) -> list[dict[str, Any]] | None:
-        """将工具定义序列化为 DeepSeek `tools` 请求结构。"""
-        if not tools:
-            return None
-
-        deepseek_tools = []
-        for tool in tools:
-            raw_schema = tool.parameters.copy() if tool.parameters else {}
-            sanitized_schema = self.sanitize_schema(raw_schema)
-
-            tool_payload = {
-                "name": tool.name,
-                "description": tool.description or "",
-                "parameters": sanitized_schema,
-                "strict": True,
-            }
-            deepseek_tools.append({"type": "function", "function": tool_payload})
-
-        return deepseek_tools
 
 
 class DeepSeekConfigMapper(OpenAIConfigMapper):

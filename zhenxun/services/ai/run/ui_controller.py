@@ -51,7 +51,7 @@ class UIController:
             )
 
     async def send_display(self, display: Any) -> None:
-        """向前端发送任意展示载体（兼容 ToolResult.ui_display 的行为）"""
+        """向前端发送任意展示载体"""
         if self._streamer and display is not None:
             if (
                 isinstance(display, list)

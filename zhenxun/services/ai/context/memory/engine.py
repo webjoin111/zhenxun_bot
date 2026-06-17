@@ -1,11 +1,7 @@
 from typing import Any
 
-from zhenxun.services.ai.config import get_llm_config
 from zhenxun.services.ai.context.memory.compression import (
     CondenserPipeline,
-    MemoryPolicy,
-    MultimodalPlaceholderReducer,
-    ToolPrunerReducer,
 )
 from zhenxun.services.ai.context.memory.manager import memory_manager
 from zhenxun.services.ai.context.memory.models import MemoryConfig
@@ -111,78 +107,10 @@ class MemoryReader:
             else:
                 current_history = await chat_context.get_messages(self.session_meta)
 
-            config = get_llm_config().context_settings
-            pipeline_reducers = []
-
-            from zhenxun.services.ai.llm.capabilities import get_model_capabilities
-
-            caps = get_model_capabilities(model_name)
-
-            vw = config.vision_window_size
-            if (
-                self.memory_config
-                and self.memory_config.compression.vision_window is not None
-            ):
-                vw = self.memory_config.compression.vision_window
-            if vw > 0:
-                pipeline_reducers.append(MultimodalPlaceholderReducer(window_size=vw))
-
-            tp = config.tool_pruning
-            if tp.enable:
-                tp_limit = (
-                    int(caps.max_input_tokens * tp.trigger_threshold)
-                    if tp.trigger_threshold <= 1.0
-                    else int(tp.trigger_threshold)
-                )
-                pipeline_reducers.append(
-                    ToolPrunerReducer(
-                        keep_recent_turns=tp.keep_recent_turns,
-                        trigger_tokens=tp_limit,
-                        max_turns=tp.max_history_turns,
-                    )
-                )
-
-            policy = (
-                self.memory_config.compression.policy if self.memory_config else None
+            pipeline = CondenserPipeline.create_from_configs(
+                self.memory_config, model_name
             )
-            if policy is not None:
-                pipeline_reducers.extend(policy)
-            else:
-                threshold = config.llm_summary.trigger_threshold
-                if (
-                    self.memory_config
-                    and self.memory_config.compression.threshold is not None
-                ):
-                    threshold = self.memory_config.compression.threshold
-
-                limit = (
-                    int(caps.max_input_tokens * threshold)
-                    if threshold <= 1.0
-                    else int(threshold)
-                )
-
-                max_turns = config.llm_summary.max_history_turns
-                if (
-                    self.memory_config
-                    and self.memory_config.compression.max_history_turns is not None
-                ):
-                    max_turns = self.memory_config.compression.max_history_turns
-
-                if config.llm_summary.enable:
-                    pipeline_reducers.extend(
-                        MemoryPolicy.llm_summarize(
-                            trigger_tokens=limit,
-                            max_turns=max_turns,
-                            keep_recent_turns=config.llm_summary.keep_recent_turns,
-                            summarization_model=config.llm_summary.summarization_model,
-                            summarization_prompt=config.llm_summary.summarization_prompt,
-                        )
-                    )
-                else:
-                    pipeline_reducers.extend(MemoryPolicy.unlimited())
-
-            if pipeline_reducers:
-                pipeline = CondenserPipeline(pipeline_reducers)
+            if pipeline.reducers:
                 new_history, changed = await pipeline.run(
                     current_history, model_name=model_name, base_overhead=0
                 )

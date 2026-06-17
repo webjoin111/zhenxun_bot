@@ -6,7 +6,12 @@ from typing import Any
 import httpx
 
 from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
-from zhenxun.services.ai.core.messages import AudioResponse
+from zhenxun.services.ai.core.messages import (
+    AssistantMessage,
+    AudioResponse,
+    LLMMessage,
+    ThoughtPart,
+)
 from zhenxun.services.ai.core.models import ModelCapabilities, ModelDetail
 from zhenxun.services.ai.core.options import GenerationConfig, TTSConfig
 from zhenxun.services.ai.core.protocols.llm import LLMModelBase
@@ -15,6 +20,7 @@ from zhenxun.services.ai.llm.adapters.handlers.base import BaseAudioHandler
 
 from .handlers.openai_handlers import (
     OpenAIConfigMapper,
+    OpenAIMessageConverter,
     OpenAITextHandler,
 )
 from .openai import OpenAICompatAdapter
@@ -118,6 +124,47 @@ class MiniMaxAudioHandler(BaseAudioHandler):
         )
 
 
+class MiniMaxMessageConverter(OpenAIMessageConverter):
+    """MiniMax 消息转换器，处理特有的 reasoning_details 格式回传"""
+
+    async def convert_messages_async(
+        self, messages: list[LLMMessage]
+    ) -> list[dict[str, Any]]:
+        openai_messages = await super().convert_messages_async(messages)
+
+        assistant_msgs = [m for m in messages if isinstance(m, AssistantMessage)]
+        ast_idx = 0
+
+        for o_msg in openai_messages:
+            if o_msg.get("role") == "assistant":
+                if ast_idx < len(assistant_msgs):
+                    orig_ast = assistant_msgs[ast_idx]
+                    ast_idx += 1
+
+                    if "reasoning_content" in o_msg:
+                        del o_msg["reasoning_content"]
+
+                    thought_parts = [
+                        p for p in orig_ast.content if isinstance(p, ThoughtPart)
+                    ]
+                    if thought_parts:
+                        part = thought_parts[0]
+                        raw_details = (
+                            part.metadata.get("raw_reasoning_details")
+                            if part.metadata
+                            else None
+                        )
+
+                        if raw_details:
+                            o_msg["reasoning_details"] = raw_details
+                        else:
+                            o_msg["reasoning_details"] = [
+                                {"type": "reasoning.text", "text": part.thought_text}
+                            ]
+
+        return openai_messages
+
+
 class MiniMaxConfigMapper(OpenAIConfigMapper):
     """MiniMax 专属配置映射器"""
 
@@ -137,6 +184,7 @@ class MiniMaxTextHandler(OpenAITextHandler):
 
     def __init__(self, api_type: str = "minimax"):
         super().__init__(api_type=api_type)
+        self.converter = MiniMaxMessageConverter(api_type=api_type)
         self.mapper = MiniMaxConfigMapper(api_type=api_type)
 
 

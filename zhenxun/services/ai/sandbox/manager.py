@@ -178,31 +178,14 @@ async def _startup_sandboxes():
 
         from .drivers.docker import DockerSandboxClient
 
-        async def _async_init_docker_sandbox():
+        async def _delayed_silent_cleanup():
+            await asyncio.sleep(15)
             try:
-                is_alive = await asyncio.wait_for(
-                    DockerSandboxClient.check_engine_alive(), timeout=5.0
-                )
-            except asyncio.TimeoutError:
-                is_alive = False
-                logger.warning(
-                    "Docker 引擎探活超时(5s)，可能处于假死状态，已自动禁用本地路由。",
-                    command="SandboxManager",
-                )
+                await DockerSandboxClient.silent_prune_orphans()
             except Exception:
-                is_alive = False
+                pass
 
-            DockerSandboxClient.set_engine_status(is_alive)
-
-            if is_alive:
-                await DockerSandboxClient.prune_orphan_containers()
-            else:
-                logger.debug(
-                    "未检测到可用本地 Docker 引擎，Docker 沙箱路由已自动禁用。",
-                    command="SandboxManager",
-                )
-
-        task = asyncio.create_task(_async_init_docker_sandbox())
+        task = asyncio.create_task(_delayed_silent_cleanup())
         _startup_tasks.add(task)
         task.add_done_callback(_startup_tasks.discard)
 

@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 import asyncio
+import threading
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from zhenxun.services.ai.core.messages import EmbedBatch
@@ -55,6 +56,7 @@ class BaseLocalEmbedder(Embedder, ABC):
 
     def __init__(self, model_name: str):
         self.model_name = model_name
+        self._model_lock = threading.Lock()
 
     @abstractmethod
     def _encode_texts(self, texts: list[str]) -> list[list[float]]:
@@ -90,20 +92,31 @@ class FastEmbedder(BaseLocalEmbedder):
     """
 
     def __init__(self, model_name: str | None = None):
-        try:
-            from fastembed import TextEmbedding
-        except ImportError:
-            raise ImportError(
-                "⚠️ 使用 FastEmbed 需要额外依赖，请在终端执行: pip install fastembed"
-            )
-
         super().__init__(model_name or "BAAI/bge-small-zh-v1.5")
-        logger.info(
-            f"正在加载 FastEmbed 本地模型: {self.model_name} ... (首次加载可能需要下载)"
-        )
-        self.model = TextEmbedding(model_name=self.model_name)
+        self.model = None
+
+    def _ensure_model_loaded(self):
+        """线程安全的懒加载机制"""
+        if self.model is None:
+            with self._model_lock:
+                if self.model is None:
+                    try:
+                        from fastembed import TextEmbedding
+                    except ImportError:
+                        raise ImportError(
+                            "⚠️ 使用 FastEmbed 需要额外依赖，"
+                            "请在终端执行: pip install fastembed"
+                        )
+                    logger.info(
+                        f"正在后台加载 FastEmbed 本地模型: {self.model_name} ... "
+                        "(首次加载可能需要极长时间下载)"
+                    )
+                    self.model = TextEmbedding(model_name=self.model_name)
+                    logger.info(f"FastEmbed 模型 {self.model_name} 加载完毕！")
 
     def _encode_texts(self, texts: list[str]) -> list[list[float]]:
+        self._ensure_model_loaded()
+        assert self.model is not None
         return [vec.tolist() for vec in self.model.embed(texts)]
 
 
@@ -114,18 +127,35 @@ class SentenceTransformerEmbedder(BaseLocalEmbedder):
     """
 
     def __init__(self, model_name: str | None = None):
-        try:
-            from sentence_transformers import SentenceTransformer  # type: ignore
-        except ImportError:
-            raise ImportError(
-                "⚠️ 使用 SentenceTransformers 需要额外依赖，"
-                "请在终端执行: pip install sentence-transformers"
-            )
-
         super().__init__(model_name or "BAAI/bge-small-zh-v1.5")
-        logger.info(f"正在加载 SentenceTransformer 本地模型: {self.model_name} ...")
-        self.model = SentenceTransformer(self.model_name)
+        self.model = None
+
+    def _ensure_model_loaded(self):
+        """线程安全的懒加载机制"""
+        if self.model is None:
+            with self._model_lock:
+                if self.model is None:
+                    try:
+                        from sentence_transformers import (
+                            SentenceTransformer,
+                        )
+                    except ImportError:
+                        raise ImportError(
+                            "⚠️ 使用 SentenceTransformers 需要额外依赖，"
+                            "请在终端执行: pip install sentence-transformers"
+                        )
+                    logger.info(
+                        "正在后台加载 SentenceTransformer "
+                        f"本地模型: {self.model_name} ... "
+                        "(首次加载可能需要极长时间下载)"
+                    )
+                    self.model = SentenceTransformer(self.model_name)
+                    logger.info(
+                        f"SentenceTransformer 模型 {self.model_name} 加载完毕！"
+                    )
 
     def _encode_texts(self, texts: list[str]) -> list[list[float]]:
+        self._ensure_model_loaded()
+        assert self.model is not None
         embeddings = self.model.encode(texts)
         return embeddings.tolist()

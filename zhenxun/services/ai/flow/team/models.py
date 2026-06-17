@@ -5,8 +5,8 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from zhenxun.services.ai.core.options import BaseOutputDefinition
 from zhenxun.services.ai.core.messages import LLMMessage
+from zhenxun.services.ai.core.options import BaseOutputDefinition
 from zhenxun.services.ai.flow.base import BaseRuntimeConfig
 
 
@@ -138,11 +138,12 @@ class TaskBoardState(BaseModel):
         metadata: dict[str, Any] | None = None,
     ) -> SubTaskRecord:
         """创建一个新任务并加入看板。Python 引擎和 Tool 均调用此方法。"""
+        clean_deps = [d for d in (dependencies or []) if d.strip()]
         task = SubTaskRecord(
             title=title,
             description=description,
             assignee=assignee,
-            dependencies=dependencies or [],
+            dependencies=clean_deps,
             metadata=metadata or {},
         )
         self.tasks.append(task)
@@ -150,7 +151,9 @@ class TaskBoardState(BaseModel):
         return task
 
     def get_task(self, task_id: str) -> SubTaskRecord | None:
-        return next((t for t in self.tasks if t.id == task_id), None)
+        return next(
+            (t for t in self.tasks if t.id == task_id or t.title == task_id), None
+        )
 
     def update_task_status(
         self, task_id: str, status: TaskNodeStatus, result: str | None = None
@@ -249,7 +252,7 @@ class TaskBoardState(BaseModel):
                 lines.append(f"      依赖于: {t.dependencies}")
             if t.result:
                 result_preview = (
-                    t.result[:200] + "..." if len(t.result) > 200 else t.result
+                    t.result[:1000] + "..." if len(t.result) > 1000 else t.result
                 )
                 lines.append(f"      结果: {result_preview}")
             if t.notes:

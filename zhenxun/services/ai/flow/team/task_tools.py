@@ -60,19 +60,21 @@ class TaskPlanningToolkit(BaseToolkit):
         ],
         context: RunContext,
         depends_on: Annotated[
-            list[str] | None,
+            list[str],
             Field(
                 description=(
-                    "该任务依赖的前置任务 ID 列表。如果该任务可独立执行，请留空数组 []"
+                    "该任务依赖的前置任务的【标题(title)】列表"
+                    "（因同一回合创建时未知ID，请务必使用前置任务的 title 作为依赖）。"
+                    "无依赖则必须传入空数组 []"
                 ),
             ),
-        ] = None,
+        ],
         metadata: Annotated[
-            dict[str, Any] | None,
+            dict[str, Any],
             Field(
                 description="可选的附加字典，用于向执行专家传递额外的结构化约束或参数"
             ),
-        ] = None,
+        ] = {},
     ) -> ToolResult:
         board = self._get_board(context)
 
@@ -131,6 +133,16 @@ class TaskPlanningToolkit(BaseToolkit):
         ] = "",
     ) -> ToolResult:
         board = self._get_board(context)
+
+        if status == TaskNodeStatus.in_progress:
+            return ToolResult(
+                output=(
+                    "❌ 权限拒绝：你不能手动将任务状态设置为 in_progress。"
+                    "该状态由底层执行引擎自动管理。如果你想让任务重新执行，"
+                    "请将其设置为 pending。"
+                )
+            ).as_error()
+
         updated = board.update_task_status(task_id, status, result if result else None)
         if not updated:
             return ToolResult(output=f"❌ 找不到 ID 为 '{task_id}' 的任务。").as_error()
@@ -138,6 +150,19 @@ class TaskPlanningToolkit(BaseToolkit):
         task_obj = board.get_task(task_id)
         task_title = task_obj.title if task_obj else "Unknown"
         logger.debug(f"  🔄 [任务状态变更] `{task_title}` -> {status.value}")
+
+        if task_obj and task_obj.status != status:
+            board_str = board.render_board_to_string()
+            return ToolResult(
+                output=(
+                    "❌ 状态更新失败（触发底层状态机防呆回滚）！\n"
+                    f"你尝试将 [{task_id}] 强制设置为 {status.value}，"
+                    f"但系统计算依赖图后将其重置为了 {task_obj.status.value}。\n"
+                    "💡 原因分析：它的前置依赖（depends_on）可能尚未 COMPLETED，"
+                    "或者你填错了依赖项的名称/ID导致系统无法追踪。\n\n"
+                    f"{board_str}"
+                )
+            ).as_error()
 
         board_str = board.render_board_to_string()
         return ToolResult(
@@ -153,7 +178,13 @@ class TaskPlanningToolkit(BaseToolkit):
     async def mark_all_complete(
         self,
         summary: Annotated[
-            str, Field(description="对于整个流程执行结果的最终中文战报/总结")
+            str,
+            Field(
+                description=(
+                    "流程的最终战报。⚠️ 必须在总结中完整包含各专家产出的"
+                    "核心交付物原文（如生成的故事、最终翻译内容等），绝对不能只说“已完成”！"
+                )
+            ),
         ],
         context: RunContext,
     ) -> ToolResult:
@@ -162,4 +193,5 @@ class TaskPlanningToolkit(BaseToolkit):
         board.final_summary = summary
 
         from zhenxun.services.ai.tools.models import EndRunResult
+
         return EndRunResult(output=summary)

@@ -35,7 +35,6 @@ from zhenxun.services.ai.core.models import (
     ModelDetail,
     ReasoningMode,
     ToolChoice,
-    ToolDefinition,
 )
 from zhenxun.services.ai.core.options import (
     GenerationConfig,
@@ -432,18 +431,14 @@ class GeminiToolSerializer(ToolSerializer):
         )
         return pipeline.run(schema)
 
-    def serialize_tools(self, tools: list[ToolDefinition]) -> list[dict[str, Any]]:
-        function_declarations: list[dict[str, Any]] = []
-        for tool_def in tools:
-            raw_schema = tool_def.parameters.copy() if tool_def.parameters else {}
-            sanitized_schema = self.sanitize_schema(raw_schema)
-            declaration = {
-                "name": tool_def.name,
-                "description": tool_def.description or "",
-                "parameters": sanitized_schema,
-            }
-            function_declarations.append(declaration)
-        return function_declarations
+    def format_tool_payload(
+        self, tool_name: str, tool_description: str, sanitized_schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        return {
+            "name": tool_name,
+            "description": tool_description,
+            "parameters": sanitized_schema,
+        }
 
     def serialize_server_tools(
         self, tools: list[Any], capabilities: ModelCapabilities
@@ -686,18 +681,24 @@ class GeminiTextHandler(BaseTextHandler):
 
         gemini_settings = get_llm_config().provider_settings.gemini
 
-        if (
-            server_tools
-            and client_executables
-            and not gemini_settings.allow_mixed_tools
-        ):
-            server_tool_names = [getattr(t, "name", "unknown") for t in server_tools]
-            logger.warning(
-                f"🌐 [Gemini Adapter] 检测到请求中混用了本地自定义工具与云端内置工具，"
-                f"但全局开关 (allow_mixed_tools) 已关闭。自动拦截并屏蔽云端"
-                f"内置工具 {server_tool_names} 以防协议冲突。"
-            )
-            server_tools = []
+        if server_tools and client_executables:
+            has_mixed_tools_cap = model.capabilities.has_feature("mixed_tools")
+            if not gemini_settings.allow_mixed_tools or not has_mixed_tools_cap:
+                server_tool_names = [
+                    getattr(t, "name", "unknown") for t in server_tools
+                ]
+                reason = (
+                    "全局开关 (allow_mixed_tools) 已关闭"
+                    if not gemini_settings.allow_mixed_tools
+                    else f"模型 {model.model_name} 原生不支持工具混用"
+                )
+                logger.warning(
+                    "🌐 [Gemini Adapter] 检测到请求中混用了"
+                    "本地自定义工具与云端内置工具，"
+                    f"但{reason}。"
+                    f"自动拦截并屏蔽云端内置工具 {server_tool_names} 以防协议冲突。"
+                )
+                server_tools = []
 
         has_function_tools = len(client_executables) > 0
 
@@ -764,11 +765,12 @@ class GeminiTextHandler(BaseTextHandler):
             )
             if server_payloads:
                 all_tools_for_request.extend(server_payloads)
-                body.setdefault("toolConfig", {}).update(
-                    {
-                        "includeServerSideToolInvocations": True,
-                    }
-                )
+                if model.capabilities.has_feature("server_side_tool_invocations"):
+                    body.setdefault("toolConfig", {}).update(
+                        {
+                            "includeServerSideToolInvocations": True,
+                        }
+                    )
 
         has_user_functions = False
         if client_executables:

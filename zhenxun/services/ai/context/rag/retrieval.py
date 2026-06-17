@@ -12,6 +12,15 @@ if TYPE_CHECKING:
     from zhenxun.services.ai.context.rag.backends.storages import StorageBackend
 
 
+def normalize_query_text(query: Any) -> str:
+    """辅助函数：提取各种输入形式（如字符串、平台Message对象）的纯文本用于检索"""
+    if isinstance(query, str):
+        return query
+    if hasattr(query, "extract_plain_text"):
+        return query.extract_plain_text()
+    return str(query) if query is not None else ""
+
+
 @runtime_checkable
 class BaseRetriever(Protocol):
     """
@@ -71,13 +80,7 @@ class VectorDBRetriever(BaseRetriever):
     async def retrieve(
         self, query: Any, limit: int = 10, **kwargs: Any
     ) -> list[SearchResult]:
-        text_query = ""
-        if isinstance(query, str):
-            text_query = query
-        elif hasattr(query, "extract_plain_text"):
-            text_query = query.extract_plain_text()
-        else:
-            text_query = str(query)
+        text_query = normalize_query_text(query)
 
         vecs = await self.embedder(query, task="query")
         query_vec = vecs[0] if vecs else None
@@ -106,15 +109,7 @@ class DatabaseSparseRetriever(BaseRetriever):
     async def retrieve(
         self, query: Any, limit: int = 10, **kwargs: Any
     ) -> list[SearchResult]:
-        text_query = (
-            query
-            if isinstance(query, str)
-            else (
-                query.extract_plain_text()
-                if hasattr(query, "extract_plain_text")
-                else str(query)
-            )
-        )
+        text_query = normalize_query_text(query)
         if not text_query.strip():
             return []
 
@@ -152,15 +147,7 @@ class RerankRetriever(BaseRetriever):
         if not initial_results:
             return []
 
-        text_query = (
-            query
-            if isinstance(query, str)
-            else (
-                query.extract_plain_text()
-                if hasattr(query, "extract_plain_text")
-                else str(query)
-            )
-        )
+        text_query = normalize_query_text(query)
 
         docs: list[str | dict[str, str]] = [
             res.record.content for res in initial_results
@@ -263,15 +250,7 @@ class PipelineRetriever(BaseRetriever):
     async def retrieve(
         self, query: Any, limit: int = 10, **kwargs: Any
     ) -> list[SearchResult]:
-        text_query = (
-            query
-            if isinstance(query, str)
-            else (
-                query.extract_plain_text()
-                if hasattr(query, "extract_plain_text")
-                else ""
-            )
-        )
+        text_query = normalize_query_text(query)
 
         queries_to_search = [query]
 
