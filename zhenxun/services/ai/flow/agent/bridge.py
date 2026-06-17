@@ -62,10 +62,13 @@ class AgentRunner(Generic[T_Out]):
         """交互式执行：将 Agent 运行过程中的工具调用状态和最终结果自动发送给用户。"""
         final_result = None
 
+        profile = kwargs.pop("profile", None)
+
         try:
             async with self.runnable.run_stream(
                 prompt=prompt,
                 context=self.context,
+                profile=profile,
                 **kwargs,
             ) as stream_result:
                 async for stream_event in stream_result.stream_events():

@@ -1,7 +1,8 @@
+import graphlib
 from typing import Any
 
 from zhenxun.services.ai.flow.workflow.engine import Workflow
-from zhenxun.services.ai.flow.workflow.nodes import Parallel, Router, Step
+from zhenxun.services.ai.flow.workflow.nodes import NodeFactory, Parallel, Router
 from zhenxun.services.log import logger
 
 
@@ -53,40 +54,23 @@ class AutoWorkflow(Workflow):
             if any(t in router_paths for t in v.get("triggers", []))
         }
 
-        layers: dict[str, int] = dict.fromkeys(top_level_methods, 0)
+        ts = graphlib.TopologicalSorter()
+        for name, meta in top_level_methods.items():
+            valid_triggers = [
+                t for t in meta.get("triggers", []) if t in top_level_methods
+            ]
+            ts.add(name, *valid_triggers)
 
-        changed = True
-        loop_counter = 0
-        while changed:
-            changed = False
-            loop_counter += 1
-            if loop_counter > 100:
-                raise RecursionError(
-                    "AutoWorkflow 编译失败：检测到死循环依赖！请检查 @listen 中是否有环。"
-                )
-
-            for name, meta in top_level_methods.items():
-                triggers = meta.get("triggers", [])
-                if triggers:
-                    max_trigger_layer = max(
-                        (layers.get(t, -1) for t in triggers if t in layers), default=-1
-                    )
-                    if max_trigger_layer == -1:
-                        continue
-
-                    if max_trigger_layer + 1 > layers[name]:
-                        layers[name] = max_trigger_layer + 1
-                        changed = True
-
-        layer_groups: dict[int, list[str]] = {}
-        for name, layer_idx in layers.items():
-            layer_groups.setdefault(layer_idx, []).append(name)
+        try:
+            ts.prepare()
+        except graphlib.CycleError as e:
+            raise ValueError(f"AutoWorkflow 编译失败：检测到循环依赖！{e}")
 
         workflow_steps = []
-        for layer_idx in sorted(layer_groups.keys()):
-            names = layer_groups[layer_idx]
+        while ts.is_active():
+            ready_nodes = ts.get_ready()
             step_nodes = []
-            for n in names:
+            for n in ready_nodes:
                 meta = top_level_methods[n]
                 if meta["type"] in ("router", "entry_router"):
                     choices = []
@@ -101,20 +85,23 @@ class AutoWorkflow(Workflow):
                         )
                         if branch_name:
                             choices.append(
-                                Step(name=path, executor=getattr(self, branch_name))
+                                NodeFactory.build(getattr(self, branch_name), name=path)
                             )
 
                     step_nodes.append(
                         Router(name=n, selector=getattr(self, n), choices=choices)
                     )
                 else:
-                    step_nodes.append(Step(name=n, executor=getattr(self, n)))
+                    step_nodes.append(NodeFactory.build(getattr(self, n), name=n))
 
             if len(step_nodes) == 1:
                 workflow_steps.append(step_nodes[0])
-            else:
+            elif len(step_nodes) > 1:
                 workflow_steps.append(
-                    Parallel(*step_nodes, name=f"Layer_{layer_idx}_Parallel")
+                    Parallel(*step_nodes, name=f"Parallel_{'_'.join(ready_nodes)[:30]}")
                 )
+
+            for node in ready_nodes:
+                ts.done(node)
 
         return workflow_steps

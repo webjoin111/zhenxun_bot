@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import json_repair
 
+from zhenxun.services.ai.capabilities import CombinedCapability
 from zhenxun.services.ai.core.exceptions import (
     ToolRetryError,
 )
@@ -14,7 +15,6 @@ from zhenxun.services.ai.core.stream_events import (
     ToolCallResultEvent,
     ToolCallStart,
 )
-from zhenxun.services.ai.capabilities.wrappers import CombinedCapability
 from zhenxun.services.ai.run.context import RunContext
 from zhenxun.services.ai.tools.models import (
     ToolResult,

@@ -225,7 +225,7 @@ class BaseTool:
         )
 
         if context and self.settings.capabilities:
-            from zhenxun.services.ai.capabilities.wrappers import (
+            from zhenxun.services.ai.capabilities import (
                 CombinedCapability,
             )
 

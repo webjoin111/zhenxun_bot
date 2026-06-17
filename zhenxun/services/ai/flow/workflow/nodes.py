@@ -1,9 +1,7 @@
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-import inspect
+from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any, cast
 
-from nonebot.utils import is_coroutine_callable
 from pydantic import BaseModel, Field
 
 from zhenxun.services.ai.core.messages import PromptInput
@@ -29,23 +27,6 @@ class Step(BaseNode):
     对外部隐藏了 AgentNode 和 FunctionNode 的具体实现。
     当实例化 Step 时，底层会自动根据 executor 的类型返回专属的节点对象。
     """
-
-    def __new__(
-        cls,
-        name: str | None = None,
-        executor: NodeSource | None = None,
-        prompt: PromptInput | None = None,
-        requires_confirmation: bool = False,
-        confirmation_message: str | None = None,
-        failure_policy: BaseFailurePolicy | None = None,
-    ):
-        if cls is Step:
-            if isinstance(executor, BaseRunnable):
-                return object.__new__(RunnableNode)
-            if callable(executor):
-                return object.__new__(FunctionNode)
-            raise ValueError(f"Step '{name}' 的执行器类型不支持: {type(executor)}")
-        return object.__new__(cls)
 
     def __init__(
         self,
@@ -142,20 +123,9 @@ class FunctionNode(Step):
         context.run.user_input = str(step_input.input) if step_input.input else ""
 
         executor = cast(Callable, self.executor)
-        sig = inspect.signature(executor)
-        resolved_kwargs = await DependencyInjector.resolve_all(
-            sig, call_kwargs={"step_input": step_input}, context=context
+        res = await DependencyInjector.invoke(
+            executor, {"step_input": step_input}, context
         )
-        filtered_kwargs = {
-            k: v for k, v in resolved_kwargs.items() if k in sig.parameters
-        }
-
-        if is_coroutine_callable(executor):
-            func = cast(Callable[..., Awaitable[Any]], executor)
-            res = await func(**filtered_kwargs)
-        else:
-            func = cast(Callable[..., Any], executor)
-            res = func(**filtered_kwargs)
 
         if isinstance(res, StepOutput):
             yield res
@@ -205,12 +175,12 @@ class Steps(BaseNode):
 
         all_outputs: list[StepOutput] = []
         for step_obj in self.steps:
-            step_out: StepOutput | None = None
-            async for event in step_obj.aexecute_stream(current_input, context):
-                if isinstance(event, StepOutput):
-                    step_out = event
-                else:
-                    yield event
+            out_box: list[StepOutput] = []
+            async for event in self._forward_stream(
+                step_obj.aexecute_stream(current_input, context), out_box
+            ):
+                yield event
+            step_out = out_box[0] if out_box else None
 
             if step_out:
                 all_outputs.append(step_out)
@@ -249,21 +219,9 @@ class Condition(BaseNode):
         self, step_input: StepInput, context: RunContext
     ) -> AsyncIterator[Any]:
         if callable(self.evaluator):
-            sig = inspect.signature(self.evaluator)
-            resolved_kwargs = await DependencyInjector.resolve_all(
-                sig, call_kwargs={"step_input": step_input}, context=context
+            condition_result = await DependencyInjector.invoke(
+                self.evaluator, {"step_input": step_input}, context
             )
-            filtered_kwargs = {
-                k: v for k, v in resolved_kwargs.items() if k in sig.parameters
-            }
-            if is_coroutine_callable(self.evaluator):
-                condition_result = await cast(
-                    Callable[..., Awaitable[Any]], self.evaluator
-                )(**filtered_kwargs)
-            else:
-                condition_result = cast(Callable[..., Any], self.evaluator)(
-                    **filtered_kwargs
-                )
         else:
             condition_result = bool(self.evaluator)
 
@@ -280,14 +238,13 @@ class Condition(BaseNode):
         steps_container = Steps(
             steps=target_steps, name=f"{self.name}_{branch_name}_branch"
         )
-        output = None
-        async for event in steps_container.aexecute_stream(step_input, context):
-            if isinstance(event, StepOutput):
-                output = event
-            else:
-                yield event
-        if output:
-            yield output
+        out_box: list[StepOutput] = []
+        async for event in self._forward_stream(
+            steps_container.aexecute_stream(step_input, context), out_box
+        ):
+            yield event
+        if out_box:
+            yield out_box[0]
 
 
 class Router(BaseNode):
@@ -312,19 +269,9 @@ class Router(BaseNode):
         self, step_input: StepInput, context: RunContext
     ) -> AsyncIterator[Any]:
         if callable(self.selector):
-            sig = inspect.signature(self.selector)
-            resolved_kwargs = await DependencyInjector.resolve_all(
-                sig, call_kwargs={"step_input": step_input}, context=context
+            selected = await DependencyInjector.invoke(
+                self.selector, {"step_input": step_input}, context
             )
-            filtered_kwargs = {
-                k: v for k, v in resolved_kwargs.items() if k in sig.parameters
-            }
-            if is_coroutine_callable(self.selector):
-                func = cast(Callable[..., Awaitable[Any]], self.selector)
-                selected = await func(**filtered_kwargs)
-            else:
-                func = cast(Callable[..., Any], self.selector)
-                selected = func(**filtered_kwargs)
         else:
             selected = self.selector
 
@@ -346,14 +293,13 @@ class Router(BaseNode):
             return
 
         steps_container = Steps(steps=target_steps, name=f"{self.name}_routed_steps")
-        output = None
-        async for event in steps_container.aexecute_stream(step_input, context):
-            if isinstance(event, StepOutput):
-                output = event
-            else:
-                yield event
-        if output:
-            yield output
+        out_box: list[StepOutput] = []
+        async for event in self._forward_stream(
+            steps_container.aexecute_stream(step_input, context), out_box
+        ):
+            yield event
+        if out_box:
+            yield out_box[0]
 
 
 class Loop(BaseNode):
@@ -396,39 +342,23 @@ class Loop(BaseNode):
             steps_container = Steps(
                 steps=self.steps, name=f"{self.name}_iter_{iteration + 1}"
             )
-            iter_output = None
-            async for event in steps_container.aexecute_stream(current_input, context):
-                if isinstance(event, StepOutput):
-                    iter_output = event
-                else:
-                    yield event
+            out_box: list[StepOutput] = []
+            async for event in self._forward_stream(
+                steps_container.aexecute_stream(current_input, context), out_box
+            ):
+                yield event
+            iter_output = out_box[0] if out_box else None
 
             should_stop = False
             if iter_output:
                 all_results.append(iter_output)
                 if self.end_condition:
                     if callable(self.end_condition):
-                        sig = inspect.signature(self.end_condition)
-                        resolved_kwargs = await DependencyInjector.resolve_all(
-                            sig,
-                            call_kwargs={
-                                "iteration_results": iter_output.steps or [iter_output]
-                            },
-                            context=context,
+                        should_stop = await DependencyInjector.invoke(
+                            self.end_condition,
+                            {"iteration_results": iter_output.steps or [iter_output]},
+                            context,
                         )
-                        filtered_kwargs = {
-                            k: v
-                            for k, v in resolved_kwargs.items()
-                            if k in sig.parameters
-                        }
-                        if is_coroutine_callable(self.end_condition):
-                            func = cast(
-                                Callable[..., Awaitable[Any]], self.end_condition
-                            )
-                            should_stop = await func(**filtered_kwargs)
-                        else:
-                            func = cast(Callable[..., Any], self.end_condition)
-                            should_stop = func(**filtered_kwargs)
                     else:
                         should_stop = bool(self.end_condition)
 
@@ -537,11 +467,6 @@ class Parallel(BaseNode):
             elif msg_type == "done":
                 _, child_state, child_upstream_results = data
                 context.state.update(child_state)
-                if (
-                    not hasattr(context, "upstream_results")
-                    or context.upstream_results is None
-                ):
-                    context.upstream_results = {}
                 context.upstream_results.update(child_upstream_results)
                 completed += 1
 
@@ -558,6 +483,31 @@ class Parallel(BaseNode):
 
 class NodeFactory:
     """统一节点装配工厂"""
+
+    @classmethod
+    def _create_step(
+        cls,
+        executor: NodeSource,
+        name: str | None = None,
+        requires_confirmation: bool = False,
+        confirmation_message: str | None = None,
+        failure_policy: Any = None,
+    ) -> BaseNode:
+        """底层物理实例化分发"""
+        from zhenxun.services.ai.flow.base import BaseRunnable
+
+        kwargs = {
+            "name": name,
+            "executor": executor,
+            "requires_confirmation": requires_confirmation,
+            "confirmation_message": confirmation_message,
+            "failure_policy": failure_policy,
+        }
+        if isinstance(executor, BaseRunnable):
+            return RunnableNode(**kwargs)
+        elif callable(executor):
+            return FunctionNode(**kwargs)
+        raise ValueError(f"执行器类型 {type(executor)} 无法转换为叶子节点(Step)。")
 
     @staticmethod
     def build(item: NodeSource, name: str | None = None) -> BaseNode:
@@ -596,7 +546,7 @@ class NodeFactory:
             step_meta = getattr(item, "__workflow_step_meta__", None)
             if step_meta:
                 final_name = name or step_meta.name
-                return Step(
+                return NodeFactory._create_step(
                     executor=item,
                     name=final_name,
                     requires_confirmation=step_meta.requires_confirmation,
@@ -604,7 +554,7 @@ class NodeFactory:
                     failure_policy=step_meta.failure_policy,
                 )
 
-            return Step(executor=item, name=name)
+            return NodeFactory._create_step(executor=item, name=name)
 
         raise ValueError(
             f"无法将类型 {type(item)} 装配为工作流节点。"

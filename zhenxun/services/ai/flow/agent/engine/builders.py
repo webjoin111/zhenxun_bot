@@ -5,7 +5,7 @@ from typing import Any
 
 from nonebot.utils import is_coroutine_callable
 
-from zhenxun.services.ai.capabilities.wrappers import CombinedCapability
+from zhenxun.services.ai.capabilities import CombinedCapability
 from zhenxun.services.ai.core.templates import PromptTemplate
 from zhenxun.services.ai.flow.agent.models import Persona
 from zhenxun.services.ai.run import RunContext

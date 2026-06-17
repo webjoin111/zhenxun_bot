@@ -323,7 +323,7 @@ class LLMModel(LLMModelBase):
 
             run_ctx = RunContext()
 
-        from zhenxun.services.ai.capabilities.wrappers import CombinedCapability
+        from zhenxun.services.ai.capabilities import CombinedCapability
 
         combined_cap = CombinedCapability(capabilities)
 

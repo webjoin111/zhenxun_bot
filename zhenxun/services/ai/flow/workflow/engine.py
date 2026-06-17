@@ -126,7 +126,10 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
                 )
                 await MessageUtils.build_message(msg).send(reply_to=reply_to)
             elif res.status == "paused":
-                pause_msg = f"⏸️ 工作流执行已被挂起，停在步骤: {res.paused_step_name}。请提供授权或人工输入后继续。"
+                pause_msg = (
+                    f"⏸️ 工作流执行已被挂起，停在步骤: {res.paused_step_name}。"
+                    "请提供授权或人工输入后继续。"
+                )
                 await MessageUtils.build_message(pause_msg).send(reply_to=reply_to)
             elif res.status == "error":
                 err_msg = res.final_output.error if res.final_output else "未知异常"
@@ -263,8 +266,8 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
                     usage=UsageInfo(),
                 )
                 yield AgentRunEnd(result=agent_res)
-        except Exception as e:
-            pass # 让其在流中传递 AgentRunError，由调用方负责记录
+        except Exception:
+            pass
 
     async def acontinue_run(
         self,
@@ -292,7 +295,8 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
         )
 
         logger.info(
-            f"🚀 工作流 [{self.name}] 状态已恢复，正在快进到步骤: {run_result.paused_step_name}..."
+            f"🚀 工作流 [{self.name}] 状态已恢复，"
+            f"正在快进到步骤: {run_result.paused_step_name}..."
         )
 
         final_output = await self.root_steps.aexecute(resume_input, safe_context)
@@ -311,7 +315,8 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
             from zhenxun.services.ai.core.exceptions import ToolRetryError
 
             raise ToolRetryError(
-                f"工作流执行失败: {output.error if output else 'unknown'}，请尝试换种方式处理。"
+                f"工作流执行失败: {output.error if output else 'unknown'}，"
+                "请尝试换种方式处理。"
             )
 
         final_tool_name = tool_name or f"trigger_workflow_{self.id}"

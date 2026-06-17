@@ -5,6 +5,7 @@ from typing_extensions import Self
 
 from pydantic import BaseModel
 
+from zhenxun.services.ai.capabilities import AbstractCapability, DynamicCapability
 from zhenxun.services.ai.core.messages import PromptInput
 from zhenxun.services.ai.flow.base import BaseRunnable
 from zhenxun.services.ai.flow.team.models import TeamRuntimeConfig
@@ -67,9 +68,6 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
 
         self.capabilities: list[Any] = []
         if capabilities:
-            from zhenxun.services.ai.capabilities import AbstractCapability
-            from zhenxun.services.ai.capabilities.wrappers import DynamicCapability
-
             for cap in capabilities:
                 if isinstance(cap, AbstractCapability):
                     self.capabilities.append(cap)
@@ -310,9 +308,6 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
             )
 
         if capabilities:
-            from zhenxun.services.ai.capabilities import AbstractCapability
-            from zhenxun.services.ai.capabilities.wrappers import DynamicCapability
-
             for cap in capabilities:
                 if isinstance(cap, AbstractCapability):
                     context.capabilities.append(cap)

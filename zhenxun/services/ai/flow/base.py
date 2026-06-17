@@ -52,7 +52,8 @@ class BaseRunnable(ABC, Generic[T_RunResult]):
     """可执行实体的详细描述。用于外部路由(Router)或上层智能体(DelegateTool)决定是否调用它"""
 
     persona: "Persona | dict | None" = None
-    """(可选) 实体的角色设定 (Persona)。包含 role 和 goal，在多智能体路由移交时优先级最高"""
+    """(可选) 实体的角色设定 (Persona)。包含 role 和 goal，
+    在多智能体路由移交时优先级最高"""
 
     runtime_config: BaseRuntimeConfig
     """运行时配置，如是否无状态、UI输出模式等"""

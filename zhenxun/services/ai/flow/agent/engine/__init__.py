@@ -1,10 +1,9 @@
 from .builders import ContextBuilder, ToolBuilder
-from .executor import AgentExecutor
-from .harness import AgentHarness
+from .executor import BaseAgentExecutor, StandardAgentExecutor
 
 __all__ = [
-    "AgentExecutor",
-    "AgentHarness",
+    "BaseAgentExecutor",
     "ContextBuilder",
+    "StandardAgentExecutor",
     "ToolBuilder",
 ]

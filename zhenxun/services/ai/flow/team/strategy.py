@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 from zhenxun.services.ai.core.templates import PromptTemplate
 from zhenxun.services.ai.flow.agent.agent import Agent
-from zhenxun.services.ai.flow.agent.models import AgentRuntimeConfig
+from zhenxun.services.ai.flow.agent.models import AgentSettings
 from zhenxun.services.ai.flow.team.models import (
     CallAction,
     ConcurrentCallAction,
@@ -65,7 +65,7 @@ class BaseTeamStrategy(ABC):
         统一的团队 Leader / Planner 装配工厂。
         自动处理无状态配置以及 HITL 状态继承。
         """
-        leader_config = AgentRuntimeConfig(
+        leader_config = AgentSettings(
             stateless=team.runtime_config.stateless if team.runtime_config else True,
             enable_hitl=getattr(team.runtime_config, "leader_enable_hitl", False),
         )
@@ -86,7 +86,7 @@ class BaseTeamStrategy(ABC):
             instruction=instruction,
             model=target_model,
             tools=tools,
-            runtime_config=leader_config,
+            settings=leader_config,
         )
 
 

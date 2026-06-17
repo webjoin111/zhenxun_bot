@@ -78,10 +78,11 @@ class TeamRunner:
         agent_res = None
 
         try:
+            from zhenxun.services.ai.flow.agent.models import AgentRunProfile
             async with target_agent.run_stream(
                 prompt=action.task,
                 context=sub_context,
-                message_history=action.history,
+                profile=AgentRunProfile(message_history=action.history),
                 **(action.kwargs or {}),
             ) as stream_result:
                 async for event in stream_result.stream_events():
