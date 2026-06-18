@@ -13,11 +13,6 @@ class PriorityLifecycleType(StrEnum):
     """关闭"""
 
 
-class BotSentType(StrEnum):
-    GROUP = "GROUP"
-    PRIVATE = "PRIVATE"
-
-
 class BankHandleType(StrEnum):
     DEPOSIT = "DEPOSIT"
     """存款"""
@@ -55,8 +50,6 @@ class CacheType(StrEnum):
     """全局全部群组"""
     GROUP_PLUGIN_SETTINGS = "GROUP_PLUGIN_SETTINGS"
     """插件分群配置"""
-    GROUP_PLUGIN_SETTINGS_VIEW = "GROUP_PLUGIN_SETTINGS_VIEW"
-    """插件分群配置视图缓存（聚合 dict）"""
     USERS = "GLOBAL_ALL_USERS"
     """全部用户"""
     BAN = "GLOBAL_ALL_BAN"

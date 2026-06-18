@@ -10,7 +10,6 @@ from nonebot.adapters import Bot, Event
 from nonebot.matcher import Matcher
 from nonebot_plugin_uninfo import Uninfo
 
-from zhenxun.services.message_load import is_overloaded
 from zhenxun.utils.utils import EntityIDs
 
 from .auth.context import (
@@ -86,7 +85,6 @@ class AuthPipelineContext:
     event_cache: dict | None = None
     text: str = ""
     route_modules: set[str] | None = None
-    route_skip_checks: bool = False
     is_command_matcher: bool = False
     lane_context: AuthLaneContext | None = None
     side_effect_cache: PermissionSideEffectCache | None = None
@@ -149,7 +147,6 @@ class AuthPipelineDependencies:
     run_auth_hooks: Callable[..., Awaitable[float]]
     bot_filter: Callable[..., None]
     reserve_gold: Callable[..., Awaitable[Any]]
-    append_auth_decision_log: Callable[..., Awaitable[None]]
     insufficient_gold_error: type[Exception]
     logger: Any
     log_command: str
@@ -173,10 +170,7 @@ def apply_policy_precheck(
         hook_recorder.set("auth_core", f"policy:{decision.reason}")
     if decision.denied:
         raise_for_policy(decision, deps.policy_skip_message(decision.reason))
-    if decision.allowed and decision.reason in {
-        "hidden_plugin_skip_auth",
-        "route_miss_skip_checks",
-    }:
+    if decision.allowed and decision.reason in {"hidden_plugin_skip_auth"}:
         flags.should_return_allowed = True
         return flags
 
@@ -252,7 +246,11 @@ async def route_gate_stage(
     if deps.is_hidden_plugin(ctx.matcher):
         ctx.stop(allowed=True, effect="allow", reason="hidden_plugin")
         return
-    if ctx.event_cache is not None and ctx.event_cache.get("ban_state") is True:
+    if (
+        ctx.event_cache is not None
+        and ctx.event_cache.get("ban_state") is True
+        and not ctx.event_context.is_superuser
+    ):
         ctx.decision_effect = "skip"
         ctx.decision_reason = "ban_cached"
         raise SkipPluginException("user or group banned (cached)")
@@ -260,17 +258,16 @@ async def route_gate_stage(
     if ctx.route_modules is None:
         ctx.route_modules = await deps.get_route_context(ctx.text, ctx.event_cache)
         set_route_modules(ctx.state, ctx.event_context, ctx.route_modules)
-    ctx.route_skip_checks = (
+    route_missed = (
         ctx.is_command_matcher
         and ctx.module in deps.route_modules_with_commands
         and ctx.module not in ctx.route_modules
         and not deps.matcher_has_alconna_shortcuts(type(ctx.matcher))
     )
-    if ctx.route_skip_checks:
+    if route_missed:
         if ctx.event_cache is not None:
-            ctx.event_cache["route_skip"] = True
+            ctx.event_cache["route_miss_after_native_match"] = True
         _recorder(ctx).set("route", "miss")
-        ctx.stop(allowed=True, effect="allow", reason="route_miss_skip_checks")
 
 
 async def prepare_snapshot_stage(
@@ -282,7 +279,6 @@ async def prepare_snapshot_stage(
         context=ctx.event_context,
         bot=ctx.bot,
         event_cache=ctx.event_cache,
-        route_skip_checks=ctx.route_skip_checks,
         skip_ban=ctx.skip_ban,
         hook_recorder=ctx.hook_recorder,
         state=ctx.state,
@@ -305,7 +301,6 @@ async def policy_precheck_stage(
             context=ctx.event_context,
             bot=ctx.bot,
             event_cache=ctx.event_cache,
-            route_skip_checks=ctx.route_skip_checks,
             skip_ban=ctx.skip_ban,
             hook_recorder=ctx.hook_recorder,
             state=ctx.state,
@@ -340,7 +335,6 @@ async def policy_precheck_stage(
     )
     ctx.cost_gold = await deps.resolve_cost_gold(
         prep=ctx.prep,
-        route_skip_checks=ctx.route_skip_checks,
         hook_recorder=ctx.hook_recorder,
         session=ctx.session,
     )
@@ -356,7 +350,6 @@ async def legacy_hook_adapter_stage(
         prep=prep,
         session=ctx.session,
         event_cache=ctx.event_cache,
-        route_skip_checks=ctx.route_skip_checks,
         lane_context=_lane_context(ctx),
         hook_recorder=_recorder(ctx),
         side_effect_commit=_side_effect_commit(ctx),
@@ -425,35 +418,12 @@ async def decision_log_stage(
             ctx.auth_allowed,
             None if ctx.auth_allowed else ctx.decision_reason,
         )
-    side_effect_state = commit.snapshot() if commit is not None else None
-    shadow_effect = None
-    shadow_reason = None
-    if has_deferred_commit:
-        shadow_effect = "defer"
-        shadow_reason = "side_effect_pending:" + ",".join(
-            commit.pending_kinds if commit is not None else ()
-        )
     if ctx.entered_side_effect_lock and ctx.side_effect_lock is not None:
         try:
             ctx.side_effect_lock.release()
         except Exception:
             pass
         ctx.entered_side_effect_lock = False
-    latency_ms = (time.time() - ctx.start_time) * 1000
-    await deps.append_auth_decision_log(
-        bot_id=ctx.event_context.bot_id,
-        platform=ctx.event_context.platform,
-        group_id=_entity(ctx).group_id,
-        user_id=_entity(ctx).user_id,
-        module=ctx.module,
-        effect=ctx.decision_effect or "error",
-        reason=ctx.decision_reason,
-        shadow_effect=shadow_effect,
-        shadow_reason=shadow_reason,
-        side_effect_state=side_effect_state,
-        latency_ms=latency_ms,
-        overloaded=is_overloaded(),
-    )
 
 
 def build_auth_pipeline(deps: AuthPipelineDependencies) -> AuthPipeline:

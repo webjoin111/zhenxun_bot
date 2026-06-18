@@ -12,6 +12,10 @@ T = TypeVar("T", bound=Model)
 class DataAccess(Generic[T]):
     """数据访问兼容层，根据配置保留单点缓存读取和清理能力
 
+    边界说明：DataAccess 面向普通业务查询和低频管理链路。权限检查热路径
+    必须优先使用 RuntimeCache/AuthSnapshot，避免高并发消息处理时触发
+    DB/cache-aside 读放大。
+
     新的高频运行态路径应优先使用 RuntimeCache 或 BoundedTTLCache。
     这里不再把 filter/all/create/update_or_create 结果写入通用缓存，
     create/update_or_create 只负责清理旧缓存，避免旧值残留。
@@ -142,6 +146,10 @@ class DataAccess(Generic[T]):
         返回:
             str | None: 缓存键，如果无法构建则返回None
         """
+        # 含 ORM lookup 后缀(如 channel_id__isnull / x__gte)的查询无法可靠映射到
+        # 单条主键缓存键,退化为直查 DB,避免空串与 NULL 语义混淆导致错误命中(A5)。
+        if any("__" in key for key in kwargs):
+            return None
         if isinstance(self.key_field, tuple):
             # 多字段主键
             key_parts = []

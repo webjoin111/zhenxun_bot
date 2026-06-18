@@ -40,9 +40,9 @@ class ResourceDirManager:
         """递归添加文件夹"""
         if current >= deep and deep != -1:
             return
-        path = path.resolve()
+        path = path.resolve()  # 标准化路径
         for f in os.listdir(path):
-            file = (path / f).resolve()
+            file = (path / f).resolve()  # 标准化子路径
             if file.is_dir():
                 if file not in cls.temp_path:
                     cls.temp_path.add(file)
@@ -97,6 +97,7 @@ def is_binary_file(file_path: str) -> bool:
 
     # 使用os.path.splitext高效提取扩展名
     _, ext = os.path.splitext(file_path)
+    # 去除点号并转换为小写
     ext_clean = ext.lstrip(".").lower()
 
     return ext_clean in BINARY_EXTENSIONS
@@ -183,7 +184,7 @@ def change_img_md5(path_file: str | Path) -> bool:
         bool: 是否修改成功
     """
     try:
-        with open(path_file, "a") as f:
+        with open(path_file, "a", encoding="utf-8") as f:
             f.write(str(int(time.time() * 1000)))
         return True
     except Exception as e:
@@ -257,10 +258,12 @@ def win_on_rm_error(
     try:
         os.chmod(path, stat.S_IWRITE)
     except Exception:
+        # 即使去除权限失败也继续尝试
         pass
     try:
         func(path)
     except Exception:
+        # 仍失败则记录调试日志并忽略，交由上层继续处理
         logger.debug(f"删除失败重试仍失败: {path}")
 
 
