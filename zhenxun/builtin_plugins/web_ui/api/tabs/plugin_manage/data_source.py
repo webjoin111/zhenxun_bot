@@ -34,12 +34,16 @@ class ApiDataSource:
             list[PluginInfo]: 插件数据列表
         """
         plugin_list: list[PluginInfo] = []
-        query = DbPluginInfo
+        filters = {}
         if plugin_type:
-            query = query.filter(plugin_type__in=plugin_type, load_status=True)
+            filters["plugin_type__in"] = plugin_type
         if menu_type:
-            query = query.filter(menu_type=menu_type, load_status=True)
-        plugins = await query.all()
+            filters["menu_type"] = menu_type
+        plugins = await DbPluginInfo.get_plugins(
+            load_status=True,
+            filter_parent=False,
+            **filters,
+        )
         for plugin in plugins:
             plugin_info = PluginInfo(
                 id=plugin.id,
@@ -107,10 +111,19 @@ class ApiDataSource:
         other_update_fields = set()
         updated_count = 0
         errors = []
+        modules = [item.module for item in params.updates]
+        plugin_records = await DbPluginInfo.get_plugins(
+            module__in=modules,
+            load_status=None,
+            filter_parent=False,
+        )
+        plugin_map = {plugin.module: plugin for plugin in plugin_records}
 
         for item in params.updates:
             try:
-                db_plugin = await DbPluginInfo.get(module=item.module)
+                db_plugin = plugin_map.get(item.module)
+                if db_plugin is None:
+                    raise DoesNotExist()
                 plugin_changed_other = False
                 plugin_changed_block = False
 

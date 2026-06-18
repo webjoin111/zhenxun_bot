@@ -112,7 +112,7 @@ AccessToken: PUBLIC_ZHENXUN_TEST
 |      [插件库](https://github.com/zhenxun-org/zhenxun_bot_plugins)      |   插件   |    [zhenxun-org](https://github.com/zhenxun-org)    |                 原 plugins 文件夹插件                 |
 | [插件索引库](https://github.com/zhenxun-org/zhenxun_bot_plugins_index) |   插件   |    [zhenxun-org](https://github.com/zhenxun-org)    |                    扩展插件索引库                     |
 |    [一键安装](https://github.com/soloxiaoye2022/zhenxun_bot-deploy)    |   安装   | [soloxiaoye2022](https://github.com/soloxiaoye2022) |                        第三方                         |
-|         [WebUi](https://github.com/HibiKier/zhenxun_bot_webui)         |   管理   |       [hibikier](https://github.com/HibiKier)       | 基于真寻 WebApi 的 webui 实现 [预览](#-webui界面展示) |
+|          [WebUi](https://github.com/zhenxun-org/zhenxun_bot)           |   管理   |       [hibikier](https://github.com/HibiKier)       | 基于真寻 WebApi 的 webui 实现 [预览](#-webui界面展示) |
 |  [安卓 app(WebUi)](https://github.com/YuS1aN/zhenxun_bot_android_ui)   |   安装   |         [YuS1aN](https://github.com/YuS1aN)         |                        第三方                         |
 
 </div>
@@ -121,10 +121,32 @@ AccessToken: PUBLIC_ZHENXUN_TEST
 
 - 实现了许多功能，且提供了大量功能管理命令，进行了多平台适配，兼容 nb2 商店插件
 - 拥有完善可用的 webui
-- 通过 Config 配置项将所有插件配置统计保存至 config.yaml，利于统一用户修改
+- 通过 Config 配置项将所有插件配置统一保存至 config.yaml，利于统一用户修改
 - 方便增删插件，原生 nonebot2 matcher，不需要额外修改，仅仅通过简单的配置属性就可以生成`帮助图片`和`帮助信息`
 - 提供了 cd，阻塞，每日次数等限制，仅仅通过简单的属性就可以生成一个限制，例如：`PluginCdBlock` 等
 - **更多详细请通过 [传送门](https://zhenxun-org.github.io/zhenxun_bot/) 查看文档！**
+
+## 🐣 小白整合
+
+如果你系统是 **Windows** 且不想下载 Python  
+可以使用整合包（Python3.10+zhenxun+webui）
+
+文档地址：[整合包文档](https://zhenxun-org.github.io/zhenxun_bot/beginner)
+
+<details>
+<summary>下载地址</summary>
+
+- **百度云：**  
+  https://pan.baidu.com/s/1MKGOoIgQW1qom_KT3rNhlg?pwd=t7iz
+
+- **夸克网盘：**  
+  https://pan.quark.cn/s/b4dc6cb8fb08  
+  访问码：Yi46
+
+- **Google Drive：**  
+  https://drive.google.com/drive/folders/1dcTWhPZhSt9WqLehyjF6Gj0CXQCS4OWh?usp=drive_link
+
+</details>
 
 ## 🛠️ 简单部署
 
@@ -136,11 +158,11 @@ git clone https://github.com/HibiKier/zhenxun_bot.git
 cd zhenxun_bot
 
 # 安装依赖
-pip install poetry      # 安装 poetry
-poetry install          # 安装依赖
+pip install uv          # 安装 uv
+uv sync                 # 安装依赖
 
 # 开始运行
-poetry run python bot.py
+uv run zx
 ```
 
 ## 📝 简单配置
@@ -150,7 +172,7 @@ poetry run python bot.py
 
 1.在 .env.dev 文件中填写你的机器人配置项
 
-2.在 configs/config.yaml 文件中修改你需要修改的插件配置项
+2.在 data/config.yaml 文件中修改你需要修改的插件配置项
 
 <details>
 <summary>数据库地址（DB_URL）配置说明</summary>
@@ -265,6 +287,18 @@ DB_URL 是基于 Tortoise ORM 的数据库连接字符串，用于指定项目�
 
 [Zer](https://afdian.com/u/6bccdb2a60b411ec9ad452540025c377) [爱发电用户\_HTjk](https://afdian.com/u/6c7d0208064511ec8d7b52540025c377) [shenghuo2](https://afdian.com/u/bca13286102111eda2a052540025c377) [术樱](https://afdian.com/u/414da63a09a311ec8eb752540025c377) [飞火](https://afdian.com/u/404135f48ed711ec962152540025c377) [shenqi](https://afdian.net/u/fa923a8cfe3d11eba61752540025c377) [A_Kyuu](https://afdian.net/u/b83954fc2c1211eba9eb52540025c377) [疯狂混沌](https://afdian.net/u/789a2f9200cd11edb38352540025c377) [投冥](https://afdian.net/a/144514mm) [茶喵](https://afdian.net/u/fd22382eac4d11ecbfc652540025c377) [AemokpaTNR](https://afdian.net/u/1169bb8c8a9611edb0c152540025c377) [爱发电用户\_wrxn](https://afdian.net/u/4aa03d20db4311ecb1e752540025c377) [qqw](https://afdian.net/u/b71db4e2cc3e11ebb76652540025c377) [溫一壺月光下酒](https://afdian.net/u/ad667a5c650c11ed89bf52540025c377) [伝木](https://afdian.net/u/246b80683f9511edba7552540025c377) [阿奎](https://afdian.net/u/da41f72845d511ed930d52540025c377) [醉梦尘逸](https://afdian.net/u/bc11d2683cd011ed99b552540025c377) [Abc](https://afdian.net/u/870dc10a3cd311ed828852540025c377) [本喵无敌哒](https://afdian.net/u/dffaa9005bc911ebb69b52540025c377) [椎名冬羽](https://afdian.net/u/ca1ebd64395e11ed81b452540025c377) [kaito](https://afdian.net/u/a055e20a498811eab1f052540025c377) [笑柒 XIAO_Q7](https://afdian.net/u/4696db5c529111ec84ea52540025c377) [请问一份爱多少钱](https://afdian.net/u/f57ef6602dbd11ed977f52540025c377) [咸鱼鱼鱼鱼](https://afdian.net/u/8e39b9a400e011ed9f4a52540025c377) [Kafka](https://afdian.net/u/41d66798ef6911ecbc5952540025c377) [墨然](https://afdian.net/u/8aa5874a644d11eb8a6752540025c377) [爱发电用户\_T9e4](https://afdian.net/u/2ad1bb82f3a711eca22852540025c377) [笑柒 XIAO_Q7](https://afdian.net/u/4696db5c529111ec84ea52540025c377) [noahzark](https://afdian.net/a/noahzark) [腊条](https://afdian.net/u/f739c4d69eca11eba94b52540025c377) [ze roller](https://afdian.net/u/0e599e96257211ed805152540025c377) [爱发电用户\_4jrf](https://afdian.net/u/6b2cdcc817c611ed949152540025c377) [爱发电用户\_TBsd](https://afdian.net/u/db638b60217911ed9efd52540025c377) [烟寒若雨](https://afdian.net/u/067bd2161eec11eda62b52540025c377) [ln](https://afdian.net/u/b51914ba1c6611ed8a4e52540025c377) [爱发电用户\_b9S4](https://afdian.net/u/3d8f30581a2911edba6d52540025c377) [爱发电用户\_c58s](https://afdian.net/u/a6ad8dda195e11ed9a4152540025c377) [爱发电用户\_eNr9](https://afdian.net/u/05fdb41c0c9a11ed814952540025c377) [MangataAkihi](https://github.com/Sakuracio) [炀](https://afdian.net/u/69b76e9ec77b11ec874f52540025c377) [爱发电用户\_Bc6j](https://afdian.net/u/8546be24f44111eca64052540025c377) [大魔王](https://github.com/xipesoy) [CopilotLaLaLa](https://github.com/CopilotLaLaLa) [嘿小欧](https://afdian.net/u/daa4bec4f24911ec82e552540025c377) [回忆的秋千](https://afdian.net/u/e315d9c6f14f11ecbeef52540025c377) [十年くん](https://github.com/shinianj) [哇](https://afdian.net/u/9b266244f23911eca19052540025c377) [yajiwa](https://github.com/yajiwa) [爆金币](https://afdian.net/u/0d78879ef23711ecb22452540025c377)...
 
+### 特别赞助
+
+<div align=center>
+    
+<img width="60%" src="https://edgeone.ai/media/34fe3a45-492d-4ea4-ae5d-ea1087ca7b4b.png" />
+
+[亚洲最佳CDN、边缘和安全解决方案 - Tencent EdgeOne](https://edgeone.ai/zh?from=github)
+
+**本项目 CDN 加速及安全防护由 Tencent EdgeOne 赞助**
+
+</div>
+
 ## 📜 贡献指南
 
 欢迎查看我们的 [贡献指南](CONTRIBUTING.md) 和 [行为守则](CODE_OF_CONDUCT.md) 以了解如何参与贡献。
@@ -272,12 +306,12 @@ DB_URL 是基于 Tortoise ORM 的数据库连接字符串，用于指定项目�
 ## ❔ 需要帮助？
 
 > [!TIP]
-> 发起 [issue](https://github.com/HibiKier/zhenxun_bot/issues/new/choose) 前，我们希望你能够阅读过或者了解 [提问的智慧](https://github.com/ryanhanwu/How-To-Ask-Questions-The-Smart-Way/blob/main/README-zh_CN.md)
+> 发起 [issue](https://github.com/zhenxun-org/zhenxun_bot/issues/new/choose) 前，我们希望你能够阅读过或者了解 [提问的智慧](https://github.com/ryanhanwu/How-To-Ask-Questions-The-Smart-Way/blob/main/README-zh_CN.md)
 >
 > - 善用[搜索引擎](https://www.google.com/)
 > - 查阅 issue 中是否有类似问题，如果没有请按照模板发起 issue
 
-欢迎前往 [issue](https://github.com/HibiKier/zhenxun_bot/issues/new/choose) 中提出你遇到的问题，或者加入我们的 [用户群](https://qm.qq.com/q/mRNtLSl6uc) 或 [技术群](https://qm.qq.com/q/YYYt5rkMYc)与我们联系
+欢迎前往 [issue](https://github.com/zhenxun-org/zhenxun_bot/issues/new/choose) 中提出你遇到的问题，或者加入我们的 [用户群](https://qm.qq.com/q/mRNtLSl6uc) 或 [技术群](https://qm.qq.com/q/YYYt5rkMYc)与我们联系
 
 ## 🛠️ 进度追踪
 
@@ -286,6 +320,8 @@ Project [zhenxun_bot](https://github.com/users/HibiKier/projects/2)
 ## 🌟 特别感谢
 
 首席设计师：[酥酥/coldly-ss](https://github.com/coldly-ss)
+
+LOGO 设计：[FrostN0v0](https://github.com/FrostN0v0)
 
 ## 🙏 感谢
 
@@ -326,34 +362,68 @@ Project [zhenxun_bot](https://github.com/users/HibiKier/projects/2)
   <img src="https://contrib.rocks/image?repo=HibiKier/zhenxun_bot&max=1000" alt="contributors"/>
 </a>
 
-## 📸 WebUI 界面展示
+## 📸 WebUI 界面展示（仅展示默认主题下的 pc 端）
 
 <div style="display: flex; flex-wrap: wrap; justify-content: space-between;">
-  <div style="width: 48%; margin-bottom: 10px;">
-    <img src="./docs_image/webui00.png" alt="webui00" style="width: 100%; height: auto;">
-  </div>
-  <div style="width: 48%; margin-bottom: 10px;">
-    <img src="./docs_image/webui01.png" alt="webui01" style="width: 100%; height: auto;">
-  </div>
 
-  <div style="width: 48%; margin-bottom: 10px;">
-    <img src="./docs_image/webui02.png" alt="webui02" style="width: 100%; height: auto;">
-  </div>
-  <div style="width: 48%; margin-bottom: 10px;">
-    <img src="./docs_image/webui03.png" alt="webui03" style="width: 100%; height: auto;">
-  </div>
+#### 登录界面
 
-  <div style="width: 48%; margin-bottom: 10px;">
-    <img src="./docs_image/webui04.png" alt="webui04" style="width: 100%; height: auto;">
-  </div>
-  <div style="width: 48%; margin-bottom: 10px;">
-    <img src="./docs_image/webui05.png" alt="webui05" style="width: 100%; height: auto;">
-  </div>
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-login.jpg)
 
-  <div style="width: 48%; margin-bottom: 10px;">
-    <img src="./docs_image/webui06.png" alt="webui06" style="width: 100%; height: auto;">
-  </div>
-  <div style="width: 48%; margin-bottom: 10px;">
-    <img src="./docs_image/webui07.png" alt="webui07" style="width: 100%; height: auto;">
-  </div>
+#### API 设置
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-api.jpg)
+
+#### 仪表盘
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-dashboard.jpg)
+
+#### 仪表盘（展开）
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-dashboard1.jpg)
+
+#### 控制台
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-command.jpg)
+
+#### 插件列表
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-plugin.jpg)
+
+#### 插件列表（配置项）
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-plugin1.jpg)
+
+#### 插件商店
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-store.jpg)
+
+#### 好友/群组管理
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-manage.jpg)
+
+#### 请求管理
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-manage1.jpg)
+
+#### 数据库管理
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-database.jpg)
+
+### 文件管理
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-system.jpg)
+
+### 文件管理（文本查看）
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-system1.jpg)
+
+### 文件管理（图片查看）
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-system2.jpg)
+
+### 关于
+
+![x](https://github.com/zhenxun-org/zhenxun_bot/blob/main/docs_image/pc-about.jpg)
+
 </div>

@@ -1,7 +1,5 @@
-import asyncio
 import time
 
-from nonebot.adapters import Bot
 from nonebot.matcher import Matcher
 from nonebot_plugin_alconna import At
 from nonebot_plugin_uninfo import Uninfo
@@ -9,7 +7,6 @@ from nonebot_plugin_uninfo import Uninfo
 from zhenxun.configs.config import Config
 from zhenxun.models.ban_console import BanConsole
 from zhenxun.models.plugin_info import PluginInfo
-from zhenxun.services.cache.cache_containers import CacheDict
 from zhenxun.services.cache.runtime_cache import BanMemoryCache
 from zhenxun.services.db_context import DB_TIMEOUT_SECONDS
 from zhenxun.services.log import logger
@@ -17,8 +14,9 @@ from zhenxun.utils.enum import PluginType
 from zhenxun.utils.utils import EntityIDs, get_entity_ids
 
 from .config import LOGGER_COMMAND, WARNING_THRESHOLD
+from .context import PermissionContext
 from .exception import SkipPluginException
-from .utils import freq, send_message
+from .utils import freq
 
 Config.add_plugin_config(
     "hook",
@@ -26,37 +24,6 @@ Config.add_plugin_config(
     "才不会给你发消息.",
     help="对被ban用户发送的消息",
 )
-BAN_CACHE_TTL = 2
-BAN_CACHE_TTL_POSITIVE = 30
-BAN_CACHE_TTL_NEGATIVE = 5
-
-BAN_CACHE = (
-    CacheDict("AUTH_BAN_CACHE", expire=0)
-    if max(BAN_CACHE_TTL_POSITIVE, BAN_CACHE_TTL_NEGATIVE) > 0
-    else None
-)
-
-
-def _ban_cache_key(user_id: str | None, group_id: str | None) -> str:
-    return f"{user_id or ''}:{group_id or ''}"
-
-
-def _ban_cache_get(key: str) -> int | None:
-    if not BAN_CACHE:
-        return None
-    try:
-        return BAN_CACHE[key]
-    except KeyError:
-        return None
-
-
-def _ban_cache_set(key: str, value: int) -> None:
-    if not BAN_CACHE:
-        return
-    ttl = BAN_CACHE_TTL_POSITIVE if value else BAN_CACHE_TTL_NEGATIVE
-    if ttl <= 0:
-        return
-    BAN_CACHE.set(key, value, expire=ttl)
 
 
 async def calculate_ban_time(ban_record: BanConsole | None) -> int:
@@ -189,20 +156,15 @@ async def user_handle(plugin: PluginInfo, entity: EntityIDs, session: Uninfo) ->
             and ban_result
             and freq.is_send_limit_message(plugin, entity.user_id, False)
         ):
-            try:
-                await asyncio.wait_for(
-                    send_message(
-                        session,
-                        [
-                            At(flag="user", target=entity.user_id),
-                            f"{ban_result}\n在..在 {time_str} 后才会理你喔",
-                        ],
-                        entity.user_id,
-                    ),
-                    timeout=DB_TIMEOUT_SECONDS,
-                )
-            except asyncio.TimeoutError:
-                logger.error(f"发送消息超时: {entity.user_id}", LOGGER_COMMAND)
+            raise SkipPluginException(
+                "用户处于黑名单中...",
+                tip_message=[
+                    At(flag="user", target=entity.user_id),
+                    f"{ban_result}\n在..在 {time_str} 后才会理你喔",
+                ],
+                tip_check_tag=entity.user_id,
+                tip_timeout=DB_TIMEOUT_SECONDS,
+            )
         raise SkipPluginException("用户处于黑名单中...")
     finally:
         # 记录执行时间
@@ -217,16 +179,17 @@ async def user_handle(plugin: PluginInfo, entity: EntityIDs, session: Uninfo) ->
 
 async def auth_ban(
     matcher: Matcher,
-    bot: Bot,
     session: Uninfo,
     plugin: PluginInfo,
+    *,
+    context: PermissionContext | None = None,
     entity: EntityIDs | None = None,
+    is_superuser: bool = False,
 ) -> None:
     """权限检查 - ban 检查
 
     参数:
         matcher: Matcher
-        bot: Bot
         session: Uninfo
     """
     start_time = time.time()
@@ -235,28 +198,18 @@ async def auth_ban(
             return
         if not matcher.plugin_name:
             return
+        if context is not None:
+            entity = context.entity
+            is_superuser = context.is_superuser
         if entity is None:
             entity = get_entity_ids(session)
-        if entity.user_id in bot.config.superusers:
+        if is_superuser:
             return
         if entity.group_id:
-            try:
-                await asyncio.wait_for(
-                    group_handle(entity.group_id), timeout=DB_TIMEOUT_SECONDS
-                )
-            except asyncio.TimeoutError:
-                logger.error(f"群组ban检查超时: {entity.group_id}", LOGGER_COMMAND)
-                # 超时时不阻塞，继续执行
+            await group_handle(entity.group_id)
 
         if entity.user_id:
-            try:
-                await asyncio.wait_for(
-                    user_handle(plugin, entity, session),
-                    timeout=DB_TIMEOUT_SECONDS,
-                )
-            except asyncio.TimeoutError:
-                logger.error(f"用户ban检查超时: {entity.user_id}", LOGGER_COMMAND)
-                # 超时时不阻塞，继续执行
+            await user_handle(plugin, entity, session)
     finally:
         # 记录总执行时间
         elapsed = time.time() - start_time

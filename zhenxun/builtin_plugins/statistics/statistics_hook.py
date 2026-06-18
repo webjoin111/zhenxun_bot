@@ -1,5 +1,7 @@
+import asyncio
 from datetime import datetime
 
+from nonebot import get_driver
 from nonebot.adapters import Bot, Event
 from nonebot.adapters.onebot.v11 import PokeNotifyEvent
 from nonebot.matcher import Matcher
@@ -9,7 +11,6 @@ from nonebot_plugin_apscheduler import scheduler
 from nonebot_plugin_uninfo import Uninfo
 
 from zhenxun.configs.utils import PluginExtraData
-from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.statistics import Statistics
 from zhenxun.services.cache.runtime_cache import PluginInfoMemoryCache
 from zhenxun.services.log import logger
@@ -26,7 +27,35 @@ __plugin_meta__ = PluginMetadata(
     ).to_dict(),
 )
 
-TEMP_LIST = []
+STATS_BUFFER_FLUSH_SIZE = 5000
+STATS_BUFFER_MAX_RETAIN = 10000
+TEMP_LIST: list[Statistics] = []
+_STATS_FLUSH_LOCK = asyncio.Lock()
+driver = get_driver()
+
+
+async def _flush_statistics_buffer(reason: str) -> int:
+    async with _STATS_FLUSH_LOCK:
+        call_list = TEMP_LIST.copy()
+        TEMP_LIST.clear()
+        if not call_list:
+            return 0
+        try:
+            await Statistics.bulk_create(call_list)
+        except Exception as e:
+            logger.error(f"{reason}批量添加调用记录失败", "定时任务", e=e)
+            retain_count = max(STATS_BUFFER_MAX_RETAIN - len(TEMP_LIST), 0)
+            if retain_count:
+                TEMP_LIST[:0] = call_list[-retain_count:]
+            return 0
+    logger.debug(f"{reason}批量添加调用记录 {len(call_list)} 条", "定时任务")
+    return len(call_list)
+
+
+async def _append_statistics(record: Statistics) -> None:
+    TEMP_LIST.append(record)
+    if len(TEMP_LIST) >= STATS_BUFFER_FLUSH_SIZE and not _STATS_FLUSH_LOCK.locked():
+        await _flush_statistics_buffer("缓冲区触发")
 
 
 @run_postprocessor
@@ -41,18 +70,17 @@ async def _(
         """过滤除poke外的notice"""
         return
     if matcher.plugin:
-        entity = get_entity_ids(session)
         plugin = PluginInfoMemoryCache.get_by_module_path(matcher.plugin.module_name)
         if not plugin:
-            plugin = await PluginInfo.get_plugin(module_path=matcher.plugin.module_name)
-            if plugin:
-                PluginInfoMemoryCache.set_plugin(plugin)
-        if plugin and plugin.ignore_statistics:
+            # cache miss 时不查数据库，直接跳过统计，避免阻塞
             return
-        plugin_type = plugin.plugin_type if plugin else None
+        if plugin.ignore_statistics:
+            return
+        plugin_type = plugin.plugin_type
         if plugin_type == PluginType.NORMAL:
+            entity = get_entity_ids(session)
             logger.debug(f"提交调用记录: {matcher.plugin_name}...", session=session)
-            TEMP_LIST.append(
+            await _append_statistics(
                 Statistics(
                     user_id=entity.user_id,
                     group_id=entity.group_id,
@@ -68,10 +96,11 @@ async def _():
     try:
         if should_pause_tasks():
             return
-        call_list = TEMP_LIST.copy()
-        TEMP_LIST.clear()
-        if call_list:
-            await Statistics.bulk_create(call_list)
-        logger.debug(f"批量添加调用记录 {len(call_list)} 条", "定时任务")
+        await _flush_statistics_buffer("定时")
     except Exception as e:
         logger.error("定时批量添加调用记录", "定时任务", e=e)
+
+
+@driver.on_shutdown
+async def _flush_statistics_on_shutdown():
+    await _flush_statistics_buffer("关闭")

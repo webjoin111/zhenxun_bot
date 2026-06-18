@@ -4,12 +4,11 @@ from typing import Any, cast
 from zhenxun.models.group_console import GroupConsole
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.task_info import TaskInfo
-from zhenxun.services.cache import CacheRoot
 from zhenxun.services.cache.runtime_cache import (
     PluginInfoMemoryCache,
     TaskInfoMemoryCache,
 )
-from zhenxun.utils.enum import BlockType, CacheType, PluginType
+from zhenxun.utils.enum import BlockType, PluginType
 
 
 class SwitchStrategy(ABC):
@@ -103,8 +102,11 @@ class PluginStrategy(SwitchStrategy):
     async def get_all_modules(self) -> list[str]:
         return cast(
             list[str],
-            await PluginInfo.filter(plugin_type=PluginType.NORMAL).values_list(
-                "module", flat=True
+            await PluginInfo.get_plugins_values_list(
+                "module",
+                load_status=None,
+                filter_parent=False,
+                plugin_type=PluginType.NORMAL,
             ),
         )
 
@@ -132,7 +134,6 @@ class PluginStrategy(SwitchStrategy):
         await self.refresh_cache()
 
     async def refresh_cache(self) -> None:
-        await CacheRoot.invalidate_cache(CacheType.PLUGINS)
         await PluginInfoMemoryCache.refresh()
 
 
@@ -158,7 +159,7 @@ class TaskStrategy(SwitchStrategy):
         return is_su_blocked, is_norm_blocked
 
     async def get_all_modules(self) -> list[str]:
-        return cast(list[str], await TaskInfo.all().values_list("module", flat=True))
+        return await TaskInfo.get_modules(load_status=None)
 
     async def set_default_status(self, entity: TaskInfo, status: bool) -> None:
         entity.default_status = status

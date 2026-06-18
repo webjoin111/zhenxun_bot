@@ -7,14 +7,18 @@ from zhenxun.models.user_console import UserConsole
 from zhenxun.services.log import logger
 
 from .config import LOGGER_COMMAND, WARNING_THRESHOLD
+from .context import PermissionContext
 from .exception import SkipPluginException
-from .utils import send_message
 
 DEFAULT_GOLD = 100
 
 
 async def auth_cost(
-    user: UserConsole | None, plugin: PluginInfo, session: Uninfo
+    user: UserConsole | None,
+    plugin: PluginInfo,
+    session: Uninfo,
+    *,
+    context: PermissionContext | None = None,
 ) -> int:
     """检测是否满足金币条件
 
@@ -29,11 +33,15 @@ async def auth_cost(
     start_time = time.time()
 
     try:
+        if context is not None and user is None:
+            user = context.user
         user_gold = user.gold if user else DEFAULT_GOLD
         if user_gold < plugin.cost_gold:
             """插件消耗金币不足"""
-            await send_message(session, f"金币不足..该功能需要{plugin.cost_gold}金币..")
-            raise SkipPluginException(f"{plugin.name}({plugin.module}) 金币限制...")
+            raise SkipPluginException(
+                f"{plugin.name}({plugin.module}) 金币限制...",
+                tip_message=f"金币不足..该功能需要{plugin.cost_gold}金币..",
+            )
         return plugin.cost_gold
     finally:
         # 记录执行时间

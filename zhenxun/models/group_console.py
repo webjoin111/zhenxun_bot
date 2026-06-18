@@ -4,13 +4,13 @@ from typing_extensions import Self
 from tortoise import fields
 from tortoise.backends.base.client import BaseDBAsyncClient
 
-from zhenxun.configs.config import BotConfig
 from zhenxun.models.plugin_info import PluginInfo
 from zhenxun.models.task_info import TaskInfo
 from zhenxun.services.cache import CacheRoot
 from zhenxun.services.cache.runtime_cache import GroupMemoryCache
 from zhenxun.services.data_access import DataAccess
 from zhenxun.services.db_context import Model
+from zhenxun.services.db_context.schema_ops import AlterColumnType, CreateIndex
 from zhenxun.utils.enum import CacheType, DbLockType, PluginType
 
 if TYPE_CHECKING:
@@ -113,8 +113,9 @@ class GroupConsole(Model):
         """
         return cast(
             list[str],
-            await TaskInfo.filter(default_status=default_status).values_list(
-                "module", flat=True
+            await TaskInfo.get_modules(
+                default_status=default_status,
+                load_status=None,
             ),
         )
 
@@ -127,10 +128,13 @@ class GroupConsole(Model):
         """
         return cast(
             list[str],
-            await PluginInfo.filter(
+            await PluginInfo.get_plugins_values_list(
+                "module",
+                load_status=None,
+                filter_parent=False,
                 plugin_type__in=[PluginType.NORMAL, PluginType.DEPENDANT],
                 default_status=default_status,
-            ).values_list("module", flat=True),
+            ),
         )
 
     @classmethod
@@ -293,27 +297,27 @@ class GroupConsole(Model):
 
     @classmethod
     async def is_superuser_block_plugin(cls, group_id: str, module: str) -> bool:
-        group = GroupMemoryCache.get_if_ready(group_id, None)
-        if not group:
+        if group := GroupMemoryCache.get_if_ready(group_id, None):
+            return bool(
+                group.superuser_block_plugin_set
+                and module in group.superuser_block_plugin_set
+            )
+        else:
             return False
-        return bool(
-            group.superuser_block_plugin_set
-            and module in group.superuser_block_plugin_set
-        )
 
     @classmethod
     async def is_block_plugin(cls, group_id: str, module: str) -> bool:
-        group = GroupMemoryCache.get_if_ready(group_id, None)
-        if not group:
+        if group := GroupMemoryCache.get_if_ready(group_id, None):
+            return (
+                True
+                if group.block_plugin_set and module in group.block_plugin_set
+                else bool(
+                    group.superuser_block_plugin_set
+                    and module in group.superuser_block_plugin_set
+                )
+            )
+        else:
             return False
-        if group.block_plugin_set and module in group.block_plugin_set:
-            return True
-        if (
-            group.superuser_block_plugin_set
-            and module in group.superuser_block_plugin_set
-        ):
-            return True
-        return False
 
     @classmethod
     async def set_block_plugin(
@@ -397,19 +401,20 @@ class GroupConsole(Model):
     async def is_normal_block_plugin(
         cls, group_id: str, module: str, channel_id: str | None = None
     ) -> bool:
-        group = GroupMemoryCache.get_if_ready(group_id, channel_id)
-        if not group:
+        if group := GroupMemoryCache.get_if_ready(group_id, channel_id):
+            return bool(group.block_plugin_set and module in group.block_plugin_set)
+        else:
             return False
-        return bool(group.block_plugin_set and module in group.block_plugin_set)
 
     @classmethod
     async def is_superuser_block_task(cls, group_id: str, task: str) -> bool:
-        group = GroupMemoryCache.get_if_ready(group_id, None)
-        if not group:
+        if group := GroupMemoryCache.get_if_ready(group_id, None):
+            return bool(
+                group.superuser_block_task_set
+                and task in group.superuser_block_task_set
+            )
+        else:
             return False
-        return bool(
-            group.superuser_block_task_set and task in group.superuser_block_task_set
-        )
 
     @classmethod
     async def is_block_task(
@@ -421,23 +426,19 @@ class GroupConsole(Model):
                 return False
             if group.block_task_set and task in group.block_task_set:
                 return True
-            if (
+            return bool(
                 group.superuser_block_task_set
                 and task in group.superuser_block_task_set
-            ):
-                return True
-            return False
+            )
         group = GroupMemoryCache.get_if_ready(group_id, channel_id)
         if group and group.block_task_set and task in group.block_task_set:
             return True
         super_group = GroupMemoryCache.get_if_ready(group_id, None)
-        if (
+        return bool(
             super_group
             and super_group.superuser_block_task_set
             and task in super_group.superuser_block_task_set
-        ):
-            return True
-        return False
+        )
 
     @classmethod
     async def set_block_task(
@@ -515,52 +516,13 @@ class GroupConsole(Model):
 
     @classmethod
     def _run_script(cls):
-        db_type = (BotConfig.get_sql_type() or "").lower()
-
-        scripts = [
-            "ALTER TABLE group_console ADD superuser_block_plugin"
-            " Text NOT NULL DEFAULT '';",
-            "ALTER TABLE group_console ADD superuser_block_task"
-            " Text NOT NULL DEFAULT '';",
-            "CREATE INDEX idx_group_console_group_id ON group_console(group_id);",
-            (
-                "CREATE INDEX idx_group_console_group_null_channel ON "
-                "group_console(group_id) WHERE channel_id IS NULL;"
+        return [
+            CreateIndex(
+                "group_console",
+                ("group_id",),
+                name="idx_group_console_group_null_channel",
+                where="channel_id IS NULL",
             ),
+            AlterColumnType("group_console", "block_plugin", "TEXT"),
+            AlterColumnType("group_console", "block_task", "TEXT"),
         ]
-
-        if "postgres" in db_type:
-            scripts.extend(
-                [
-                    (
-                        "ALTER TABLE group_console ALTER COLUMN "
-                        "block_plugin TYPE TEXT;"
-                    ),
-                    (
-                        "ALTER TABLE group_console ALTER COLUMN "
-                        "superuser_block_plugin TYPE TEXT;"
-                    ),
-                    ("ALTER TABLE group_console ALTER COLUMN " "block_task TYPE TEXT;"),
-                    (
-                        "ALTER TABLE group_console ALTER COLUMN "
-                        "superuser_block_task TYPE TEXT;"
-                    ),
-                ]
-            )
-        elif "mysql" in db_type:
-            scripts.extend(
-                [
-                    ("ALTER TABLE group_console MODIFY COLUMN " "block_plugin TEXT;"),
-                    (
-                        "ALTER TABLE group_console MODIFY COLUMN "
-                        "superuser_block_plugin TEXT;"
-                    ),
-                    ("ALTER TABLE group_console MODIFY COLUMN " "block_task TEXT;"),
-                    (
-                        "ALTER TABLE group_console MODIFY COLUMN "
-                        "superuser_block_task TEXT;"
-                    ),
-                ]
-            )
-
-        return scripts

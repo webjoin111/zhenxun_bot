@@ -1,3 +1,4 @@
+import re
 from typing import Any, ClassVar, Generic, TypeVar, cast
 
 from zhenxun.services.cache import Cache, CacheRoot, cache_config
@@ -7,11 +8,13 @@ from zhenxun.services.log import logger
 
 T = TypeVar("T", bound=Model)
 
-cache = CacheRoot.cache_dict("DB_TEST_BAN", 10, int)
-
 
 class DataAccess(Generic[T]):
-    """数据访问层，根据配置决定是否使用缓存
+    """数据访问兼容层，根据配置保留单点缓存读取和清理能力
+
+    新的高频运行态路径应优先使用 RuntimeCache 或 BoundedTTLCache。
+    这里不再把 filter/all/create/update_or_create 结果写入通用缓存，
+    create/update_or_create 只负责清理旧缓存，避免旧值残留。
 
     使用示例:
     ```python
@@ -387,8 +390,6 @@ class DataAccess(Generic[T]):
         # 构建键参数字典
         key_parts = []
         # 从格式字符串中提取所需的字段名
-        import re
-
         field_names = re.findall(r"{([^}]+)}", cache_model.key_format)
 
         # 收集所有字段值
@@ -398,34 +399,25 @@ class DataAccess(Generic[T]):
 
         return COMPOSITE_KEY_SEPARATOR.join(key_parts)
 
-    async def _cache_items(self, data_list: list[T]) -> None:
-        """将数据列表存入缓存
-
-        参数:
-            data_list: 数据列表
-        """
-        if (
-            not data_list
-            or not self.cache_type
-            or cache_config.cache_mode == CacheMode.NONE
-        ):
+    async def _invalidate_item_cache(self, item: T, action: str) -> None:
+        if not self.cache_type or cache_config.cache_mode == CacheMode.NONE:
             return
 
         try:
-            # 遍历数据列表，将每条数据存入缓存
-            cached_count = 0
-            for item in data_list:
-                cache_key = self._build_cache_key_for_item(item)
-                if cache_key is not None:
-                    await self.cache.set(cache_key, item)
-                    cached_count += 1
-                    self._cache_stats[self.cache_type]["sets"] += 1
+            cache_key = self._build_cache_key_for_item(item)
+            if cache_key is None:
+                return
 
+            await self.cache.delete(cache_key)
+            self._cache_stats[self.cache_type]["deletes"] += 1
             logger.debug(
-                f"{self.model_cls.__name__} 批量缓存: {cached_count}/{len(data_list)}项"
+                f"{self.model_cls.__name__} {action}: 已失效兼容缓存: {cache_key}"
             )
         except Exception as e:
-            logger.error(f"{self.model_cls.__name__} 批量缓存失败", e=e)
+            logger.error(
+                f"{self.model_cls.__name__} {action}: 更新兼容缓存失败",
+                e=e,
+            )
 
     async def filter(self, *args, **kwargs) -> list[T]:
         """筛选数据
@@ -444,9 +436,6 @@ class DataAccess(Generic[T]):
             f"{self.model_cls.__name__} filter: 查询结果数量: {len(data_list)}"
         )
 
-        # 将数据存入缓存
-        await self._cache_items(data_list)
-
         return data_list
 
     async def all(self) -> list[T]:
@@ -459,9 +448,6 @@ class DataAccess(Generic[T]):
         logger.debug(f"{self.model_cls.__name__} all: 从数据库查询所有数据")
         data_list = await self.model_cls.all()
         logger.debug(f"{self.model_cls.__name__} all: 查询结果数量: {len(data_list)}")
-
-        # 将数据存入缓存
-        await self._cache_items(data_list)
 
         return data_list
 
@@ -504,24 +490,7 @@ class DataAccess(Generic[T]):
         logger.debug(f"{self.model_cls.__name__} create: 创建数据, 参数: {kwargs}")
         data = await self.model_cls.create(**kwargs)
 
-        # 如果有缓存类型，将数据存入缓存
-        if self.cache_type and cache_config.cache_mode != CacheMode.NONE:
-            try:
-                # 生成缓存键
-                cache_key = self._build_cache_key_for_item(data)
-                if cache_key is not None:
-                    # 存入缓存
-                    await self.cache.set(cache_key, data)
-                    self._cache_stats[self.cache_type]["sets"] += 1
-                    logger.debug(
-                        f"{self.model_cls.__name__} create: "
-                        f"新创建的数据已存入缓存: {cache_key}"
-                    )
-            except Exception as e:
-                logger.error(
-                    f"{self.model_cls.__name__} create: 存入缓存失败，参数: {kwargs}",
-                    e=e,
-                )
+        await self._invalidate_item_cache(data, "create")
 
         return data
 
@@ -542,18 +511,7 @@ class DataAccess(Generic[T]):
             defaults=defaults, **kwargs
         )
 
-        # 如果有缓存类型，将数据存入缓存
-        if self.cache_type and cache_config.cache_mode != CacheMode.NONE:
-            try:
-                # 生成缓存键
-                cache_key = self._build_cache_key_for_item(data)
-                if cache_key is not None:
-                    # 存入缓存
-                    await self.cache.set(cache_key, data)
-                    self._cache_stats[self.cache_type]["sets"] += 1
-                    logger.debug(f"更新或创建的数据已存入缓存: {cache_key}")
-            except Exception as e:
-                logger.error(f"存入缓存失败，参数: {kwargs}", e=e)
+        await self._invalidate_item_cache(data, "update_or_create")
 
         return data, created
 

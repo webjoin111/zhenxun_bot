@@ -3,12 +3,12 @@ from pathlib import Path
 import random
 import shutil
 
-from aiocache import cached
 import ujson as json
 
 from zhenxun.builtin_plugins.plugin_store.models import StorePluginInfo
 from zhenxun.configs.path_config import TEMP_PATH
 from zhenxun.models.plugin_info import PluginInfo
+from zhenxun.services.cache.bounded_ttl import BoundedTTLCache
 from zhenxun.services.log import logger
 from zhenxun.services.plugin_init import PluginInitManager
 from zhenxun.utils.enum import PluginType
@@ -25,6 +25,14 @@ from .config import (
     LOG_COMMAND,
 )
 from .exceptions import PluginStoreException
+
+_PLUGIN_STORE_DATA_CACHE = BoundedTTLCache[
+    str, tuple[list[StorePluginInfo], list[StorePluginInfo]]
+](
+    "PLUGIN_STORE_DATA",
+    ttl_seconds=60,
+    max_items=1,
+)
 
 
 def row_style(column: str, text: str) -> RowStyle:
@@ -45,7 +53,18 @@ def row_style(column: str, text: str) -> RowStyle:
 
 class StoreManager:
     @classmethod
-    @cached(60)
+    def _resolve_local_plugin_path(
+        cls, plugin_info: StorePluginInfo, *, is_external: bool
+    ) -> Path:
+        """将商店插件信息映射到本地插件文件/目录路径。"""
+        plugin_name = plugin_info.module
+
+        if plugin_info.is_dir:
+            return BASE_PATH / "plugins" / plugin_name
+
+        return BASE_PATH / "plugins" / f"{plugin_name}.py"
+
+    @classmethod
     async def get_data(cls) -> tuple[list[StorePluginInfo], list[StorePluginInfo]]:
         """获取插件信息数据
 
@@ -53,15 +72,22 @@ class StoreManager:
             tuple[list[StorePluginInfo], list[StorePluginInfo]]:
                 原生插件信息数据，第三方插件信息数据
         """
+        cache_key = "plugins_json"
+        if cached_data := await _PLUGIN_STORE_DATA_CACHE.get(cache_key):
+            return cached_data
+
         plugins = await RepoFileManager.get_file_content(
             DEFAULT_GITHUB_URL, "plugins.json"
         )
         extra_plugins = await RepoFileManager.get_file_content(
             EXTRA_GITHUB_URL, "plugins.json", "index"
         )
-        return [StorePluginInfo(**plugin) for plugin in json.loads(plugins)], [
-            StorePluginInfo(**plugin) for plugin in json.loads(extra_plugins)
-        ]
+        result = (
+            [StorePluginInfo(**plugin) for plugin in json.loads(plugins)],
+            [StorePluginInfo(**plugin) for plugin in json.loads(extra_plugins)],
+        )
+        await _PLUGIN_STORE_DATA_CACHE.set(cache_key, result)
+        return result
 
     @classmethod
     def version_check(cls, plugin_info: StorePluginInfo, suc_plugin: dict[str, str]):
@@ -98,13 +124,16 @@ class StoreManager:
         return suc_plugin.get(module) and plugin_info.version == suc_plugin[module]
 
     @classmethod
-    async def get_loaded_plugins(cls, *args) -> list[tuple[str, str]]:
-        """获取已加载的插件
+    async def get_installed_plugins(cls) -> dict[str, str]:
+        """获取已安装插件的模块与版本。
 
         返回:
-            list[str]: 已加载的插件
+            dict[str, str]: 模块 -> 版本
         """
-        return await PluginInfo.filter(load_status=True).values_list(*args)
+        db_plugin_list = await PluginInfo.get_plugins_values_list(
+            "module", "version", load_status=True, filter_parent=False
+        )
+        return {p[0]: (p[1] or "0.1") for p in db_plugin_list}
 
     @classmethod
     async def get_plugins_info(cls) -> list[BuildImage] | str:
@@ -115,8 +144,7 @@ class StoreManager:
         """
         plugin_list, extra_plugin_list = await cls.get_data()
         column_name = ["-", "ID", "名称", "简介", "作者", "版本", "类型"]
-        db_plugin_list = await cls.get_loaded_plugins("module", "version")
-        suc_plugin = {p[0]: (p[1] or "0.1") for p in db_plugin_list}
+        suc_plugin = await cls.get_installed_plugins()
         index = 0
         data_list = []
         extra_data_list = []
@@ -190,40 +218,75 @@ class StoreManager:
         plugin_list, extra_plugin_list = await cls.get_data()
         plugin_info = None
         is_external = False
-        db_plugin_list = await cls.get_loaded_plugins("module")
-        plugin_key = await cls._resolve_plugin_key(index_or_module)
-        for p in plugin_list:
-            if p.module == plugin_key:
-                is_external = False
-                plugin_info = p
-                break
-        for p in extra_plugin_list:
-            if p.module == plugin_key:
+        try:
+            plugin_key = await cls._resolve_plugin_key(index_or_module)
+        except PluginStoreException:
+            if not is_remove:
+                raise
+            # 移除时插件可能已不在商店列表，回退到数据库查找
+            plugin_key = None
+
+        if plugin_key is not None:
+            for p in plugin_list:
+                if p.module == plugin_key:
+                    is_external = False
+                    plugin_info = p
+                    break
+            for p in extra_plugin_list:
+                if p.module == plugin_key:
+                    is_external = True
+                    plugin_info = p
+                    break
+
+        installed_modules = set((await cls.get_installed_plugins()).keys())
+
+        if is_remove:
+            # 商店列表中找不到时，从数据库构建最小插件信息
+            if not plugin_info:
+                db_obj = await PluginInfo.get_plugin(
+                    module=index_or_module, plugin_type=PluginType.PARENT
+                ) or await PluginInfo.get_plugin(module=index_or_module)
+                if db_obj is None:
+                    db_obj = await PluginInfo.get_or_none(name=index_or_module)
+                if db_obj is None:
+                    raise PluginStoreException("插件 Module / 名称 不存在...")
+                _mp = db_obj.module_path
+                _path = BASE_PATH.parent / Path(_mp.replace(".", os.sep))
+                plugin_info = StorePluginInfo(
+                    name=db_obj.name,
+                    module=db_obj.module,
+                    module_path=_mp,
+                    description="",
+                    usage="",
+                    author=db_obj.author or "",
+                    version=db_obj.version or "0.0.0",
+                    plugin_type=db_obj.plugin_type or PluginType.NORMAL,
+                    is_dir=_path.is_dir(),
+                )
                 is_external = True
-                plugin_info = p
-                break
+            if plugin_info.module not in installed_modules:
+                raise PluginStoreException(f"插件 {plugin_info.name} 未安装，无法移除")
+            if plugin_obj := await PluginInfo.get_plugin(
+                module=plugin_info.module,
+                plugin_type=PluginType.PARENT,
+                load_status=True,
+            ):
+                plugin_info.module_path = plugin_obj.module_path
+            elif plugin_obj := await PluginInfo.get_plugin(
+                module=plugin_info.module, load_status=True
+            ):
+                plugin_info.module_path = plugin_obj.module_path
+            return plugin_info, is_external
+
         if not plugin_info:
             raise PluginStoreException(f"插件不存在: {plugin_key}")
 
-        modules = [p[0] for p in db_plugin_list]
-
-        if is_remove:
-            if plugin_info.module not in modules:
-                raise PluginStoreException(f"插件 {plugin_info.name} 未安装，无法移除")
-            if plugin_obj := await PluginInfo.get_plugin(
-                module=plugin_info.module, plugin_type=PluginType.PARENT
-            ):
-                plugin_info.module_path = plugin_obj.module_path
-            elif plugin_obj := await PluginInfo.get_plugin(module=plugin_info.module):
-                plugin_info.module_path = plugin_obj.module_path
-            return plugin_info, is_external
-
         if is_update:
-            if plugin_info.module not in modules:
+            if plugin_info.module not in installed_modules:
                 raise PluginStoreException(f"插件 {plugin_info.name} 未安装，无法更新")
             return plugin_info, is_external
 
-        if plugin_info.module in modules:
+        if plugin_info.module in installed_modules:
             raise PluginStoreException(f"插件 {plugin_info.name} 已安装，无需重复安装")
 
         return plugin_info, is_external
@@ -259,6 +322,7 @@ class StoreManager:
         plugin_info: StorePluginInfo,
         is_external: bool = False,
         source: str | None = None,
+        branch: str = "main",
     ):
         """安装插件
 
@@ -268,36 +332,43 @@ class StoreManager:
             source: 源
         """
         repo_type = RepoType.GITHUB if is_external else None
-        if source == "ali":
+        if (
+            source != "ali" and source != "git" and plugin_info.ali_url
+        ) or source == "ali":
             repo_type = RepoType.ALIYUN
         elif source == "git":
             repo_type = RepoType.GITHUB
-        else:
-            if plugin_info.ali_url:
-                repo_type = RepoType.ALIYUN
         module_path = plugin_info.module_path
         is_dir = plugin_info.is_dir
         github_url = plugin_info.github_url
         assert github_url
         replace_module_path = module_path.replace(".", "/").lstrip("/")
-        plugin_name = module_path.split(".")[-1] or plugin_info.module
+        plugin_module = plugin_info.module
         if is_dir:
             files = await RepoFileManager.list_directory_files(
-                github_url, replace_module_path, repo_type=repo_type
+                github_url, replace_module_path, branch, repo_type=repo_type
             )
         else:
             files = [RepoFileInfo(path=f"{replace_module_path}.py", is_dir=False)]
-        if not is_external:
-            target_dir = BASE_PATH
-        elif is_dir and module_path == ".":
-            target_dir = BASE_PATH / "plugins" / plugin_name
+        if is_dir:
+            target_dir = BASE_PATH / "plugins" / plugin_module
         else:
             target_dir = BASE_PATH / "plugins"
         files = [file for file in files if not file.is_dir]
-        download_files = [(file.path, target_dir / file.path) for file in files]
+        download_files: list[tuple[str, Path]] = []
+
+        for file in files:
+            src_path = file.path
+            if is_dir:
+                dst_path = target_dir / Path(src_path).relative_to(replace_module_path)
+            else:
+                dst_path = target_dir / f"{plugin_module}.py"
+
+            download_files.append((src_path, dst_path))
         result = await RepoFileManager.download_files(
             github_url,
             download_files,
+            branch,
             repo_type=repo_type,
             sparse_path=replace_module_path,
             target_dir=target_dir,
@@ -330,6 +401,7 @@ class StoreManager:
                     ("requirement.txt", requirement_path),
                     ("requirements.txt", requirements_path),
                 ],
+                branch,
                 repo_type=repo_type,
                 ignore_error=True,
             )
@@ -357,11 +429,8 @@ class StoreManager:
             str: 返回消息
         """
         plugin_info, _ = await cls.get_plugin_by_value(index_or_module, is_remove=True)
-        module_path = plugin_info.module_path
-        module = module_path.split(".")[-1]
-        path = BASE_PATH.parent / Path(module_path.replace(".", os.sep))
-        if not plugin_info.is_dir:
-            path = path.parent / f"{module}.py"
+        is_external = not plugin_info.module_path.startswith("zhenxun.")
+        path = cls._resolve_local_plugin_path(plugin_info, is_external=is_external)
         if not path.exists():
             return f"插件 {plugin_info.name} 不存在..."
         logger.debug(f"尝试移除插件 {plugin_info.name} 文件: {path}", LOG_COMMAND)
@@ -370,7 +439,14 @@ class StoreManager:
             shutil.rmtree(path, onerror=win_on_rm_error)
         else:
             path.unlink()
-        await PluginInitManager.remove(module_path)
+        await PluginInitManager.remove(plugin_info.module_path)
+        plugin_records = await PluginInfo.get_plugins(
+            load_status=None,
+            filter_parent=False,
+            module_path=plugin_info.module_path,
+        )
+        for plugin_record in plugin_records:
+            await plugin_record.delete()
         return f"插件 {plugin_info.name} 移除成功! 重启后生效"
 
     @classmethod
@@ -385,8 +461,7 @@ class StoreManager:
         """
         plugin_list, extra_plugin_list = await cls.get_data()
         all_plugin_list = plugin_list + extra_plugin_list
-        db_plugin_list = await cls.get_loaded_plugins("module", "version")
-        suc_plugin = {p[0]: (p[1] or "Unknown") for p in db_plugin_list}
+        suc_plugin = await cls.get_installed_plugins()
         filtered_data = [
             (id, plugin_info)
             for id, plugin_info in enumerate(all_plugin_list)
@@ -429,8 +504,7 @@ class StoreManager:
         """
         plugin_info, is_external = await cls.get_plugin_by_value(index_or_module, True)
         logger.info(f"尝试更新插件 {plugin_info.name}", LOG_COMMAND)
-        db_plugin_list = await cls.get_loaded_plugins("module", "version")
-        suc_plugin = {p[0]: (p[1] or "Unknown") for p in db_plugin_list}
+        suc_plugin = await cls.get_installed_plugins()
         logger.debug(f"当前插件列表: {suc_plugin}", LOG_COMMAND)
         if cls.check_version_is_new(plugin_info, suc_plugin):
             return f"插件 {plugin_info.name} 已是最新版本"
@@ -459,11 +533,10 @@ class StoreManager:
         update_success_list = []
         result = "--已更新{}个插件 {}个失败 {}个成功--"
         logger.info(f"尝试更新全部插件 {plugin_name_list}", LOG_COMMAND)
+        suc_plugin = await cls.get_installed_plugins()
         for plugin_info in all_plugin_list:
             try:
-                db_plugin_list = await cls.get_loaded_plugins("module", "version")
-                suc_plugin = {p[0]: (p[1] or "Unknown") for p in db_plugin_list}
-                if plugin_info.module not in [p[0] for p in db_plugin_list]:
+                if plugin_info.module not in suc_plugin:
                     logger.debug(
                         f"插件 {plugin_info.name}({plugin_info.module}) 未安装，跳过",
                         LOG_COMMAND,
