@@ -5,7 +5,11 @@ from zhenxun.services.ai.context.memory.manager import memory_manager
 from zhenxun.services.ai.context.memory.models import (
     MemoryConfig,
 )
-from zhenxun.services.ai.context.memory.types import MemorySlot, SessionMetadata, SlotScope
+from zhenxun.services.ai.context.memory.types import (
+    MemorySlot,
+    SessionMetadata,
+    SlotScope,
+)
 from zhenxun.services.ai.tools.core.decorators import silent, tool
 from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
 from zhenxun.services.ai.tools.models import ToolResult
@@ -89,8 +93,7 @@ class MemorySlotToolkit(BaseToolkit):
         if not slot:
             return ToolResult(
                 output=(
-                    f"错误：标签为 '{label}' 的槽位不存在，"
-                    "请先使用 update_slot 创建。"
+                    f"错误：标签为 '{label}' 的槽位不存在，请先使用 update_slot 创建。"
                 )
             ).as_error()
 

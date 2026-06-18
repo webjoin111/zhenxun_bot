@@ -1,6 +1,6 @@
 from collections import defaultdict
-import inspect
 from collections.abc import Awaitable, Callable
+import inspect
 from typing import Annotated, Any, ClassVar, cast
 
 from nonebot.adapters import Bot, Event
@@ -310,7 +310,9 @@ class DependencyInjector:
         """统一执行带有依赖注入的函数 (支持同步/异步)"""
         sig = inspect.signature(func)
         resolved_kwargs = await cls.resolve_all(sig, call_kwargs, context)
-        filtered_kwargs = {k: v for k, v in resolved_kwargs.items() if k in sig.parameters}
+        filtered_kwargs = {
+            k: v for k, v in resolved_kwargs.items() if k in sig.parameters
+        }
 
         if is_coroutine_callable(func):
             return await cast(Callable[..., Awaitable[Any]], func)(**filtered_kwargs)

@@ -1,6 +1,5 @@
-from functools import reduce
 import types
-from typing import Any, Generic, Literal, Union, cast, get_args, get_origin
+from typing import Any, Generic, Union, cast, get_origin
 
 import json_repair
 from nonebot.compat import type_validate_json

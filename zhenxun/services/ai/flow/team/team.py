@@ -333,6 +333,13 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
                 else ConcurrencyPolicy.QUEUE
             )
 
+        from zhenxun.services.ai.utils.runtime_utils import ContextUtils
+        lock_id = ContextUtils.extract_concurrency_lock_id(
+            context,
+            getattr(self.runtime_config, "concurrency_scope", None),
+            context.session_id or "default_session",
+        )
+
         async def _execution_task():
             from zhenxun.services.ai.run.models import CancellationToken
             from zhenxun.services.ai.run.session import session_manager
@@ -343,6 +350,7 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
             try:
                 async with session_manager.apply_concurrency_policy(
                     session_id=context.session_id or "default_session",
+                    lock_id=lock_id,
                     policy=policy,
                     cancel_token=cancel_token,
                 ):

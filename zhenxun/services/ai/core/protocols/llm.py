@@ -3,11 +3,6 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
-from zhenxun.services.ai.core.options import (
-    GenerationConfig,
-    LLMEmbeddingConfig,
-    TTSConfig,
-)
 from zhenxun.services.ai.core.messages import (
     AudioResponse,
     EmbedBatch,
@@ -16,6 +11,11 @@ from zhenxun.services.ai.core.messages import (
     LLMResponse,
 )
 from zhenxun.services.ai.core.models import ModelCapabilities, ModelDetail, ToolChoice
+from zhenxun.services.ai.core.options import (
+    GenerationConfig,
+    LLMEmbeddingConfig,
+    TTSConfig,
+)
 
 if TYPE_CHECKING:
     from zhenxun.services.ai.run.models import CancellationToken

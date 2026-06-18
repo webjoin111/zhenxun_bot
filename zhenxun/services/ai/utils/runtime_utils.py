@@ -106,3 +106,21 @@ class ContextUtils:
 
             return PlatformUtils.get_platform(bot)
         return "unknown"
+
+    @staticmethod
+    def extract_concurrency_lock_id(
+        context: Any, scope: Any, default_session_id: str
+    ) -> str:
+        from zhenxun.services.ai.flow.base import ConcurrencyScope
+        scope = scope or ConcurrencyScope.GROUP
+        if scope == ConcurrencyScope.GLOBAL:
+            return "lock_global"
+        elif scope == ConcurrencyScope.GROUP:
+            gid = ContextUtils.extract_group_id(getattr(context, "deps", None))
+            uid = ContextUtils.extract_user_id(getattr(context, "deps", None))
+            return f"lock_group_{gid}" if gid else f"lock_user_{uid}"
+        elif scope == ConcurrencyScope.USER:
+            uid = ContextUtils.extract_user_id(getattr(context, "deps", None))
+            return f"lock_user_{uid}" if uid else "lock_default_user"
+        else:
+            return f"lock_session_{default_session_id}"

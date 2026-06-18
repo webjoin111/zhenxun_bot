@@ -30,6 +30,14 @@ class SessionInfo(BaseModel):
     )
 
 
+class LockContext(BaseModel):
+    """并发锁的执行追踪器（解决 INTERRUPT 需要跨 Session 取消任务的问题）"""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    active_task: Any | None = None
+    cancel_token: CancellationToken | None = None
+
+
 class AgentSessionManager:
     """
     Agent 会话状态管理器。
@@ -40,6 +48,7 @@ class AgentSessionManager:
         self._sessions: dict[str, SessionInfo] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._exec_locks: dict[str, asyncio.Lock] = {}
+        self._lock_contexts: dict[str, LockContext] = {}
 
     def _get_lock(self, session_id: str) -> asyncio.Lock:
         if session_id not in self._locks:
@@ -55,6 +64,7 @@ class AgentSessionManager:
     async def apply_concurrency_policy(
         self,
         session_id: str,
+        lock_id: str,
         policy: ConcurrencyPolicy,
         cancel_token: CancellationToken,
     ):
@@ -63,29 +73,28 @@ class AgentSessionManager:
             yield
             return
 
-        exec_lock = self._get_exec_lock(session_id)
+        exec_lock = self._get_exec_lock(lock_id)
+        lock_ctx = self._lock_contexts.setdefault(lock_id, LockContext())
 
         if policy == ConcurrencyPolicy.REJECT:
             if exec_lock.locked():
                 raise ConcurrencyRejectException(
-                    f"会话 {session_id} 正忙，新请求被拒绝。"
+                    f"并发域 {lock_id} 正忙，新请求被拒绝。"
                 )
 
         elif policy == ConcurrencyPolicy.INTERRUPT:
             if exec_lock.locked():
-                session = await self.get(session_id)
-                if session:
-                    if session.cancel_token:
-                        session.cancel_token.cancel()
-                    if session.active_task and not session.active_task.done():
-                        session.active_task.cancel()
+                if lock_ctx.cancel_token:
+                    lock_ctx.cancel_token.cancel()
+                if lock_ctx.active_task and not lock_ctx.active_task.done():
+                    lock_ctx.active_task.cancel()
 
         elif policy == ConcurrencyPolicy.QUEUE:
             if exec_lock.locked():
                 from zhenxun.services.log import logger
 
                 logger.info(
-                    f"⏳ [并发控制] 会话 {session_id} 正忙，"
+                    f"⏳ [并发控制] 锁域 {lock_id} 被占用，"
                     "新请求已进入后台等待队列 (QUEUE)..."
                 )
 
@@ -93,11 +102,16 @@ class AgentSessionManager:
             session = await self.get_or_create(session_id)
             session.active_task = asyncio.current_task()
             session.cancel_token = cancel_token
+
+            lock_ctx.active_task = asyncio.current_task()
+            lock_ctx.cancel_token = cancel_token
             try:
                 yield
             finally:
                 session.active_task = None
                 session.cancel_token = None
+                lock_ctx.active_task = None
+                lock_ctx.cancel_token = None
 
     async def get_or_create(self, session_id: str) -> SessionInfo:
         async with self._get_lock(session_id):

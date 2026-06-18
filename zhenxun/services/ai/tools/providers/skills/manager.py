@@ -172,7 +172,7 @@ class SkillManager:
     async def resolve_mixed_skills(
         self, skills: Sequence[Any], namespace: str | None = None
     ) -> list[Skill]:
-        """统一解析混合类型的技能列表 (str ID, Path 路径, Skill 实例, SkillSource 描述符)"""
+        """统一解析混合类型的技能列表(str, Path, Skill, SkillSource)"""
         caller_namespace = namespace or infer_plugin_namespace()
 
         resolved = []

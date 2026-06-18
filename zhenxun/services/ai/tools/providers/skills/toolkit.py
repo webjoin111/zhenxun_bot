@@ -96,9 +96,17 @@ class SkillSandboxExecutionMixin:
         ).strip()
 
         if getattr(result, "is_timeout", False) or result.exit_code == -1:
-            final_output = f"""🚨 终端命令执行发生严重系统异常或超时被强杀\n(Exit Code: {result.exit_code})！\n这通常意味着网络不通、下载数据过大耗时太长，或沙箱环境崩溃。输出为空。"""
+            final_output = (
+                f"🚨 终端命令执行发生严重系统异常或超时被强杀\n"
+                f"(Exit Code: {result.exit_code})！\n"
+                "这通常意味着网络不通、下载数据过大耗时太长，"
+                "或沙箱环境崩溃。输出为空。"
+            )
         elif result.exit_code != 0:
-            final_output = f"""❌ 终端命令执行失败 (Exit Code: {result.exit_code})。\n输出日志:\n{output or "无日志输出"}"""
+            final_output = (
+                f"❌ 终端命令执行失败 (Exit Code: {result.exit_code})。\n"
+                f"输出日志:\n{output or '无日志输出'}"
+            )
         else:
             final_output = output or "✅ 执行成功 (无控制台输出)。"
 

@@ -71,7 +71,7 @@ class UrlContextTool(ServerSideTool):
 class Native:
     """
     云端原生工具命名空间工厂 (Namespace Factory)。
-    
+
     为开发者提供统一的云端内置工具调用入口，享受顶级 IDE 补全体验。
     此类工具仅会向大模型提供描述，物理执行发生在各大模型厂商的服务端。
     """
@@ -127,4 +127,3 @@ class Native:
         原生 URL 上下文拉取工具。
         """
         return UrlContextTool()
-

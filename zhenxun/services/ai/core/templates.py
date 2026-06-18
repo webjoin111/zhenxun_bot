@@ -67,7 +67,8 @@ class PromptTemplate(Generic[AgentDepsT]):
             collisions = set(flat_deps.keys()) & set(context.state.keys())
             if collisions:
                 logger.warning(
-                    f"Prompt 模板变量发生名称冲突: {collisions}。`state` 已覆盖 `deps` 中的同名变量。"
+                    f"Prompt 模板变量发生名称冲突: {collisions}。"
+                    "`state` 已覆盖 `deps` 中的同名变量。"
                     "建议在模板中使用安全隔离对象获取（如 {{ ctx_state.xxx }}）。"
                 )
             vars_dict.update(context.state)

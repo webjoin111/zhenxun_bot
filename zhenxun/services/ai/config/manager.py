@@ -8,6 +8,7 @@ from zhenxun.utils.pydantic_compat import model_dump
 
 from .models import DebugLogOptions, LLMConfig, ProviderConfig
 
+
 def get_ai_config():
     """获取 AI 配置组"""
     return Config.get("AI")
@@ -225,10 +226,7 @@ def register_llm_configs():
         "AI",
         "provider_settings",
         model_dump(llm_config.provider_settings),
-        help=(
-            "厂商专属高级设置。\n"
-            "包含各厂商全局的特有策略开关"
-        ),
+        help=("厂商专属高级设置。\n包含各厂商全局的特有策略开关"),
         type=dict,
     )
 
@@ -351,9 +349,7 @@ def set_default_model(task: str, provider_model_name: str | None) -> bool:
     current_defaults = ai_config.get("default_models", {})
     current_defaults[task] = provider_model_name
 
-    Config.set_config(
-        "AI", "default_models", current_defaults, auto_save=True
-    )
+    Config.set_config("AI", "default_models", current_defaults, auto_save=True)
 
     if provider_model_name:
         logger.info(f"任务 {task} 的默认模型已设置为: {provider_model_name}")
