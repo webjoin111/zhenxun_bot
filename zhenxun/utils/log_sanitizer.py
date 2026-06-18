@@ -15,8 +15,6 @@ def _truncate_base64_string(value: str, threshold: int = 256) -> str:
         prefix = next((p for p in prefixes if value.startswith(p)), "base64")
         return f"[{prefix}_data_omitted_len={len(value)}]"
 
-    # 清理嵌入在普通文本中的超长 base64/data URI，
-    # 例如: "声音 -> base64://AAAA..."
     embedded_patterns = (
         (re.compile(r"base64://[A-Za-z0-9+/=\s]{80,}"), "base64"),
         (
@@ -31,12 +29,6 @@ def _truncate_base64_string(value: str, threshold: int = 256) -> str:
                 value,
             )
 
-    if len(value) > 1000:
-        return f"[long_string_omitted_len={len(value)}] {value[:20]}...{value[-20:]}"
-
-    if len(value) > 2000:
-        return f"[long_string_omitted_len={len(value)}] {value[:50]}...{value[-20:]}"
-
     return value
 
 
@@ -50,10 +42,26 @@ def _truncate_vector_list(vector: list, threshold: int = 10) -> list:
 def _recursive_sanitize_any(obj: Any) -> Any:
     """递归清洗任何对象中的长字符串"""
     if isinstance(obj, dict):
-        return {k: _recursive_sanitize_any(v) for k, v in obj.items()}
+        sanitized_dict = {}
+        for k, v in obj.items():
+            if (
+                k in ("data", "b64_json", "inlineData", "image_base64", "b64_data")
+                and isinstance(v, str)
+                and len(v) > 512
+            ):
+                sanitized_dict[k] = f"[raw_base64_data_omitted_key={k}_len={len(v)}]"
+            else:
+                sanitized_dict[k] = _recursive_sanitize_any(v)
+        return sanitized_dict
     elif isinstance(obj, list):
         return [_recursive_sanitize_any(v) for v in obj]
     elif isinstance(obj, str):
+        if len(obj) > 2048 and set(obj).issubset(
+            set(
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\r\n\t"
+            )
+        ):
+            return f"[heuristic_base64_omitted_len={len(obj)}]"
         return _truncate_base64_string(obj)
     return obj
 
@@ -114,10 +122,47 @@ def _sanitize_nonebot_message(message: Message) -> Message:
 
 def _sanitize_openai_response(response_json: dict) -> dict:
     """净化OpenAI兼容API的响应体。"""
+    from zhenxun.services.ai.config import (
+        DebugLogOptions,
+        get_llm_config,
+    )
+
+    debug_conf = get_llm_config().debug_log
+    if isinstance(debug_conf, bool):
+        debug_conf = DebugLogOptions(
+            show_tools=debug_conf, show_schema=debug_conf, show_safety=debug_conf
+        )
+
     try:
-        sanitized_json = copy.deepcopy(response_json)
+        sanitized_json = _recursive_sanitize_any(copy.deepcopy(response_json))
+
+        if "tools" in sanitized_json and not debug_conf.show_tools:
+            tools = sanitized_json["tools"]
+            if isinstance(tools, list):
+                tool_names = []
+                for t in tools:
+                    if isinstance(t, dict):
+                        name = None
+                        if "function" in t and isinstance(t["function"], dict):
+                            name = t["function"].get("name")
+                        if not name and "name" in t:
+                            name = t.get("name")
+                        if not name and "type" in t:
+                            name = t.get("type")
+                        tool_names.append(name or "unknown")
+                sanitized_json["tools"] = (
+                    f"<{len(tool_names)} tools hidden: {', '.join(tool_names)}>"
+                )
+
+        if not debug_conf.show_safety:
+            for safety_key in ("content_filters", "prompt_annotations"):
+                if safety_key in sanitized_json:
+                    sanitized_json[safety_key] = "<Safety Ratings Hidden>"
+
         if "choices" in sanitized_json and isinstance(sanitized_json["choices"], list):
             for choice in sanitized_json["choices"]:
+                if not debug_conf.show_safety and "content_filter_results" in choice:
+                    choice["content_filter_results"] = "<Safety Ratings Hidden>"
                 if "message" in choice and isinstance(choice["message"], dict):
                     message = choice["message"]
                     if "images" in message and isinstance(message["images"], list):
@@ -160,6 +205,14 @@ def _sanitize_openai_response(response_json: dict) -> dict:
                             image_url = part.get("image_url")
                             if isinstance(image_url, str):
                                 part["image_url"] = _truncate_base64_string(image_url)
+        if "output" in sanitized_json and isinstance(sanitized_json["output"], list):
+            for item in sanitized_json["output"]:
+                if isinstance(item, dict) and "encrypted_content" in item:
+                    content_val = item["encrypted_content"]
+                    if isinstance(content_val, str) and len(content_val) > 64:
+                        item["encrypted_content"] = (
+                            f"[encrypted_content_omitted_len={len(content_val)}]"
+                        )
         return sanitized_json
     except Exception:
         return response_json
@@ -167,7 +220,7 @@ def _sanitize_openai_response(response_json: dict) -> dict:
 
 def _sanitize_openai_request(body: dict) -> dict:
     """净化OpenAI兼容API的请求体，主要截断图片base64。"""
-    from zhenxun.services.llm.config.providers import (
+    from zhenxun.services.ai.config import (
         DebugLogOptions,
         get_llm_config,
     )
@@ -191,6 +244,8 @@ def _sanitize_openai_request(body: dict) -> dict:
                             name = t["function"].get("name")
                         if not name and "name" in t:
                             name = t.get("name")
+                        if not name and "type" in t:
+                            name = t.get("type")
                         tool_names.append(name or "unknown")
                 sanitized_json["tools"] = (
                     f"<{len(tool_names)} tools hidden: {', '.join(tool_names)}>"
@@ -212,11 +267,26 @@ def _sanitize_openai_request(body: dict) -> dict:
 
 def _sanitize_gemini_response(response_json: dict) -> dict:
     """净化Gemini API的响应体，处理文本和图片生成两种格式。"""
-    from zhenxun.services.llm.config.providers import get_llm_config
+    from zhenxun.services.ai.config import (
+        DebugLogOptions,
+        get_llm_config,
+    )
 
-    debug_mode = get_llm_config().debug_log
+    debug_conf = get_llm_config().debug_log
+    if isinstance(debug_conf, bool):
+        debug_conf = DebugLogOptions(
+            show_tools=debug_conf, show_schema=debug_conf, show_safety=debug_conf
+        )
+
     try:
-        sanitized_json = copy.deepcopy(response_json)
+        sanitized_json = _recursive_sanitize_any(copy.deepcopy(response_json))
+
+        if "thoughtSignature" in sanitized_json:
+            sig = sanitized_json["thoughtSignature"]
+            if isinstance(sig, str) and len(sig) > 64:
+                sanitized_json["thoughtSignature"] = (
+                    f"[signature_omitted_len={len(sig)}]"
+                )
 
         def _process_candidates(candidates_list: list):
             """辅助函数，用于处理任何 candidates 列表。"""
@@ -235,13 +305,21 @@ def _sanitize_gemini_response(response_json: dict) -> dict:
                                     content["parts"][i]["inlineData"]["data"] = (
                                         f"[base64_data_omitted_len={len(data)}]"
                                     )
-                            if "thoughtSignature" in part:
-                                signature = part.get("thoughtSignature", "")
-                                if isinstance(signature, str) and len(signature) > 256:
-                                    content["parts"][i]["thoughtSignature"] = (
+                            if (
+                                "thoughtSignature" in part
+                                or "thought_signature" in part
+                            ):
+                                sig_key = (
+                                    "thoughtSignature"
+                                    if "thoughtSignature" in part
+                                    else "thought_signature"
+                                )
+                                signature = part.get(sig_key, "")
+                                if isinstance(signature, str) and len(signature) > 64:
+                                    content["parts"][i][sig_key] = (
                                         f"[signature_omitted_len={len(signature)}]"
                                     )
-                if not debug_mode and isinstance(candidate, dict):
+                if not debug_conf.show_safety and isinstance(candidate, dict):
                     if "safetyRatings" in candidate:
                         candidate["safetyRatings"] = "<Safety Ratings Hidden>"
 
@@ -261,7 +339,7 @@ def _sanitize_gemini_response(response_json: dict) -> dict:
                 if "values" in embedding and isinstance(embedding["values"], list):
                     embedding["values"] = _truncate_vector_list(embedding["values"])
 
-        if not debug_mode and "promptFeedback" in sanitized_json:
+        if not debug_conf.show_safety and "promptFeedback" in sanitized_json:
             prompt_feedback = sanitized_json.get("promptFeedback") or {}
             if isinstance(prompt_feedback, dict) and "safetyRatings" in prompt_feedback:
                 prompt_feedback["safetyRatings"] = "<Safety Ratings Hidden>"
@@ -274,7 +352,7 @@ def _sanitize_gemini_response(response_json: dict) -> dict:
 
 def _sanitize_gemini_request(body: dict) -> dict:
     """净化Gemini API的请求体，进行结构转换和总结。"""
-    from zhenxun.services.llm.config.providers import (
+    from zhenxun.services.ai.config import (
         DebugLogOptions,
         get_llm_config,
     )
@@ -286,21 +364,20 @@ def _sanitize_gemini_request(body: dict) -> dict:
         )
 
     try:
-        sanitized_body = copy.deepcopy(body)
+        sanitized_body = _recursive_sanitize_any(copy.deepcopy(body))
         if "tools" in sanitized_body and not debug_conf.show_tools:
-            tool_summary = []
+            tool_names = []
             for tool_group in sanitized_body["tools"]:
-                if (
-                    isinstance(tool_group, dict)
-                    and "functionDeclarations" in tool_group
-                ):
-                    declarations = tool_group["functionDeclarations"]
-                    if isinstance(declarations, list):
-                        for func in declarations:
-                            if isinstance(func, dict):
-                                tool_summary.append(func.get("name", "unknown"))
+                if isinstance(tool_group, dict):
+                    for key, value in tool_group.items():
+                        if key == "functionDeclarations" and isinstance(value, list):
+                            for func in value:
+                                if isinstance(func, dict):
+                                    tool_names.append(func.get("name", "unknown"))
+                        else:
+                            tool_names.append(key)
             sanitized_body["tools"] = (
-                f"<{len(tool_summary)} functions hidden: {', '.join(tool_summary)}>"
+                f"<{len(tool_names)} tools hidden: {', '.join(tool_names)}>"
             )
 
         if not debug_conf.show_safety and "safetySettings" in sanitized_body:
@@ -368,7 +445,7 @@ def sanitize_for_logging(data: Any, context: str | None = None) -> Any:
     if context == "nonebot_message":
         if isinstance(data, Message):
             return _sanitize_nonebot_message(data)
-    elif context == "openai_response":
+    elif context in ("openai_response", "openai_responses_response"):
         if isinstance(data, dict):
             return _sanitize_openai_response(data)
     elif context == "gemini_response":
@@ -377,7 +454,7 @@ def sanitize_for_logging(data: Any, context: str | None = None) -> Any:
     elif context == "gemini_request":
         if isinstance(data, dict):
             return _sanitize_gemini_request(data)
-    elif context == "openai_request":
+    elif context in ("openai_request", "openai_responses_request"):
         if isinstance(data, dict):
             return _sanitize_openai_request(data)
     elif context == "ui_html":

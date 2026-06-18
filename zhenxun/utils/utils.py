@@ -40,9 +40,9 @@ class ResourceDirManager:
         """递归添加文件夹"""
         if current >= deep and deep != -1:
             return
-        path = path.resolve()  # 标准化路径
+        path = path.resolve()
         for f in os.listdir(path):
-            file = (path / f).resolve()  # 标准化子路径
+            file = (path / f).resolve()
             if file.is_dir():
                 if file not in cls.temp_path:
                     cls.temp_path.add(file)
@@ -97,7 +97,6 @@ def is_binary_file(file_path: str) -> bool:
 
     # 使用os.path.splitext高效提取扩展名
     _, ext = os.path.splitext(file_path)
-    # 去除点号并转换为小写
     ext_clean = ext.lstrip(".").lower()
 
     return ext_clean in BINARY_EXTENSIONS
@@ -258,10 +257,55 @@ def win_on_rm_error(
     try:
         os.chmod(path, stat.S_IWRITE)
     except Exception:
-        # 即使去除权限失败也继续尝试
         pass
     try:
         func(path)
     except Exception:
-        # 仍失败则记录调试日志并忽略，交由上层继续处理
         logger.debug(f"删除失败重试仍失败: {path}")
+
+
+def infer_plugin_namespace(
+    default: str = "global",
+) -> str:
+    """
+    智能推断调用者所在的插件命名空间。
+    """
+    import inspect
+
+    from nonebot.plugin import get_plugin_by_module_name
+    from nonebot.plugin.manager import _current_plugin
+
+    plugin = _current_plugin.get()
+    if plugin:
+        return plugin.name
+
+    try:
+        stack = inspect.stack()
+        for frame_info in stack[1:]:
+            module = inspect.getmodule(frame_info.frame)
+            if not module:
+                continue
+            m_name = module.__name__
+
+            if m_name.startswith("zhenxun.services.") or m_name.startswith(
+                "zhenxun.utils."
+            ):
+                continue
+
+            plugin = get_plugin_by_module_name(m_name)
+            if plugin:
+                return plugin.name
+
+            parts = m_name.split(".")
+            for keyword in ("plugins", "builtin_plugins"):
+                if keyword in parts:
+                    idx = parts.index(keyword)
+                    if len(parts) > idx + 1:
+                        return parts[idx + 1]
+
+            continue
+
+    except Exception:
+        pass
+
+    return default

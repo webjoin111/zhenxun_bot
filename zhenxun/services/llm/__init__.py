@@ -1,120 +1,131 @@
 """
-LLM 服务模块 - 公共 API 入口
+向下兼容门面 (Facade)
 
-提供统一的 AI 服务调用接口、核心类型定义和模型管理功能。
+利用 sys.modules 魔法，将对 zhenxun.services.llm 及其子模块的导入
+无缝重定向到 zhenxun.services.ai.llm 下，避免破坏任何第三方插件。
+同时在此提供最常用的类导出，作为 LLM 服务的统一入口。
 """
 
-from .api import (
-    chat,
-    code,
-    create_image,
-    embed,
-    embed_documents,
-    embed_query,
-    generate,
-    generate_structured,
-    search,
-)
-from .config import (
-    CommonOverrides,
-    GenConfigBuilder,
-    LLMGenerationConfig,
-    register_llm_configs,
+import sys
+from types import ModuleType
+
+from zhenxun.services import logger
+
+logger.warning(
+    "zhenxun.services.llm 已被重构迁移至 zhenxun.services.ai.llm，"
+    "为了更好的性能和兼容性，请及时更新您的插件导入路径。"
 )
 
-register_llm_configs()
-from .api import ModelName
-from .manager import (
-    clear_model_cache,
-    get_cache_stats,
-    get_global_default_model_name,
+import zhenxun.services.ai.core
+import zhenxun.services.ai.core.options
+import zhenxun.services.ai.core.exceptions
+import zhenxun.services.ai.core.messages
+import zhenxun.services.ai.core.models
+import zhenxun.services.ai.core.protocols
+import zhenxun.services.ai.llm
+import zhenxun.services.ai.llm.capabilities
+import zhenxun.services.ai.llm.config
+import zhenxun.services.ai.llm.config.generation
+import zhenxun.services.ai.tools
+
+zhenxun.services.ai.llm.config.LLMGenerationConfig = (  # type: ignore
+    zhenxun.services.ai.core.options.GenerationConfig
+)
+
+_legacy_types_module = ModuleType("zhenxun.services.llm.types")
+for _mod in (
+    zhenxun.services.ai.core.options,
+    zhenxun.services.ai.core.exceptions,
+    zhenxun.services.ai.core.messages,
+    zhenxun.services.ai.core.models,
+):
+    for _name in dir(_mod):
+        if not _name.startswith("_"):
+            setattr(_legacy_types_module, _name, getattr(_mod, _name))
+
+sys.modules["zhenxun.services.llm.types"] = _legacy_types_module
+sys.modules["zhenxun.services.llm.types.models"] = zhenxun.services.ai.core.models
+sys.modules["zhenxun.services.llm.types.protocols"] = zhenxun.services.ai.core.protocols
+sys.modules["zhenxun.services.llm.types.exceptions"] = (
+    zhenxun.services.ai.core.exceptions
+)
+sys.modules["zhenxun.services.llm.types.capabilities"] = (
+    zhenxun.services.ai.llm.capabilities
+)
+
+prefix_old = "zhenxun.services.llm"
+prefix_new = "zhenxun.services.ai.llm"
+
+for module_name, module_obj in list(sys.modules.items()):
+    if module_name.startswith(prefix_new):
+        old_module_name = module_name.replace(prefix_new, prefix_old, 1)
+        if old_module_name not in sys.modules:
+            sys.modules[old_module_name] = module_obj
+
+sys.modules["zhenxun.services.llm.tools"] = zhenxun.services.ai.tools
+
+
+class CommonOverrides:
+    """向下兼容垫片：由于该类已被废弃，此处提供空实现以防止旧插件导入报错。"""
+
+    @staticmethod
+    def _fallback(*args, **kwargs):
+        from zhenxun.services.ai.llm.config.generation import IntentBuilder
+
+        return IntentBuilder().build()
+
+    gemini_json = _fallback
+    gemini_2_5_thinking = _fallback
+    gemini_3_thinking = _fallback
+    gemini_structured = _fallback
+    gemini_safe = _fallback
+    gemini_code_execution = _fallback
+    gemini_grounding = _fallback
+    gemini_nano_banana = _fallback
+    gemini_high_res = _fallback
+
+
+from zhenxun.services.ai.core.options import GenerationConfig, OutputFormatConfig
+
+
+class OutputConfig(OutputFormatConfig):
+    """向下兼容垫片：旧版 OutputConfig 等价于 OutputFormatConfig。"""
+
+
+AIConfig = GenerationConfig
+LLMGenerationConfig = GenerationConfig
+zhenxun.services.ai.llm.config.generation.OutputConfig = OutputConfig  # type: ignore
+from zhenxun.services.ai.llm import *  # noqa: F403
+from zhenxun.services.ai.llm.manager import (
+    get_default_model,
     get_model_instance,
     list_available_models,
     list_embedding_models,
-    list_model_identifiers,
     set_global_default_model_name,
 )
-from .memory import (
-    AIConfig,
-    BaseMemory,
-    MemoryProcessor,
-    set_default_memory_backend,
-)
-from .session import AI
-from .tools import RunContext, ToolInvoker, function_tool, tool_provider_manager
-from .types import (
-    EmbeddingTaskType,
-    LLMContentPart,
-    LLMErrorCode,
-    LLMException,
-    LLMMessage,
-    LLMResponse,
-    ModelDetail,
-    ModelInfo,
-    ModelProvider,
-    ResponseFormat,
-    TaskType,
-    ToolCategory,
-    ToolMetadata,
-    UsageInfo,
-)
-from .types.models import (
-    GeminiCodeExecution,
-    GeminiGoogleSearch,
-    GeminiUrlContext,
-)
-from .utils import create_multimodal_message, message_to_unimessage, unimsg_to_llm_parts
+from zhenxun.services.ai.message_builder import MessageBuilder
+
+message_to_unimessage = MessageBuilder.message_to_unimessage
+unimsg_to_llm_parts = MessageBuilder.unimsg_to_llm_parts
+from zhenxun.services.ai.core.exceptions import LLMException
+from zhenxun.services.ai.core.messages import LLMMessage, LLMResponse
+from zhenxun.services.ai.tools import tool as function_tool
 
 __all__ = [
-    "AI",
     "AIConfig",
-    "BaseMemory",
     "CommonOverrides",
-    "EmbeddingTaskType",
-    "GeminiCodeExecution",
-    "GeminiGoogleSearch",
-    "GeminiUrlContext",
-    "GenConfigBuilder",
-    "LLMContentPart",
-    "LLMErrorCode",
+    "GenerationConfig",
     "LLMException",
     "LLMGenerationConfig",
     "LLMMessage",
     "LLMResponse",
-    "MemoryProcessor",
-    "ModelDetail",
-    "ModelInfo",
-    "ModelName",
-    "ModelProvider",
-    "ResponseFormat",
-    "RunContext",
-    "TaskType",
-    "ToolCategory",
-    "ToolInvoker",
-    "ToolMetadata",
-    "UsageInfo",
-    "chat",
-    "clear_model_cache",
-    "code",
-    "create_image",
-    "create_multimodal_message",
-    "embed",
-    "embed_documents",
-    "embed_query",
+    "OutputConfig",
     "function_tool",
-    "generate",
-    "generate_structured",
-    "get_cache_stats",
-    "get_global_default_model_name",
+    "get_default_model",
     "get_model_instance",
     "list_available_models",
     "list_embedding_models",
-    "list_model_identifiers",
     "message_to_unimessage",
-    "register_llm_configs",
-    "search",
-    "set_default_memory_backend",
     "set_global_default_model_name",
-    "tool_provider_manager",
     "unimsg_to_llm_parts",
 ]

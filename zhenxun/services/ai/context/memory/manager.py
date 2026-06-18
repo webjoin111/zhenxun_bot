@@ -1,0 +1,401 @@
+from collections.abc import Callable
+from typing import Any, Literal, cast
+
+from zhenxun.services.ai.context.memory.interfaces import (
+    BaseChatContext,
+    BaseSlotContext,
+)
+from zhenxun.services.ai.context.memory.models import MemoryConfig
+from zhenxun.services.ai.context.memory.storage import (
+    InMemoryChatContext,
+    InMemorySlotContext,
+    MemoryScope,
+)
+from zhenxun.services.ai.context.memory.types import MemoryQuery, SessionMetadata
+from zhenxun.services.ai.context.rag.backends import Embedder, StorageBackend
+from zhenxun.services.ai.context.rag.consolidation import (
+    Consolidator as MemoryConsolidator,
+)
+from zhenxun.services.ai.context.rag.consolidation import NullConsolidator
+from zhenxun.services.ai.core.messages import LLMMessage
+from zhenxun.utils.utils import infer_plugin_namespace
+
+
+class MemoryCleaner:
+    """
+    声明式记忆清理构建器 (Query Builder)。
+    为第三方开发者提供极端友好的链式 API，彻底屏蔽底层前缀逻辑。
+    """
+
+    def __init__(self, manager: "GlobalMemoryManager"):
+        self.manager = manager
+        self._query = MemoryQuery()
+        self._config: Any = None
+
+    def platform(self, p: str):
+        """指定目标平台标识 (如 'qq')"""
+        self._query.platform = p
+        return self
+
+    def group(self, g: str):
+        """指定目标群组 ID"""
+        self._query.group_id = g
+        return self
+
+    def user(self, u: str):
+        """指定目标用户 ID"""
+        self._query.user_id = u
+        return self
+
+    def namespace(self, ns: str):
+        """指定插件命名空间 (如 'rpg_game')"""
+        self._query.namespace = ns
+        return self
+
+    def agent(self, a: str):
+        """指定具体的 Agent 智能体名称"""
+        self._query.agent_name = a
+        return self
+
+    def session(self, sid: str):
+        """直接指定完整的 Session ID 绕过前缀拼接"""
+        self._query.session_id = sid
+        return self
+
+    def config(self, cfg: Any):
+        """指定私有记忆配置（自动识别未全局注册的第三方私有数据库实例）"""
+        self._config = cfg.build() if hasattr(cfg, "build") else cfg
+        return self
+
+    def current(self, bot: Any = None, event: Any = None):
+        """自动提取当前触发上下文的特征，匹配当前用户/群组"""
+        from zhenxun.services.ai.run.context import NoneBotDeps
+        from zhenxun.services.ai.utils.runtime_utils import ContextUtils
+
+        deps = (
+            NoneBotDeps(bot=bot, event=event)
+            if bot and event
+            else NoneBotDeps.get_current()
+        )
+        if deps:
+            self._query.platform = ContextUtils.extract_platform(deps)
+            self._query.group_id = ContextUtils.extract_group_id(deps)
+            self._query.user_id = ContextUtils.extract_user_id(deps)
+        return self
+
+    async def clear_short_term(self):
+        """一键清理目标范围下的短期对话历史记忆"""
+        if self._config and self._config.short_term.backend:
+            await self._config.short_term.backend.clear_by_query(self._query)
+        else:
+            for backend in self.manager._chat_backends.values():
+                await backend.clear_by_query(self._query)
+
+    async def clear_slots(self):
+        """一键清理目标范围下的中期记忆槽 (Memory Slots)"""
+        if self._config and self._config.slots.backend:
+            await self._config.slots.backend.clear_by_query(self._query)
+        else:
+            for backend in self.manager._slot_backends.values():
+                await backend.clear_by_query(self._query)
+
+    async def clear_long_term(self):
+        """一键清理目标范围下的长期向量记忆 (RAG Vector Database)"""
+        if self._config and self._config.long_term.backend:
+            from zhenxun.services.ai.context.rag.backends import StorageBackend
+
+            storage = cast(StorageBackend, self._config.long_term.backend)
+            await storage.clear_by_query(self._query)
+        else:
+            for factory in self.manager._storage_factories.values():
+                storage = factory()
+                if hasattr(storage, "clear_by_query"):
+                    await storage.clear_by_query(self._query)
+                else:
+                    await storage.delete(scope_prefix=self._query.scope_prefix)
+
+    async def clear_all(self):
+        """一键清理指定范围下的所有生命周期记忆（对话、槽位、RAG）"""
+        from zhenxun.services.log import logger
+
+        await self.clear_short_term()
+        await self.clear_slots()
+        await self.clear_long_term()
+        logger.info(
+            f"🧹 [MemoryCleaner] 成功清理作用域 '{self._query.scope_prefix}'"
+            "下的所有记忆痕迹！"
+        )
+
+
+class GlobalMemoryManager:
+    """
+    全局记忆大管家 (IoC 容器)。
+    使用现代化依赖注入机制管理短/长期记忆引擎的默认实例。
+    """
+
+    def __init__(self):
+        self._chat_backends: dict[str, BaseChatContext] = {
+            "global": InMemoryChatContext()
+        }
+        self._slot_backends: dict[str, BaseSlotContext] = {
+            "global": InMemorySlotContext()
+        }
+
+        from zhenxun.services.ai.context.rag.backends import DictStorageBackend
+
+        self._storage_factories: dict[str, Callable[[], StorageBackend]] = {
+            "global": lambda: DictStorageBackend()
+        }
+        self._consolidator_factories: dict[str, Callable[[], MemoryConsolidator]] = {
+            "global": lambda: NullConsolidator()
+        }
+
+    def register_chat_backend(
+        self, backend: BaseChatContext, scope: str | None = None
+    ) -> None:
+        """注册特定命名空间的短期记忆存储后端。"""
+        ns = scope if scope is not None else infer_plugin_namespace()
+        self._chat_backends[ns] = backend
+
+    def register_slot_backend(
+        self, backend: BaseSlotContext, scope: str | None = None
+    ) -> None:
+        """注册特定命名空间的中期记忆槽存储后端。"""
+        ns = scope if scope is not None else infer_plugin_namespace()
+        self._slot_backends[ns] = backend
+
+    def register_storage_factory(
+        self, factory: Callable[[], StorageBackend], scope: str | None = None
+    ) -> None:
+        """注册特定命名空间的长期记忆向量存储工厂。"""
+        ns = scope if scope is not None else infer_plugin_namespace()
+        self._storage_factories[ns] = factory
+
+    def register_consolidator_factory(
+        self, factory: Callable[[], MemoryConsolidator], scope: str | None = None
+    ) -> None:
+        """注册特定命名空间的长期记忆融合引擎工厂。"""
+        ns = scope if scope is not None else infer_plugin_namespace()
+        self._consolidator_factories[ns] = factory
+
+    def cleaner(self) -> MemoryCleaner:
+        """获取声明式记忆清理构建器，供第三方开发者极速清理指定记忆"""
+        return MemoryCleaner(self)
+
+    def get_embedder(self, embedder_val: "Embedder | str | None") -> Embedder | None:
+        """获取向量化引擎实例。如果传入的是字符串，则视为 API 模型名称。"""
+        if not embedder_val:
+            return None
+
+        if isinstance(embedder_val, str):
+            from zhenxun.services.ai.context.rag.backends.embedders import (
+                DefaultEmbedder,
+            )
+
+            return DefaultEmbedder(model_name=embedder_val)
+
+        return embedder_val
+
+    def get_chat_context(
+        self, config: MemoryConfig | None, namespace: str = "global"
+    ) -> BaseChatContext | None:
+        """根据配置分配对应的短期对话历史实例"""
+        if not config or not config.short_term.enable:
+            return None
+
+        backend_cfg = config.short_term.backend
+        if backend_cfg is not None:
+            return cast(BaseChatContext, backend_cfg)
+
+        return self._chat_backends.get(namespace) or self._chat_backends["global"]
+
+    def get_slot_context(
+        self, config: MemoryConfig | None, namespace: str = "global"
+    ) -> BaseSlotContext | None:
+        """根据配置分配对应的槽位记忆实例"""
+        if not config or not config.slots.enable:
+            return None
+
+        backend_cfg = config.slots.backend
+        if backend_cfg is not None:
+            return cast(BaseSlotContext, backend_cfg)
+
+        return self._slot_backends.get(namespace) or self._slot_backends["global"]
+
+    def get_long_term_memory(
+        self, config: MemoryConfig | None, namespace: str = "global"
+    ) -> MemoryScope | None:
+        """根据声明式配置动态组装长期向量记忆实例"""
+        if not config or not config.long_term.enable:
+            return None
+
+        storage_instance = None
+        backend_cfg = config.long_term.backend
+        if backend_cfg is not None:
+            storage_instance = cast(StorageBackend, backend_cfg)
+        else:
+            factory = (
+                self._storage_factories.get(namespace)
+                or self._storage_factories["global"]
+            )
+            storage_instance = factory()
+
+        consolidator_instance = None
+
+        if config.long_term.auto_consolidate:
+            consolidator_cfg = config.long_term.consolidator
+            if consolidator_cfg is not None:
+                consolidator_instance = cast(MemoryConsolidator, consolidator_cfg)
+            else:
+                factory = (
+                    self._consolidator_factories.get(namespace)
+                    or self._consolidator_factories["global"]
+                )
+                consolidator_instance = factory()
+
+        embedder = self.get_embedder(config.long_term.embedder)
+
+        from zhenxun.services.ai.context.rag.builder import RAGBuilder
+
+        builder = RAGBuilder(storage_instance).with_scope("/")
+        if embedder:
+            builder.with_embedder(embedder)
+
+        from zhenxun.services.ai.context.memory.models import MemoryScoringConfig
+
+        scoring_cfg = MemoryScoringConfig()
+
+        if config.long_term.auto_consolidate and consolidator_instance:
+            builder.enable_consolidation(
+                consolidator=consolidator_instance,
+                threshold=scoring_cfg.consolidation_threshold,
+            )
+
+        builder.enable_lifecycle_scoring(
+            half_life_days=scoring_cfg.recency_half_life_days,
+            decay_weight=scoring_cfg.recency_weight,
+            semantic_weight=scoring_cfg.semantic_weight,
+            importance_weight=scoring_cfg.importance_weight,
+            reinforcement_weight=scoring_cfg.reinforcement_weight,
+        )
+
+        client = builder.build()
+
+        return MemoryScope(
+            rag_client=client,
+            async_write=config.long_term.async_write,
+            capacity_limit=scoring_cfg.capacity_limit,
+            evict_ratio=scoring_cfg.evict_ratio,
+        )
+
+
+memory_manager = GlobalMemoryManager()
+
+
+class ChatHistoryFacade:
+    """短期对话历史门面"""
+
+    def __init__(self, manager: GlobalMemoryManager, session_meta: SessionMetadata):
+        self.manager = manager
+        self.session_meta = session_meta
+
+    @property
+    def _backend(self) -> BaseChatContext | None:
+        return self.manager.get_chat_context(
+            None, self.session_meta.namespace or "global"
+        )
+
+    async def get(self, limit: int | None = None) -> list[LLMMessage]:
+        """获取当前会话的历史消息"""
+        if not self._backend:
+            return []
+        msgs = await self._backend.get_messages(self.session_meta)
+        return msgs[-limit:] if limit else msgs
+
+    async def add(self, messages: list[LLMMessage] | LLMMessage) -> None:
+        """向当前会话追加一条或多条历史消息"""
+        if not self._backend:
+            return
+        msgs = messages if isinstance(messages, list) else [messages]
+        await self._backend.add_messages(self.session_meta, msgs)
+
+    async def clear(self) -> None:
+        """清空当前会话的短期对话历史"""
+        if not self._backend:
+            return
+        await self._backend.clear(self.session_meta)
+
+
+class SlotFacade:
+    """中期记忆槽门面"""
+
+    def __init__(self, manager: GlobalMemoryManager, session_meta: SessionMetadata):
+        self.manager = manager
+        self.session_meta = session_meta
+
+    @property
+    def _backend(self) -> BaseSlotContext | None:
+        return self.manager.get_slot_context(
+            None, self.session_meta.namespace or "global"
+        )
+
+    async def get(self, label: str) -> str | None:
+        """获取指定标签的槽位内容"""
+        if not self._backend:
+            return None
+        slot = await self._backend.get_slot(self.session_meta, label)
+        return slot.content if slot else None
+
+    async def set(
+        self,
+        label: str,
+        content: str,
+        scope: Literal["session", "global"] = "session",
+        size_limit: int = 2000,
+        pinned: bool = True,
+    ) -> None:
+        """设置或更新记忆槽"""
+        if not self._backend:
+            return
+        from zhenxun.services.ai.context.memory.types import MemorySlot, SlotScope
+
+        slot = MemorySlot(
+            label=label,
+            content=content,
+            scope=SlotScope(scope),
+            size_limit=size_limit,
+            pinned=pinned,
+        )
+        await self._backend.set_slot(self.session_meta, slot)
+
+    async def delete(
+        self, label: str, scope: Literal["session", "global"] = "session"
+    ) -> None:
+        """删除指定记忆槽"""
+        if not self._backend:
+            return
+        await self._backend.delete_slot(self.session_meta, label, scope)
+
+    async def list_all(self) -> dict[str, str]:
+        """以字典形式获取当前会话所有被固定的记忆槽"""
+        if not self._backend:
+            return {}
+        slots = await self._backend.list_pinned_slots(self.session_meta)
+        return {s.label: s.content for s in slots}
+
+
+class AgentSessionFacade:
+    """
+    提供给第三方开发者的会话记忆访问聚合门面 (Facade)。
+    """
+
+    def __init__(self, session_meta: SessionMetadata):
+        self.session_meta = session_meta
+        self.history = ChatHistoryFacade(memory_manager, session_meta)
+        self.slots = SlotFacade(memory_manager, session_meta)
+
+    async def clear_all(self) -> None:
+        """一键清空当前会话下的短期对话历史与记忆槽"""
+        cleaner = memory_manager.cleaner().session(self.session_meta.session_id)
+        await cleaner.clear_short_term()
+        await cleaner.clear_slots()
