@@ -489,7 +489,7 @@ class EngineExecutionMiddleware(BaseLLMMiddleware):
             raise
         except Exception as e:
             is_route_failure = isinstance(
-                e, (httpx.TimeoutException, httpx.NetworkError)
+                e, httpx.TimeoutException | httpx.NetworkError
             )
             if isinstance(e, LLMException):
                 status_code = e.details.get("status_code", 0)

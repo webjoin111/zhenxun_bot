@@ -363,9 +363,10 @@ class StandardAgentExecutor(BaseAgentExecutor):
             content=cast(list[AssistantContentUnion], response.content_parts)
         )
         if hasattr(response, "parsed_obj") and response.parsed_obj is not None:
-            if assistant_message.metadata is None:
-                assistant_message.metadata = {}
-            assistant_message.metadata["parsed_obj"] = response.parsed_obj
+            if not isinstance(response.parsed_obj, str):
+                if assistant_message.metadata is None:
+                    assistant_message.metadata = {}
+                assistant_message.metadata["parsed_obj"] = response.parsed_obj
 
         usage_obj = parse_usage_info(response.usage_info)
         state.usage += usage_obj
@@ -552,7 +553,7 @@ class StandardAgentExecutor(BaseAgentExecutor):
                         for item in tool_res.output:
                             if isinstance(
                                 item,
-                                (ImagePart, AudioPart, VideoPart, FilePart),
+                                ImagePart | AudioPart | VideoPart | FilePart,
                             ):
                                 media_parts.append(item)
                             elif isinstance(item, TextPart):

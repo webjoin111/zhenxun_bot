@@ -155,7 +155,7 @@ class AgentBuilder(Generic[AgentDepsT, OutputDataT]):
             skills: 注入的技能，支持 ID、目录 Path、Skill 对象或 SkillSource 动态源。
         """
         for s in skills:
-            if isinstance(s, (list, tuple, set)):
+            if isinstance(s, list | tuple | set):
                 self._skills.extend(s)
             else:
                 self._skills.append(cast(Any, s))
@@ -808,6 +808,8 @@ class Agent(
         context.run.agent_name = self.name
         context.run.cancellation_token = cancellation_token
         context.run.streamer = event_streamer
+        if not context.run.current_model:
+            context.run.current_model = self.model_name() if callable(self.model_name) else self.model_name
 
         long_term_fact = await reader.get_long_term_context(
             context.run.user_input or ""

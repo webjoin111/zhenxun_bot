@@ -189,7 +189,7 @@ class MessageBuilder:
                 if isinstance(seg, Image) and "image" not in allowed_modalities:
                     continue
                 if (
-                    isinstance(seg, (Audio, Voice))
+                    isinstance(seg, Audio | Voice)
                     and "audio" not in allowed_modalities
                 ):
                     continue
@@ -419,7 +419,7 @@ class MessageBuilder:
         for msg in messages:
             for part in msg.content:
                 if isinstance(
-                    part, (TextPart, ImagePart, AudioPart, VideoPart, FilePart)
+                    part, TextPart | ImagePart | AudioPart | VideoPart | FilePart
                 ):
                     parts.append(part)
         return parts

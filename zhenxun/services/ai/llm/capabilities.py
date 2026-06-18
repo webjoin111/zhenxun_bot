@@ -163,6 +163,12 @@ CAP_RERANK_ONLY = ModelCapabilities(
     is_rerank_model=True,
 )
 
+CAP_OPENAI_IMAGE = ModelCapabilities(
+    input_modalities={ModelModality.TEXT, ModelModality.IMAGE},
+    output_modalities={ModelModality.TEXT, ModelModality.IMAGE},
+    supports_tool_calling=False,
+)
+
 CAP_GEMINI_IMAGE = ModelCapabilities(
     input_modalities={
         ModelModality.TEXT,
@@ -199,6 +205,8 @@ MODEL_ALIAS_MAPPING: dict[str, str] = {
 
 
 _ROUTING_TABLE: list[tuple[list[str], ModelCapabilities, int]] = [
+    (["*gpt*image*"], CAP_OPENAI_IMAGE, CTX_128K),
+    (["*gemini*image*", "*nano-banana*"], CAP_GEMINI_IMAGE, CTX_128K),
     (["glm-4.6v*"], CAP_GLM_MULTIMODAL, CTX_128K),
     (["glm-4.7-flash*"], STANDARD_TEXT_TOOL_CAPABILITIES, CTX_128K),
     (["deepseek-v4-pro*", "deepseek-v4-flash*"], CAP_DEEPSEEK_V4, CTX_1M),
@@ -234,7 +242,6 @@ _ROUTING_TABLE: list[tuple[list[str], ModelCapabilities, int]] = [
         STANDARD_TEXT_TOOL_CAPABILITIES,
         CTX_128K,
     ),
-    (["*gemini*image*"], CAP_GEMINI_IMAGE, CTX_128K),
     (
         ["gemini-embedding-2*", "jina-embeddings-v5-omni*"],
         CAP_MULTIMODAL_EMBEDDING,

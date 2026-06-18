@@ -202,14 +202,14 @@ class TypeSugarResolver(BaseParamResolver):
         anno = param.annotation
         if hasattr(anno, "__metadata__"):
             for arg in anno.__metadata__:
-                if isinstance(arg, (_InjectMarker, _UpstreamResultMarker)):
+                if isinstance(arg, _InjectMarker | _UpstreamResultMarker):
                     return arg
         default_val = param.default
-        if isinstance(default_val, (_InjectMarker, _UpstreamResultMarker)):
+        if isinstance(default_val, _InjectMarker | _UpstreamResultMarker):
             return default_val
         if hasattr(default_val, "__metadata__"):
             for arg in default_val.__metadata__:
-                if isinstance(arg, (_InjectMarker, _UpstreamResultMarker)):
+                if isinstance(arg, _InjectMarker | _UpstreamResultMarker):
                     return arg
         return None
 

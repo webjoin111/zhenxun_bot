@@ -86,7 +86,7 @@ class TokenCounter:
                     total_tokens += cls._count_image(
                         getattr(part, "media_resolution", None), model_name
                     )
-                elif isinstance(part, (VideoPart, AudioPart, FilePart)):
+                elif isinstance(part, VideoPart | AudioPart | FilePart):
                     total_tokens += 1032
                 elif isinstance(part, ThoughtPart) and part.thought_text:
                     total_tokens += cls._count_text(part.thought_text)

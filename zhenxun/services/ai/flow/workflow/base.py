@@ -66,7 +66,7 @@ class BaseNode(ABC):
                 success=False,
                 stop=True,
                 error=str(e)
-                if isinstance(e, (AbortException, ToolFatalError))
+                if isinstance(e, AbortException | ToolFatalError)
                 else None,
             )
             return "break", output, None, None
