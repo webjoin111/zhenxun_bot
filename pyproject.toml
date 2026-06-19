@@ -147,6 +147,7 @@ executionEnvironments = [
 
 typeCheckingMode = "standard"
 reportShadowedImports = false
+reportMissingImports = "none"
 disableBytesTypePromotions = true
 
 [tool.pytest.ini_options]
