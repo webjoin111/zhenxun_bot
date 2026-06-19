@@ -95,6 +95,13 @@ class FastEmbedder(BaseLocalEmbedder):
         super().__init__(model_name or "BAAI/bge-small-zh-v1.5")
         self.model = None
 
+        import importlib.util
+
+        if importlib.util.find_spec("fastembed") is None:
+            raise ImportError(
+                "⚠️ 使用 FastEmbed 需要额外依赖，请在终端执行: pip install fastembed"
+            )
+
     def _ensure_model_loaded(self):
         """线程安全的懒加载机制"""
         if self.model is None:
@@ -129,6 +136,14 @@ class SentenceTransformerEmbedder(BaseLocalEmbedder):
     def __init__(self, model_name: str | None = None):
         super().__init__(model_name or "BAAI/bge-small-zh-v1.5")
         self.model = None
+
+        import importlib.util
+
+        if importlib.util.find_spec("sentence_transformers") is None:
+            raise ImportError(
+                "⚠️ 使用 SentenceTransformers 需要额外依赖，"
+                "请在终端执行: pip install sentence-transformers"
+            )
 
     def _ensure_model_loaded(self):
         """线程安全的懒加载机制"""

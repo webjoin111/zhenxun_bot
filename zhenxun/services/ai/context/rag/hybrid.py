@@ -37,6 +37,10 @@ class HybridRetriever(BaseRetriever):
             return_exceptions=True,
         )
 
+        for res in results:
+            if isinstance(res, ImportError):
+                raise res
+
         dense_res = (
             cast(list[SearchResult], results[0])
             if not isinstance(results[0], BaseException)

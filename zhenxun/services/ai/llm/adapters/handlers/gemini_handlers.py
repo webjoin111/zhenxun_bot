@@ -609,6 +609,8 @@ class GeminiResponseParser(ResponseParser):
                 except Exception as e:
                     logger.warning(f"解析Gemini toolResponse时出错: {e}")
 
+        content_parts.sort(key=lambda p: 1 if isinstance(p, ThoughtPart) else 0)
+
         grounding_metadata_obj = None
         if grounding_data := candidate.get("groundingMetadata"):
             try:

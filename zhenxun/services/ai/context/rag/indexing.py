@@ -72,52 +72,118 @@ class DocumentChunking(ChunkingStrategy):
         return chunks
 
 
-class FixedSizeChunking(ChunkingStrategy):
-    """定长分块策略 (带重叠)"""
+class RecursiveCharacterChunking(ChunkingStrategy):
+    """递归字符分块策略 (Recursive Character Text Splitter)"""
 
-    def __init__(self, chunk_size: int = 1000, overlap: int = 100):
+    def __init__(
+        self,
+        chunk_size: int = 1000,
+        overlap: int = 100,
+        separators: list[str] | None = None,
+    ):
         if overlap >= chunk_size:
             raise ValueError(f"重叠长度 ({overlap}) 必须小于分块大小 ({chunk_size})")
         self.chunk_size = chunk_size
         self.overlap = overlap
+        self.separators = separators or [
+            "\n\n",
+            "\n",
+            "。",
+            "！",
+            "？",
+            "；",
+            "，",
+            " ",
+            "",
+        ]
+
+    def _split_text(self, text: str, separators: list[str]) -> list[str]:
+        """核心递归切分逻辑"""
+        final_chunks = []
+        separator = separators[-1]
+        new_separators = []
+
+        for i, _s in enumerate(separators):
+            if _s == "":
+                separator = _s
+                break
+            if _s in text:
+                separator = _s
+                new_separators = separators[i + 1 :]
+                break
+
+        if separator:
+            splits = [s for s in text.split(separator) if s]
+        else:
+            splits = list(text)
+
+        good_splits = []
+        for s in splits:
+            if len(s) < self.chunk_size:
+                good_splits.append(s)
+            else:
+                if good_splits:
+                    merged_chunks = self._merge_splits(good_splits, separator)
+                    final_chunks.extend(merged_chunks)
+                    good_splits = []
+                if new_separators:
+                    final_chunks.extend(self._split_text(s, new_separators))
+                else:
+                    for i in range(0, len(s), self.chunk_size):
+                        final_chunks.append(s[i : i + self.chunk_size])
+
+        if good_splits:
+            merged_chunks = self._merge_splits(good_splits, separator)
+            final_chunks.extend(merged_chunks)
+
+        return final_chunks
+
+    def _merge_splits(self, splits: list[str], separator: str) -> list[str]:
+        """将零散的切片合并为符合 chunk_size 的块，并处理 Overlap"""
+        chunks = []
+        current_chunk = []
+        current_length = 0
+
+        for split in splits:
+            split_len = len(split)
+            sep_len = len(separator) if current_chunk else 0
+
+            if current_length + sep_len + split_len > self.chunk_size and current_chunk:
+                chunk_str = separator.join(current_chunk)
+                chunks.append(chunk_str)
+
+                while current_length > self.overlap or (
+                    current_length + sep_len + split_len > self.chunk_size
+                    and len(current_chunk) > 0
+                ):
+                    popped = current_chunk.pop(0)
+                    current_length -= len(popped) + (
+                        len(separator) if current_chunk else 0
+                    )
+                sep_len = len(separator) if current_chunk else 0
+
+            current_chunk.append(split)
+            current_length += sep_len + split_len
+
+        if current_chunk:
+            chunk_str = separator.join(current_chunk)
+            chunks.append(chunk_str)
+
+        return chunks
 
     def chunk(self, record: BaseRecord) -> list[BaseRecord]:
-        content = self.clean_text(record.content)
-        content_length = len(content)
+        content = record.content.strip()
 
-        if content_length <= self.chunk_size:
+        if len(content) <= self.chunk_size:
             return [self._create_chunk_record(record, 0, content)]
 
+        text_chunks = self._split_text(content, self.separators)
+
         chunks: list[BaseRecord] = []
-        start = 0
-        chunk_index = 0
-
-        while start < content_length:
-            end = min(start + self.chunk_size, content_length)
-
-            if end < content_length:
-                original_end = end
-                while end > start and content[end] not in [
-                    " ",
-                    "\n",
-                    "，",
-                    "。",
-                    "！",
-                    "？",
-                    ".",
-                    "!",
-                    "?",
-                ]:
-                    end -= 1
-
-                if end <= start + self.overlap:
-                    end = original_end
-
-            chunk_content = content[start:end]
-            chunks.append(self._create_chunk_record(record, chunk_index, chunk_content))
-
-            chunk_index += 1
-            start = max(start + 1, end - self.overlap)
+        for i, text_chunk in enumerate(text_chunks):
+            clean_chunk = text_chunk.strip()
+            if clean_chunk:
+                chunks.append(self._create_chunk_record(record, i, clean_chunk))
 
         return chunks
 
@@ -345,9 +411,7 @@ class UpdateEmbeddingNode(BaseEmbeddingBatchNode):
     """
 
     def _filter_target_records(self, records: list[BaseRecord]) -> list[BaseRecord]:
-        return [
-            r for r in records if r.action == "update" and r.content.strip()
-        ]
+        return [r for r in records if r.action == "update" and r.content.strip()]
 
 
 class DedupNode(BaseBatchNode):

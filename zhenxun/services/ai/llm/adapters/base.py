@@ -537,6 +537,7 @@ class BaseAdapter(ABC):
         text_upper = error_text.upper()
 
         error_code = LLMErrorCode.API_REQUEST_FAILED
+        is_recoverable = True
         if response.status_code == 400:
             if (
                 "FAILED_PRECONDITION" in status_upper
@@ -585,6 +586,11 @@ class BaseAdapter(ABC):
             error_code = LLMErrorCode.GENERATION_FAILED
         elif response.status_code >= 500:
             error_code = LLMErrorCode.API_TIMEOUT
+            if response.status_code == 503 and (
+                "MODEL_CAPACITY_EXHAUSTED" in text_upper
+                or "capacity" in error_msg.lower()
+            ):
+                is_recoverable = False
 
         return LLMException(
             f"HTTP请求失败: {response.status_code} ({error_status or 'Unknown'})",
@@ -594,4 +600,5 @@ class BaseAdapter(ABC):
                 "api_status": error_status,
                 "response": error_text,
             },
+            recoverable=is_recoverable,
         )

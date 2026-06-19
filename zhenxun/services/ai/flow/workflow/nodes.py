@@ -28,6 +28,20 @@ class Step(BaseNode):
     当实例化 Step 时，底层会自动根据 executor 的类型返回专属的节点对象。
     """
 
+    def __new__(cls, *args, **kwargs):
+        if cls is Step:
+            executor = kwargs.get("executor")
+            if executor is None and len(args) > 1:
+                executor = args[1]
+
+            from zhenxun.services.ai.flow.base import BaseRunnable
+
+            if isinstance(executor, BaseRunnable):
+                return object.__new__(RunnableNode)
+            elif callable(executor):
+                return object.__new__(FunctionNode)
+        return object.__new__(cls)
+
     def __init__(
         self,
         name: str | None = None,
