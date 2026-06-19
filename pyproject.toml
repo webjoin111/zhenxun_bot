@@ -46,6 +46,9 @@ dependencies = [
     "uvloop>=0.21.0; sys_platform != 'win32'",
     "pytest-timeout>=2.4.0",
     "aiomysql>=0.3.2",
+    "mcp>=1.8.0",
+    "jieba>=0.42.1",
+    "aiodocker>=0.24.0",
 ]
 
 [project.scripts]
