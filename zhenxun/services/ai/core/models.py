@@ -145,6 +145,8 @@ class ModelCapabilities(BaseModel):
     """最大输入 Token 数量（用于触发上下文压缩策略，未显式声明则默认为 256K）。"""
     supported_native_tools: set[str] = Field(default_factory=set)
     """该模型实际支持的云端原生能力/内置工具。"""
+    default_voice_id: str | None = None
+    """默认的语音合成音色 ID（TTS模型专用）。"""
 
     features: set[str] = Field(default_factory=set)
     """用于第三方插件动态注入的自定义能力标签。"""

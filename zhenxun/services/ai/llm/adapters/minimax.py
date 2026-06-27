@@ -5,7 +5,7 @@ from typing import Any
 
 import httpx
 
-from zhenxun.services.ai.core.exceptions import LLMException, ResponseParseException
+from zhenxun.services.ai.core.exceptions import ResponseParseException
 from zhenxun.services.ai.core.messages import (
     AssistantMessage,
     AudioResponse,
@@ -41,8 +41,16 @@ class MiniMaxAudioHandler(BaseAudioHandler):
         request: SpeechRequest,
     ) -> RequestData:
         input_text = request.input_text
-        voice = request.voice
         config = request.config or TTSConfig()
+
+        config_voice = config.minimax_options.voice_id
+        voice = (
+            config_voice
+            or request.voice
+            or identity.capabilities.default_voice_id
+            or "female-shaonv"
+        )
+
         endpoint = "/v1/t2a_v2"
         base_url = (
             identity.api_base.rstrip("/")
@@ -113,7 +121,9 @@ class MiniMaxAudioHandler(BaseAudioHandler):
             audio_hex = data["data"]["audio"]
             audio_bytes = bytes.fromhex(audio_hex)
         except (KeyError, ValueError) as e:
-            raise ResponseParseException(f"解析 MiniMax 语音 Hex 数据失败: {e}", details=data)
+            raise ResponseParseException(
+                f"解析 MiniMax 语音 Hex 数据失败: {e}", details=data
+            )
 
         extra_info = data.get("extra_info", {})
         audio_format = extra_info.get("audio_format", "mp3")

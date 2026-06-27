@@ -46,7 +46,8 @@ class FallbackRouter(BaseModelRouter):
         errors = []
         all_nodes_bypassed = True
 
-        request.extra["_is_routed_call"] = len(model_names) > 1
+        is_routed_call = len(model_names) > 1
+        request.extra["_is_routed_call"] = is_routed_call
         start_idx = request.extra.get("_working_route_index", 0)
         indices_to_try = list(range(start_idx, len(model_names))) + list(
             range(0, start_idx)
@@ -55,7 +56,7 @@ class FallbackRouter(BaseModelRouter):
         for idx in indices_to_try:
             m_name = model_names[idx]
 
-            if not health_manager.is_route_healthy(m_name):
+            if not health_manager.is_route_healthy(m_name, strict_mode=is_routed_call):
                 logger.debug(f"👉 [Orchestrator] 节点 '{m_name}' 熔断中，已跳过")
                 errors.append(f"{m_name}(熔断中)")
                 continue

@@ -155,8 +155,18 @@ class MiMoAudioHandler(BaseAudioHandler):
         request: SpeechRequest,
     ) -> RequestData:
         input_text = request.input_text
-        voice = request.voice
         config = request.config or TTSConfig()
+
+        config_voice = (
+            config.mimo_options.voice_id if hasattr(config, "mimo_options") else None
+        )
+        voice = (
+            config_voice
+            or request.voice
+            or identity.capabilities.default_voice_id
+            or "mimo_default"
+        )
+
         url = adapter.get_api_url(identity, "/v1/chat/completions")
         headers = adapter.get_base_headers(api_key)
 

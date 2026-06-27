@@ -9,11 +9,10 @@ from aiocache import SimpleMemoryCache
 import httpx
 
 from zhenxun.services.ai.core.exceptions import (
-    LLMException,
-    UpstreamServerException,
-    NetworkTimeoutException,
-    InvalidRequestException,
     ConfigurationException,
+    LLMException,
+    NetworkTimeoutException,
+    UpstreamServerException,
 )
 from zhenxun.services.ai.core.messages import (
     AudioPart,
@@ -161,7 +160,6 @@ class LLMCacheMiddleware:
 
         response = await next_call(context)
 
-
         await _LLM_API_CACHE.set(cache_key, model_dump(response), ttl=ttl)
 
         return response
@@ -210,7 +208,9 @@ class FailoverAndRetryMiddleware:
             )
 
             if not selected_key:
-                raise ConfigurationException(f"提供商 {self.provider_name} 无可用 API Key")
+                raise ConfigurationException(
+                    f"提供商 {self.provider_name} 无可用 API Key"
+                )
 
             context.runtime_state["api_key"] = selected_key
             context.runtime_state["provider_name"] = self.provider_name

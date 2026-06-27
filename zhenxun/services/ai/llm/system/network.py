@@ -46,12 +46,14 @@ class LLMHttpClient:
     """[内部 API] LLM 服务专用异步 HTTP 客户端封装。"""
 
     def __init__(self, config: HttpClientConfig | None = None):
+        """初始化 LLM 服务专用 HTTP 客户端"""
         self.config = config or HttpClientConfig()
         self._client: httpx.AsyncClient | None = None
         self._active_requests = 0
         self._lock = asyncio.Lock()
 
     async def _ensure_client_initialized(self) -> httpx.AsyncClient:
+        """确保底层的 AsyncClient 已完成初始化"""
         if self._client is None or self._client.is_closed:
             async with self._lock:
                 if self._client is None or self._client.is_closed:
@@ -85,7 +87,7 @@ class LLMHttpClient:
                         except (ValueError, IndexError):
                             client_kwargs["proxies"] = BotConfig.system_proxy
                             logger.warning(
-                                f"无法解析 httpx 版本 '{httpx.__version__}'，"
+                                f"无法解析 httpx version '{httpx.__version__}'，"
                                 "LLM模块将默认使用旧版 'proxies' 参数语法。"
                             )
 
@@ -103,6 +105,7 @@ class LLMHttpClient:
         return self._client
 
     async def request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+        """发送异步 HTTP 请求"""
         client = await self._ensure_client_initialized()
         async with self._lock:
             self._active_requests += 1
@@ -113,9 +116,11 @@ class LLMHttpClient:
                 self._active_requests -= 1
 
     async def post(self, url: str, **kwargs: Any) -> httpx.Response:
+        """发送异步 POST 请求"""
         return await self.request("POST", url, **kwargs)
 
     async def close(self):
+        """安全关闭 HTTP 客户端并释放连接池"""
         async with self._lock:
             if self._client and not self._client.is_closed:
                 logger.debug(
@@ -133,6 +138,7 @@ class LLMHttpClient:
 
     @property
     def is_closed(self) -> bool:
+        """检查底层客户端是否已关闭"""
         return self._client is None or self._client.is_closed
 
 
@@ -140,14 +146,17 @@ class LLMHttpClientManager:
     """[内部 API] 负责管理与复用 LLMHttpClient 连接池。"""
 
     def __init__(self):
+        """初始化客户端管理器"""
         self._clients: dict[tuple[str, str, int], LLMHttpClient] = {}
         self._lock = asyncio.Lock()
 
     def _get_client_key(self, provider_config: ProviderConfig) -> tuple[str, str, int]:
+        """获取客户端唯一缓存标识"""
         api_base = provider_config.api_base or ""
         return (provider_config.api_type, api_base, provider_config.timeout)
 
     async def get_client(self, provider_config: ProviderConfig) -> LLMHttpClient:
+        """获取或创建指定配置的 HTTP 客户端实例"""
         key = self._get_client_key(provider_config)
         async with self._lock:
             client = self._clients.get(key)
@@ -170,6 +179,7 @@ class LLMHttpClientManager:
             return new_client
 
     async def shutdown(self):
+        """关闭所有托管的客户端连接池"""
         async with self._lock:
             logger.info(
                 f"LLMHttpClientManager: 正在关闭。关闭 {len(self._clients)} 个客户端。"
@@ -191,7 +201,7 @@ http_client_manager = LLMHttpClientManager()
 async def create_llm_http_client(
     timeout: int = 180,
 ) -> LLMHttpClient:
-    """创建LLM HTTP客户端"""
+    """创建并返回一个新的 HTTP 客户端"""
     config = HttpClientConfig(timeout=timeout)
     return LLMHttpClient(config)
 
@@ -200,6 +210,7 @@ class HealthStatePersister:
     """后台异步持久化管理器"""
 
     def __init__(self, state: GlobalHealthState, file_path: Path):
+        """初始化持久化管理器"""
         self.state = state
         self.file_path = file_path
         self._is_dirty = False
@@ -208,20 +219,24 @@ class HealthStatePersister:
         self._stop_event = asyncio.Event()
 
     def start(self):
+        """启动后台异步保存定时任务"""
         if self._watchdog_task is None or self._watchdog_task.done():
             self._stop_event.clear()
             self._watchdog_task = asyncio.create_task(self._watchdog_loop())
 
     def mark_dirty(self):
+        """标记内存状态已脏，需要存盘"""
         self._is_dirty = True
 
     async def _watchdog_loop(self):
+        """后台循环检测并持久化脏数据"""
         while not self._stop_event.is_set():
             await asyncio.sleep(5)
             if self._is_dirty:
                 await self.force_save()
 
     async def force_save(self):
+        """强制将内存中的状态同步写入磁盘文件"""
         if not self._is_dirty:
             return
         async with self._lock:
@@ -242,6 +257,7 @@ class HealthStatePersister:
                 logger.error(f"保存密钥状态到文件失败: {e}", e=e)
 
     async def stop(self):
+        """停止后台任务并保存所有脏状态"""
         self._stop_event.set()
         if self._watchdog_task:
             self._watchdog_task.cancel()
@@ -256,6 +272,7 @@ class KeyRotationManager:
     """专门负责 API Key 的负载均衡与冷却状态维护"""
 
     def __init__(self, state: GlobalHealthState):
+        """初始化 API Key 轮询管理器"""
         self.state = state
         self._provider_key_index: dict[str, int] = {}
 
@@ -266,7 +283,7 @@ class KeyRotationManager:
         exclude_keys: set[str] | None = None,
         strict_mode: bool = False,
     ) -> str | None:
-        """获取下一个可用的API密钥（轮询策略）"""
+        """轮询策略获取下一个健康可用的 API Key"""
         if not api_keys:
             return None
 
@@ -302,6 +319,7 @@ class KeyRotationManager:
         return selected_key
 
     def record_key_success(self, provider_name: str, api_key: str):
+        """记录指定 API Key 调用成功状态"""
         provider_state = self.state.providers.setdefault(
             provider_name, ProviderHealthStatus()
         )
@@ -318,6 +336,7 @@ class KeyRotationManager:
         exception: Exception,
         policy: CircuitBreakerPolicy,
     ):
+        """记录并处理指定 API Key 的调用失败冷却"""
         now = time.time()
         cooldown_duration = 0
 
@@ -354,6 +373,7 @@ class KeyRotationManager:
         stats.last_error = error_message[:256]
 
     def reset_key_status(self, provider_name: str, api_key: str):
+        """重置 API Key 状态为健康"""
         provider_state = self.state.providers.setdefault(
             provider_name, ProviderHealthStatus()
         )
@@ -367,9 +387,11 @@ class CircuitBreakerManager:
     """专门负责模型路由级别的熔断与探活 (无锁化设计)"""
 
     def __init__(self, state: GlobalHealthState):
+        """初始化路由级熔断管理器"""
         self.state = state
 
-    def is_route_healthy(self, route_name: str) -> bool:
+    def is_route_healthy(self, route_name: str, strict_mode: bool = True) -> bool:
+        """检查路由节点的健康与熔断状态"""
         stats = self.state.routes.get(route_name)
         if not stats:
             return True
@@ -385,14 +407,23 @@ class CircuitBreakerManager:
                     "冷却期结束，进入 HALF_OPEN 半开试探状态。"
                 )
                 return True
+            if not strict_mode:
+                logger.debug(
+                    f"👉 [Route-Level] 节点 '{route_name}' 处于熔断状态(OPEN)，"
+                    "但因非严格模式(单模型直调)，强制放行执行探活。"
+                )
+                return True
             return False
 
         if stats.state == RouteHealthState.HALF_OPEN:
+            if not strict_mode:
+                return True
             return False
 
         return True
 
     def record_route_success(self, route_name: str, latency: float):
+        """记录路由请求成功并尝试闭合熔断器"""
         stats = self.state.routes.setdefault(route_name, RouteHealthStatus())
         stats.successes += 1
         total = stats.successes + stats.failures
@@ -416,6 +447,7 @@ class CircuitBreakerManager:
     def record_route_failure(
         self, route_name: str, exception: Exception, policy: CircuitBreakerPolicy
     ):
+        """记录路由失败并开启熔断状态"""
         now = time.time()
         cooldown_duration = policy.server_error_cooldown
 
@@ -429,6 +461,7 @@ class CircuitBreakerManager:
         stats.last_error = str(exception)[:256]
 
     def get_best_fallback_route(self, route_names: list[str]) -> str:
+        """选择处于熔断冷却最少或最健康的备选路由"""
         def get_cooldown(name: str) -> float:
             stats = self.state.routes.get(name)
             return stats.cooldown_until if stats else 0.0
@@ -440,6 +473,7 @@ class HealthManager:
     """全局 AI 健康与遥测门面"""
 
     def __init__(self):
+        """初始化健康监测与遥测门面"""
         self.state = GlobalHealthState()
         self._file_path = DATA_PATH / "ai" / "api_key.json"
         self._persister: HealthStatePersister | None = None
@@ -448,7 +482,7 @@ class HealthManager:
         self.policy = CircuitBreakerPolicy()
 
     async def initialize(self):
-        """从文件异步加载遥测状态"""
+        """从本地文件异步加载遥测状态"""
         if not self._file_path.exists():
             logger.debug("未找到遥测状态文件，将使用内存状态启动。")
         else:
@@ -475,7 +509,7 @@ class HealthManager:
         self._persister.start()
 
     async def shutdown(self):
-        """在应用关闭时安全地保存状态"""
+        """在应用关闭时安全地持久化健康状态"""
         if self._persister:
             await self._persister.stop()
         logger.debug("HealthManager 已在关闭前保存遥测状态。")
@@ -487,19 +521,23 @@ class HealthManager:
         exclude_keys: set[str] | None = None,
         strict_mode: bool = False,
     ) -> str | None:
+        """路由获取下一个可用 API Key"""
         return self._key_manager.get_next_available_key(
             provider_name, api_keys, exclude_keys, strict_mode
         )
 
-    def is_route_healthy(self, route_name: str) -> bool:
-        return self._circuit_manager.is_route_healthy(route_name)
+    def is_route_healthy(self, route_name: str, strict_mode: bool = True) -> bool:
+        """路由判断指定模型路由是否健康"""
+        return self._circuit_manager.is_route_healthy(route_name, strict_mode)
 
     async def record_route_success(self, route_name: str, latency: float):
+        """路由记录模型请求成功"""
         self._circuit_manager.record_route_success(route_name, latency)
         if self._persister:
             self._persister.mark_dirty()
 
     async def record_route_failure(self, route_name: str, exception: Exception):
+        """路由记录模型请求失败并记录熔断"""
         self._circuit_manager.record_route_failure(route_name, exception, self.policy)
         if self._persister:
             self._persister.mark_dirty()
@@ -509,9 +547,11 @@ class HealthManager:
         )
 
     def get_best_fallback_route(self, route_names: list[str]) -> str:
+        """路由获取最佳备选健康节点"""
         return self._circuit_manager.get_best_fallback_route(route_names)
 
     async def record_key_success(self, provider_name: str, api_key: str):
+        """路由记录 API Key 成功状态"""
         self._key_manager.record_key_success(provider_name, api_key)
         if self._persister:
             self._persister.mark_dirty()
@@ -522,6 +562,7 @@ class HealthManager:
         api_key: str,
         exception: Exception,
     ):
+        """路由记录 API Key 失败冷却状态"""
         self._key_manager.record_key_failure(
             provider_name, api_key, exception, self.policy
         )
@@ -531,13 +572,14 @@ class HealthManager:
         logger.debug(f"API Key {key_id} 发生失败: {exception}")
 
     async def reset_key_status(self, provider_name: str, api_key: str):
+        """路由重置 API Key 的健康状态"""
         self._key_manager.reset_key_status(provider_name, api_key)
         if self._persister:
             self._persister.mark_dirty()
         logger.info(f"重置API密钥状态: {self._get_key_id(api_key)}")
 
     def _get_key_id(self, api_key: str) -> str:
-        """获取API密钥的标识符（用于日志）"""
+        """脱敏获取用于日志的 API Key 摘要 ID"""
         if len(api_key) <= 8:
             return api_key
         return f"{api_key[:4]}...{api_key[-4:]}"

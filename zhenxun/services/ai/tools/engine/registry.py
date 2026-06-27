@@ -8,6 +8,7 @@ from typing_extensions import Self
 
 from nonebot.utils import is_coroutine_callable
 
+from zhenxun.services.ai.core.exceptions import ConfigurationException
 from zhenxun.services.ai.core.protocols.tool import (
     ToolExecutable,
     ToolProvider,
@@ -551,9 +552,6 @@ class ToolProviderManager:
 
 
 tool_provider_manager = ToolProviderManager()
-
-
-from zhenxun.services.ai.core.exceptions import LLMException, ConfigurationException
 
 
 async def _dict_ad_hoc_resolver(config: dict):

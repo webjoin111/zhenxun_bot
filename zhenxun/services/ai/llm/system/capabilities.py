@@ -176,10 +176,32 @@ CAP_MIMO_MULTIMODAL = ModelCapabilities(
 )
 
 
-CAP_TEXT_TO_AUDIO = ModelCapabilities(
+CAP_OPENAI_TTS = ModelCapabilities(
     input_modalities={ModelModality.TEXT},
     output_modalities={ModelModality.AUDIO},
     supports_tool_calling=False,
+    default_voice_id="alloy"
+)
+
+CAP_GEMINI_TTS = ModelCapabilities(
+    input_modalities={ModelModality.TEXT},
+    output_modalities={ModelModality.AUDIO},
+    supports_tool_calling=False,
+    default_voice_id="Aoede"
+)
+
+CAP_MINIMAX_TTS = ModelCapabilities(
+    input_modalities={ModelModality.TEXT},
+    output_modalities={ModelModality.AUDIO},
+    supports_tool_calling=False,
+    default_voice_id="female-shaonv"
+)
+
+CAP_MIMO_TTS = ModelCapabilities(
+    input_modalities={ModelModality.TEXT},
+    output_modalities={ModelModality.AUDIO},
+    supports_tool_calling=False,
+    default_voice_id="mimo_default"
 )
 
 CAP_TEXT_EMBEDDING = ModelCapabilities(
@@ -235,7 +257,10 @@ MODEL_ALIAS_MAPPING: dict[str, str] = {
 
 
 _ROUTING_TABLE: list[tuple[list[str], ModelCapabilities, int]] = [
-    (["*tts*"], CAP_TEXT_TO_AUDIO, CTX_8K),
+    (["mimo-*tts*"], CAP_MIMO_TTS, CTX_8K),
+    (["gemini-*tts*"], CAP_GEMINI_TTS, CTX_8K),
+    (["*minimax-*tts*", "*MiniMax-*tts*"], CAP_MINIMAX_TTS, CTX_8K),
+    (["*tts*"], CAP_OPENAI_TTS, CTX_8K),
     (["*gpt*image*"], CAP_OPENAI_IMAGE, CTX_128K),
     (["*gemini*image*", "*nano-banana*"], CAP_GEMINI_IMAGE, CTX_128K),
     (["glm-4.6v*"], CAP_GLM_MULTIMODAL, CTX_128K),

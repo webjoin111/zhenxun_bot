@@ -222,12 +222,15 @@ class DeepSeekOptions(BaseProviderOption):
 class OpenAITTSOptions(BaseProviderOption):
     """OpenAI TTS 专属特权参数"""
 
-    pass
+    voice_id: str | None = Field(default=None)
+    """专属的音色 ID 配置"""
 
 
 class GeminiTTSOptions(BaseProviderOption):
     """Gemini TTS 专属特权参数"""
 
+    voice_id: str | None = Field(default=None)
+    """专属的音色 ID 配置"""
     multi_speaker: bool | None = Field(default=None)
     """是否开启多说话人模式"""
     second_voice: str | None = Field(default=None)
@@ -237,6 +240,8 @@ class GeminiTTSOptions(BaseProviderOption):
 class MiniMaxTTSOptions(BaseProviderOption):
     """MiniMax TTS 专属特权参数 (控制极度精细)"""
 
+    voice_id: str | None = Field(default=None)
+    """专属的音色 ID 配置"""
     vol: float | None = Field(default=None, gt=0.0, le=10.0)
     """音量，范围 (0, 10]"""
     pitch: int | None = Field(default=None, ge=-12, le=12)
@@ -260,6 +265,13 @@ class MiniMaxTTSOptions(BaseProviderOption):
     """音色混合权重 (最多4种)"""
     pronunciation_dict: dict[str, list[str]] | None = Field(default=None)
     """自定义发音字典 (如: {"tone": ["处理/(chu3)(li3)"]})"""
+
+
+class MiMoTTSOptions(BaseProviderOption):
+    """MiMo TTS 专属特权参数"""
+
+    voice_id: str | None = Field(default=None)
+    """专属的音色 ID 配置"""
 
 
 class MediaGenerationConfig(BaseModel):
@@ -288,6 +300,7 @@ class TTSConfig(BaseModel):
     openai_options: OpenAITTSOptions = Field(default_factory=OpenAITTSOptions)
     gemini_options: GeminiTTSOptions = Field(default_factory=GeminiTTSOptions)
     minimax_options: MiniMaxTTSOptions = Field(default_factory=MiniMaxTTSOptions)
+    mimo_options: MiMoTTSOptions = Field(default_factory=MiMoTTSOptions)
 
     custom_kwargs: dict[str, Any] = Field(default_factory=dict)
     """兜底逃生舱，包含的键值对将直接透传至顶层请求体中 (可用于缓存 TTL)"""
@@ -376,10 +389,12 @@ __all__ = [
     "CommonLLMConfig",
     "EmbeddingTaskType",
     "GeminiOptions",
+    "GeminiTTSOptions",
     "GenerationConfig",
     "ImageAspectRatio",
     "ImageResolution",
     "LLMEmbeddingConfig",
+    "MiMoTTSOptions",
     "MiniMaxTTSOptions",
     "OpenAIOptions",
     "OpenAITTSOptions",

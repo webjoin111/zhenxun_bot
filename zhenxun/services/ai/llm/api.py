@@ -492,13 +492,19 @@ async def create_image(
 
 async def create_speech(
     text: str,
-    voice: str,
+    voice: str | None = None,
     *,
     model: ModelName = None,
     config: TTSConfig | None = None,
 ) -> AudioResponse:
     """
     通用文本转语音便捷函数。
+
+    参数:
+        text: 待合成的文本内容。
+        voice: 快捷音色指定，若为空则自动使用目标模型的缺省最优音色。
+        model: 指定生成语音的模型名称。
+        config: 语音生成的额外设置。
 
     示例:
         res = await create_speech("你好，世界", voice="alloy", model="OpenAI/tts-1")

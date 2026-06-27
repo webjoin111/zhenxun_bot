@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict
 import zhenxun.services.ai.core
 import zhenxun.services.ai.core.exceptions
 import zhenxun.services.ai.core.messages
+from zhenxun.services.ai.core.messages import ChatResponse as LLMResponse
 from zhenxun.services.ai.core.messages import LLMContentPart, ToolCallPart
 import zhenxun.services.ai.core.models
 from zhenxun.services.ai.core.models import ToolDefinition
@@ -30,7 +31,7 @@ import zhenxun.services.ai.core.protocols
 from zhenxun.services.ai.core.protocols.tool import ToolExecutable
 import zhenxun.services.ai.llm
 import zhenxun.services.ai.llm.system.capabilities
-from zhenxun.services.ai.run import RunContext
+from zhenxun.services.ai.run import RunContext as RealRunContext
 import zhenxun.services.ai.tools
 from zhenxun.services.ai.tools.models import ToolResult
 
@@ -96,6 +97,21 @@ def _legacy_function(self) -> _FakeFunction:
 
 setattr(ToolCallPart, "function", _legacy_function)  # type: ignore
 
+
+@property
+def _legacy_thought_signature(self) -> Any:
+    return self.metadata.get("thought_signature") if self.metadata else None
+
+
+@_legacy_thought_signature.setter
+def _legacy_thought_signature(self, value: Any) -> None:
+    if self.metadata is None:
+        self.metadata = {}
+    self.metadata["thought_signature"] = value
+
+
+setattr(ToolCallPart, "thought_signature", _legacy_thought_signature)  # type: ignore
+
 from zhenxun.services.ai.core.messages import LLMMessage
 
 _original_assistant_tool_calls = LLMMessage.assistant_tool_calls
@@ -119,6 +135,30 @@ def _shim_assistant_tool_calls(
 
 
 setattr(LLMMessage, "assistant_tool_calls", _shim_assistant_tool_calls)  # type: ignore
+
+if not hasattr(LLMMessage, "name"):
+
+    @property
+    def _legacy_name(self) -> Any:
+        return getattr(self, "source_name", None)
+
+    @_legacy_name.setter
+    def _legacy_name(self, value: Any) -> None:
+        self.source_name = value
+
+    setattr(LLMMessage, "name", _legacy_name)  # type: ignore
+
+if not hasattr(LLMMessage, "tool_call_id"):
+
+    @property
+    def _legacy_tool_call_id(self) -> Any:
+        return None
+
+    @_legacy_tool_call_id.setter
+    def _legacy_tool_call_id(self, value: Any) -> None:
+        pass
+
+    setattr(LLMMessage, "tool_call_id", _legacy_tool_call_id)  # type: ignore
 
 from zhenxun.services.ai.core.options import GenerationConfig, ReasoningEffort
 
@@ -146,13 +186,76 @@ setattr(_target_models_mod, "LLMToolCall", LLMToolCall)  # type: ignore
 setattr(_target_models_mod, "LLMToolFunction", LLMToolFunction)  # type: ignore
 setattr(_target_models_mod, "LLMContentPart", LLMContentPart)  # type: ignore
 setattr(_target_models_mod, "ToolDefinition", ToolDefinition)  # type: ignore
+setattr(_target_models_mod, "LLMResponse", LLMResponse)  # type: ignore
 setattr(_target_models_mod, "LLMMessage", LLMMessage)  # type: ignore
-setattr(sys.modules["zhenxun.services.llm.tools"], "RunContext", RunContext)  # type: ignore
 setattr(
     sys.modules["zhenxun.services.llm.types.protocols"],
     "ToolExecutable",
     ToolExecutable,
 )  # type: ignore
+
+
+class LegacyRunContextShim:
+    """拦截旧版 RunContext(extra={...}) 的调用，转化为新版支持的 state"""
+
+    def __new__(cls, session_id=None, extra=None, scope=None, **kwargs):
+        state = kwargs.get("state", {})
+        if extra:
+            state.update(extra)
+        if scope:
+            state.update(scope)
+        ctx = RealRunContext(session_id=session_id, state=state)
+        ctx.extra = ctx.state  # type: ignore
+        ctx.scope = ctx.state  # type: ignore
+        return ctx
+
+
+setattr(sys.modules["zhenxun.services.llm.tools"], "RunContext", LegacyRunContextShim)  # type: ignore
+
+
+class ToolInvoker:
+    """向下兼容垫片：代替被重构移除的旧版 ToolInvoker"""
+
+    def __init__(self, callbacks=None):
+        self.callbacks = callbacks or []
+
+    async def execute_tool_call(self, tool_call, available_tools, context=None):
+        import json
+
+        if hasattr(tool_call, "function") and hasattr(tool_call.function, "name"):
+            tool_name = tool_call.function.name
+            args_raw = tool_call.function.arguments
+        else:
+            tool_name = getattr(tool_call, "tool_name", "unknown")
+            args_raw = getattr(tool_call, "args", "{}")
+
+        arguments = {}
+        if args_raw:
+            if isinstance(args_raw, str):
+                try:
+                    arguments = json.loads(args_raw)
+                except Exception:
+                    pass
+            elif isinstance(args_raw, dict):
+                arguments = args_raw
+
+        executable = available_tools.get(tool_name)
+        if not executable:
+            return tool_call, ToolResult(output=f"Error: Tool '{tool_name}' not found.")
+
+        try:
+            result = await executable.execute(context=context, **arguments)
+            if not hasattr(result, "output"):
+                result = ToolResult(output=result)
+            return tool_call, result
+        except Exception as e:
+            return tool_call, ToolResult(output=f"System Execution Error: {e!s}")
+
+
+import zhenxun.services.ai.tools
+
+setattr(zhenxun.services.ai.tools, "ToolInvoker", ToolInvoker)  # type: ignore
+setattr(sys.modules["zhenxun.services.llm.tools"], "ToolInvoker", ToolInvoker)  # type: ignore
 
 
 class CommonOverrides:
@@ -270,9 +373,9 @@ __all__ = [
     "LLMToolCall",
     "LLMToolFunction",
     "OutputConfig",
-    "RunContext",
     "ToolDefinition",
     "ToolExecutable",
+    "ToolInvoker",
     "ToolResult",
     "function_tool",
     "get_default_model",

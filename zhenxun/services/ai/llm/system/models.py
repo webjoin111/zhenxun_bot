@@ -86,7 +86,7 @@ class CircuitBreakerPolicy(BaseModel):
     """被限流时的短时冷却时间（秒）"""
     auth_error_cooldown: int = Field(default=31536000)
     """凭证错误/鉴权失败时的长时冷却（默认1年即为禁用）"""
-    server_error_cooldown: int = Field(default=180)
+    server_error_cooldown: int = Field(default=120)
     """服务端发生崩溃(500)等异常时的模型节点熔断时间（秒）"""
     quota_error_cooldown: int = Field(default=3600)
     """API 额度耗尽时的冷却时间（秒）"""

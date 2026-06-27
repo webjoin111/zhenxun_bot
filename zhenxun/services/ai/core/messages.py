@@ -1056,8 +1056,8 @@ class SpeechRequest(BaseRequest):
 
     input_text: str
     """待合成的文本内容"""
-    voice: str
-    """发音人/音色标识"""
+    voice: str | None = None
+    """发音人/音色标识 (快捷覆盖参数，为空则使用模型默认音色)"""
     config: TTSConfig | None = None
     """语音合成配置"""
 

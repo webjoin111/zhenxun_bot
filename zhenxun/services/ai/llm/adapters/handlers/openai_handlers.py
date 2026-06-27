@@ -1129,10 +1129,20 @@ class OpenAIAudioHandler(BaseAudioHandler):
         endpoint = "/v1/audio/speech"
         url = adapter.get_api_url(identity, endpoint)
         headers = adapter.get_base_headers(api_key)
+
+        config_voice = (
+            request.config.openai_options.voice_id if request.config else None
+        )
+        voice = (
+            config_voice
+            or request.voice
+            or identity.capabilities.default_voice_id
+            or "alloy"
+        )
         body = {
             "model": identity.model_name,
             "input": request.input_text,
-            "voice": request.voice,
+            "voice": voice,
             "response_format": request.config.response_format
             if request.config
             else "mp3",

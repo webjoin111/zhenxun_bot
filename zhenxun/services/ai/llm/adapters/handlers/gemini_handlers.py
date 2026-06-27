@@ -985,8 +985,16 @@ class GeminiAudioHandler(BaseAudioHandler):
         request: SpeechRequest,
     ) -> RequestData:
         input_text = request.input_text
-        voice = request.voice
         config = request.config or TTSConfig()
+
+        config_voice = config.gemini_options.voice_id
+        voice = (
+            config_voice
+            or request.voice
+            or identity.capabilities.default_voice_id
+            or "Aoede"
+        )
+
         endpoint = getattr(adapter, "_get_gemini_endpoint")(identity, None)
         url = adapter.get_api_url(identity, endpoint)
         headers = adapter.get_base_headers(api_key)
