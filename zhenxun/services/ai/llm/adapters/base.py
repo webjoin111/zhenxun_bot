@@ -5,6 +5,7 @@ LLM 适配器基类和通用数据结构
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import inspect
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -14,25 +15,40 @@ import httpx
 from pydantic import BaseModel, Field
 
 from zhenxun.configs.path_config import TEMP_PATH
-from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
+from zhenxun.services.ai.core.engine.token_counter import parse_usage_info
+from zhenxun.services.ai.core.exceptions import (
+    AuthenticationException,
+    ConfigurationException,
+    ContentFilteredException,
+    ContextLengthExceededException,
+    InvalidRequestException,
+    LLMException,
+    LocationNotSupportedException,
+    QuotaExceededException,
+    RateLimitException,
+    ResponseParseException,
+    UpstreamServerException,
+)
 from zhenxun.services.ai.core.messages import (
     AudioResponse,
-    EmbedBatch,
+    ChatRequest,
+    ChatResponse,
+    EmbeddingRequest,
+    EmbeddingResponse,
     ImagePart,
+    ImageRequest,
+    ImageResponse,
     LLMContentPart,
-    LLMMessage,
+    RerankRequest,
+    RerankResponse,
     RerankResult,
+    SpeechRequest,
     TextPart,
     ThoughtPart,
 )
-from zhenxun.services.ai.core.models import ToolChoice
-from zhenxun.services.ai.core.options import (
-    GenerationConfig,
-    LLMEmbeddingConfig,
-    TTSConfig,
-)
-from zhenxun.services.ai.core.protocols.llm import LLMModelBase
+from zhenxun.services.ai.core.models import ModelIdentity
 from zhenxun.services.log import logger
+from zhenxun.utils.log_sanitizer import sanitize_for_logging
 
 if TYPE_CHECKING:
     from zhenxun.services.ai.llm.adapters.handlers.base import (
@@ -181,9 +197,117 @@ class BaseAdapter(ABC):
         """支持的API类型列表"""
         pass
 
+    async def prepare_payload(
+        self, identity: ModelIdentity, api_key: str, request: Any
+    ) -> RequestData:
+        """泛型请求构建分发入口 (Polymorphic Dispatch)"""
+        dispatch = {
+            ChatRequest: self.prepare_advanced_request,
+            EmbeddingRequest: self.prepare_embedding_request,
+            RerankRequest: self.prepare_rerank_request,
+            ImageRequest: self.prepare_image_request,
+            SpeechRequest: self.prepare_speech_request,
+        }
+        handler = dispatch.get(type(request))
+        if not handler:
+            raise ValueError(
+                f"适配器 {self.api_type} 不支持的请求类型: {type(request)}"
+            )
+
+        res = handler(identity, api_key, request)
+        if inspect.isawaitable(res):
+            return await res
+        return res
+
+    async def parse_payload(
+        self, identity: ModelIdentity, request: Any, raw_response: httpx.Response
+    ) -> Any:
+        """泛型响应解析分发入口 (Polymorphic Dispatch)"""
+        if isinstance(request, SpeechRequest):
+            res = self.parse_speech_response(identity, raw_response)
+            if inspect.isawaitable(res):
+                return await res
+            return res
+
+        response_bytes = await raw_response.aread()
+        logger.debug(f"📦 响应体已完整读取 ({len(response_bytes)} bytes)")
+        try:
+            response_json = json.loads(response_bytes)
+        except json.JSONDecodeError:
+            raise ResponseParseException(
+                "API 返回了非 JSON 格式的内容，可能是 URL 路径错误或中转站配置异常。",
+                details={
+                    "raw_response": response_bytes.decode("utf-8", errors="ignore")[
+                        :500
+                    ]
+                },
+            )
+
+        sanitizer_req_context = self.log_sanitization_context
+        sanitizer_resp_context = sanitizer_req_context.replace("_request", "_response")
+        if sanitizer_resp_context == sanitizer_req_context:
+            sanitizer_resp_context = f"{sanitizer_req_context}_response"
+
+        sanitized_response = sanitize_for_logging(
+            response_json, context=sanitizer_resp_context
+        )
+        response_json_str = json.dumps(sanitized_response, ensure_ascii=False, indent=2)
+        logger.debug(f"📋 响应JSON: {response_json_str}")
+
+        dispatch = {
+            EmbeddingRequest: self._parse_embedding_payload,
+            RerankRequest: self._parse_rerank_payload,
+            ImageRequest: self._parse_image_payload,
+            ChatRequest: self._parse_chat_payload,
+        }
+        handler = dispatch.get(type(request))
+        if not handler:
+            raise ValueError(
+                f"适配器 {self.api_type} 不支持的请求类型解析: {type(request)}"
+            )
+
+        return handler(identity, response_json)
+
+    def _parse_embedding_payload(
+        self, identity: ModelIdentity, response_json: dict
+    ) -> EmbeddingResponse:
+        self.validate_embedding_response(response_json)
+        embeddings = self.parse_embedding_response(response_json)
+        return EmbeddingResponse(
+            embeddings=embeddings,
+            usage=parse_usage_info(
+                response_json.get("usage") or response_json.get("usageMetadata")
+            ),
+            model_name=identity.model_name,
+        )
+
+    def _parse_rerank_payload(
+        self, identity: ModelIdentity, response_json: dict
+    ) -> RerankResponse:
+        return RerankResponse(results=self.parse_rerank_response(response_json))
+
+    def _parse_image_payload(
+        self, identity: ModelIdentity, response_json: dict
+    ) -> ImageResponse:
+        response_data = self.parse_image_response(response_json)
+        return ImageResponse(
+            content_parts=response_data.content_parts, raw_response=response_json
+        )
+
+    def _parse_chat_payload(
+        self, identity: ModelIdentity, response_json: dict
+    ) -> ChatResponse:
+        response_data = self.parse_response(identity, response_json, is_advanced=True)
+        return ChatResponse(
+            content_parts=response_data.content_parts,
+            usage_info=response_data.usage_info,
+            raw_response=response_data.raw_response,
+            grounding_metadata=response_data.grounding_metadata,
+        )
+
     async def prepare_simple_request(
         self,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         api_key: str,
         prompt: str,
         history: list[dict[str, str]] | None = None,
@@ -215,36 +339,27 @@ class BaseAdapter(ABC):
 
         messages.append(UserMessage(content=[TextPart(text=prompt)]))
 
-        config = model._generation_config
+        config = identity.generation_config
 
         return await self.prepare_advanced_request(
-            model=model,
+            identity=identity,
             api_key=api_key,
-            messages=messages,
-            config=config,
-            tools=None,
-            tool_choice=None,
+            request=ChatRequest(messages=messages, config=config),
         )
 
     async def prepare_advanced_request(
         self,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         api_key: str,
-        messages: list[LLMMessage],
-        config: GenerationConfig | None = None,
-        tools: list[Any] | None = None,
-        tool_choice: str | dict[str, Any] | ToolChoice | None = None,
+        request: ChatRequest,
     ) -> RequestData:
         """准备高级对话请求并委派给 `text_handler` 完成序列化。"""
         if self.text_handler:
             return await self.text_handler.prepare_text_request(
                 adapter=self,
-                model=model,
+                identity=identity,
                 api_key=api_key,
-                messages=messages,
-                config=config,
-                tools=tools,
-                tool_choice=tool_choice,
+                request=request,
             )
         raise NotImplementedError(
             f"API 类型 '{self.api_type}' 未装配 TextHandler，暂不支持文本对话能力。"
@@ -252,7 +367,7 @@ class BaseAdapter(ABC):
 
     def parse_response(
         self,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         response_json: dict[str, Any],
         is_advanced: bool = False,
     ) -> ResponseData:
@@ -260,7 +375,7 @@ class BaseAdapter(ABC):
         if self.text_handler:
             return self.text_handler.parse_text_response(
                 adapter=self,
-                model=model,
+                identity=identity,
                 response_json=response_json,
                 is_advanced=is_advanced,
             )
@@ -268,15 +383,17 @@ class BaseAdapter(ABC):
 
     async def prepare_embedding_request(
         self,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         api_key: str,
-        batch: EmbedBatch,
-        config: LLMEmbeddingConfig,
+        request: EmbeddingRequest,
     ) -> RequestData:
         """准备文本/多模态嵌入请求并委派给 `embedding_handler`。"""
         if self.embedding_handler:
             return await self.embedding_handler.prepare_embedding_request(
-                adapter=self, model=model, api_key=api_key, batch=batch, config=config
+                adapter=self,
+                identity=identity,
+                api_key=api_key,
+                request=request,
             )
         raise NotImplementedError(
             f"API 类型 '{self.api_type}' 未装配 EmbeddingHandler，暂不支持向量嵌入。"
@@ -296,21 +413,17 @@ class BaseAdapter(ABC):
 
     def prepare_rerank_request(
         self,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         api_key: str,
-        query: str,
-        documents: list[str | dict[str, str]],
-        top_n: int,
+        request: RerankRequest,
     ) -> RequestData:
         """准备重排请求并委派给 `rerank_handler`。"""
         if self.rerank_handler:
             return self.rerank_handler.prepare_rerank_request(
                 adapter=self,
-                model=model,
+                identity=identity,
                 api_key=api_key,
-                query=query,
-                documents=documents,
-                top_n=top_n,
+                request=request,
             )
         raise NotImplementedError(
             f"API 类型 '{self.api_type}' 未装配 RerankHandler，暂不支持文本重排。"
@@ -328,21 +441,17 @@ class BaseAdapter(ABC):
 
     def prepare_image_request(
         self,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         api_key: str,
-        prompt: str,
-        images: list[Any] | None = None,
-        config: GenerationConfig | None = None,
+        request: ImageRequest,
     ) -> RequestData:
         """准备图像请求并委派给 `image_handler`。"""
         if self.image_handler:
             return self.image_handler.prepare_image_request(
                 adapter=self,
-                model=model,
+                identity=identity,
                 api_key=api_key,
-                prompt=prompt,
-                images=images,
-                config=config,
+                request=request,
             )
         raise NotImplementedError(
             f"API 类型 '{self.api_type}' 未装配 ImageHandler，暂不支持图像生成。"
@@ -358,34 +467,30 @@ class BaseAdapter(ABC):
 
     def prepare_speech_request(
         self,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         api_key: str,
-        input_text: str,
-        voice: str,
-        config: TTSConfig,
+        request: SpeechRequest,
     ) -> RequestData:
         """准备语音生成请求并委派给 `audio_handler`。"""
         if self.audio_handler:
             return self.audio_handler.prepare_speech_request(
                 adapter=self,
-                model=model,
+                identity=identity,
                 api_key=api_key,
-                input_text=input_text,
-                voice=voice,
-                config=config,
+                request=request,
             )
         raise NotImplementedError(
             f"API 类型 '{self.api_type}' 未装配 AudioHandler，暂不支持语音生成。"
         )
 
     async def parse_speech_response(
-        self, model: LLMModelBase, raw_response: httpx.Response
+        self, identity: ModelIdentity, raw_response: httpx.Response
     ) -> AudioResponse:
         """解析语音响应并委派给 `audio_handler`。
         注意传入的是 httpx.Response 的 raw 对象"""
         if self.audio_handler:
             return await self.audio_handler.parse_speech_response(
-                adapter=self, model=model, raw_response=raw_response
+                adapter=self, identity=identity, raw_response=raw_response
             )
         raise NotImplementedError(f"API 类型 '{self.api_type}' 未装配 AudioHandler。")
 
@@ -398,22 +503,20 @@ class BaseAdapter(ABC):
                 if isinstance(error_info, dict)
                 else str(error_info)
             )
-            raise LLMException(
+            raise UpstreamServerException(
                 f"嵌入API错误: {msg}",
-                code=LLMErrorCode.EMBEDDING_FAILED,
                 details=response_json,
             )
 
-    def get_api_url(self, model: LLMModelBase, endpoint: str) -> str:
+    def get_api_url(self, identity: ModelIdentity, endpoint: str) -> str:
         """拼接最终请求 URL，兼容 `path_prefix` 与端点前后斜杠。"""
-        if not model.api_base:
-            raise LLMException(
-                f"模型 {model.model_name} 的 api_base 未设置",
-                code=LLMErrorCode.CONFIGURATION_ERROR,
+        if not identity.api_base:
+            raise ConfigurationException(
+                f"模型 {identity.model_name} 的 api_base 未设置",
             )
 
-        base_url = model.api_base.rstrip("/")
-        prefix = model.path_prefix.strip("/") if model.path_prefix else ""
+        base_url = identity.api_base.rstrip("/")
+        prefix = identity.path_prefix.strip("/") if identity.path_prefix else ""
         ep = endpoint.lstrip("/")
 
         if prefix:
@@ -438,46 +541,49 @@ class BaseAdapter(ABC):
         if response_json.get("error"):
             error_info = response_json["error"]
 
+            error_message = str(error_info)
             if isinstance(error_info, dict):
-                error_message = error_info.get("message", "未知错误")
+                error_message = error_info.get("message", error_message)
                 error_code = error_info.get("code", "unknown")
-                error_type = error_info.get("type", "api_error")
 
-                error_code_mapping = {
-                    "invalid_api_key": LLMErrorCode.API_KEY_INVALID,
-                    "authentication_failed": LLMErrorCode.API_KEY_INVALID,
-                    "insufficient_quota": LLMErrorCode.API_QUOTA_EXCEEDED,
-                    "rate_limit_exceeded": LLMErrorCode.API_RATE_LIMITED,
-                    "quota_exceeded": LLMErrorCode.API_RATE_LIMITED,
-                    "model_not_found": LLMErrorCode.MODEL_NOT_FOUND,
-                    "invalid_model": LLMErrorCode.MODEL_NOT_FOUND,
-                    "context_length_exceeded": LLMErrorCode.CONTEXT_LENGTH_EXCEEDED,
-                    "max_tokens_exceeded": LLMErrorCode.CONTEXT_LENGTH_EXCEEDED,
-                    "1261": LLMErrorCode.CONTEXT_LENGTH_EXCEEDED,
-                    "string_above_max_length": LLMErrorCode.CONTEXT_LENGTH_EXCEEDED,
-                    "invalid_request_error": LLMErrorCode.INVALID_PARAMETER,
-                    "invalid_parameter": LLMErrorCode.INVALID_PARAMETER,
-                }
+                if (
+                    error_code in ("invalid_api_key", "authentication_failed")
+                    or "permission" in error_message.lower()
+                ):
+                    raise AuthenticationException(
+                        f"鉴权失败: {error_message}", details={"api_error": error_info}
+                    )
+                elif error_code in ("insufficient_quota", "quota_exceeded"):
+                    raise QuotaExceededException(
+                        f"配额耗尽: {error_message}", details={"api_error": error_info}
+                    )
+                elif error_code == "rate_limit_exceeded":
+                    raise RateLimitException(
+                        f"请求限流: {error_message}", details={"api_error": error_info}
+                    )
+                elif error_code in ("model_not_found", "invalid_model"):
+                    raise ConfigurationException(
+                        f"模型配置错误: {error_message}",
+                        details={"api_error": error_info},
+                    )
+                elif error_code in (
+                    "context_length_exceeded",
+                    "max_tokens_exceeded",
+                    "1261",
+                ):
+                    raise ContextLengthExceededException(
+                        f"上下文超限: {error_message}",
+                        details={"api_error": error_info},
+                    )
+                elif error_code in ("invalid_request_error", "invalid_parameter"):
+                    raise InvalidRequestException(
+                        f"请求参数错误: {error_message}",
+                        details={"api_error": error_info},
+                    )
 
-                llm_error_code = error_code_mapping.get(
-                    error_code, LLMErrorCode.API_RESPONSE_INVALID
-                )
-
-                logger.error(
-                    f"API返回错误: {error_message} "
-                    f"(代码: {error_code}, 类型: {error_type})"
-                )
-            else:
-                error_message = str(error_info)
-                error_code = "unknown"
-                llm_error_code = LLMErrorCode.API_RESPONSE_INVALID
-
-                logger.error(f"API返回错误: {error_message}")
-
-            raise LLMException(
-                f"API请求失败: {error_message}",
-                code=llm_error_code,
-                details={"api_error": error_info, "error_code": error_code},
+            raise UpstreamServerException(
+                f"API请求报错: {error_message}",
+                details={"api_error": error_info},
             )
 
         if "candidates" in response_json:
@@ -486,25 +592,16 @@ class BaseAdapter(ABC):
                 candidate = candidates[0]
                 finish_reason = candidate.get("finishReason")
                 if finish_reason in ["SAFETY", "RECITATION"]:
-                    safety_ratings = candidate.get("safetyRatings", [])
-                    logger.warning(
-                        f"Gemini内容被安全过滤: {finish_reason}, "
-                        f"安全评级: {safety_ratings}"
-                    )
-                    raise LLMException(
-                        f"内容被安全过滤: {finish_reason}",
-                        code=LLMErrorCode.CONTENT_FILTERED,
+                    raise ContentFilteredException(
+                        f"内容被模型安全策略过滤: {finish_reason}",
                         details={
                             "finish_reason": finish_reason,
-                            "safety_ratings": safety_ratings,
                         },
                     )
 
         if not response_json:
-            logger.error("API返回空响应")
-            raise LLMException(
+            raise UpstreamServerException(
                 "API返回空响应",
-                code=LLMErrorCode.API_RESPONSE_INVALID,
                 details={"response": response_json},
             )
 
@@ -536,69 +633,70 @@ class BaseAdapter(ABC):
         status_upper = error_status.upper() if error_status else ""
         text_upper = error_text.upper()
 
-        error_code = LLMErrorCode.API_REQUEST_FAILED
-        is_recoverable = True
         if response.status_code == 400:
             if (
                 "FAILED_PRECONDITION" in status_upper
                 or "LOCATION IS NOT SUPPORTED" in text_upper
             ):
-                error_code = LLMErrorCode.USER_LOCATION_NOT_SUPPORTED
-            elif "INVALID_ARGUMENT" in status_upper:
-                error_code = LLMErrorCode.INVALID_PARAMETER
+                return LocationNotSupportedException(
+                    "当前地区不支持该服务", details={"response": error_text}
+                )
             elif "API_KEY_INVALID" in text_upper or "API KEY NOT VALID" in text_upper:
-                error_code = LLMErrorCode.API_KEY_INVALID
+                return AuthenticationException(
+                    "API Key 无效", details={"response": error_text}
+                )
             elif (
                 status_upper
                 in ["1261", "STRING_ABOVE_MAX_LENGTH", "CONTEXT_LENGTH_EXCEEDED"]
                 or "EXCEEDS MAX LENGTH" in text_upper
                 or "STRING TOO LONG" in text_upper
-                or "MAXIMUM CONTEXT LENGTH" in text_upper
             ):
-                error_code = LLMErrorCode.CONTEXT_LENGTH_EXCEEDED
+                return ContextLengthExceededException(
+                    "上下文超长", details={"response": error_text}
+                )
             else:
-                error_code = LLMErrorCode.INVALID_PARAMETER
+                return InvalidRequestException(
+                    f"参数错误: {error_msg}", details={"response": error_text}
+                )
         elif response.status_code in [401, 403]:
-            if error_msg and (
-                "country" in error_msg.lower()
-                or "region" in error_msg.lower()
-                or "unsupported" in error_msg.lower()
-            ):
-                error_code = LLMErrorCode.USER_LOCATION_NOT_SUPPORTED
-            elif "PERMISSION_DENIED" in status_upper:
-                error_code = LLMErrorCode.API_KEY_INVALID
+            if "country" in error_msg.lower() or "unsupported" in error_msg.lower():
+                return LocationNotSupportedException(
+                    "地区受限", details={"response": error_text}
+                )
             else:
-                error_code = LLMErrorCode.API_KEY_INVALID
+                return AuthenticationException(
+                    "鉴权失败/权限不足", details={"response": error_text}
+                )
         elif response.status_code == 404:
-            error_code = LLMErrorCode.MODEL_NOT_FOUND
+            return ConfigurationException(
+                "端点或模型未找到", details={"response": error_text}
+            )
         elif response.status_code == 429:
             if (
                 "RESOURCE_EXHAUSTED" in status_upper
                 or "INSUFFICIENT_QUOTA" in status_upper
                 or ("quota" in error_msg.lower() if error_msg else False)
             ):
-                error_code = LLMErrorCode.API_QUOTA_EXCEEDED
+                return QuotaExceededException(
+                    "API 配额耗尽", details={"response": error_text}
+                )
             else:
-                error_code = LLMErrorCode.API_RATE_LIMITED
+                return RateLimitException(
+                    "请求频繁被限流", details={"response": error_text}
+                )
         elif response.status_code in [402, 413]:
-            error_code = LLMErrorCode.API_QUOTA_EXCEEDED
-        elif response.status_code == 422:
-            error_code = LLMErrorCode.GENERATION_FAILED
+            return QuotaExceededException(
+                "资源耗尽/文件过大", details={"response": error_text}
+            )
         elif response.status_code >= 500:
-            error_code = LLMErrorCode.API_TIMEOUT
-            if response.status_code == 503 and (
-                "MODEL_CAPACITY_EXHAUSTED" in text_upper
-                or "capacity" in error_msg.lower()
-            ):
-                is_recoverable = False
+            return UpstreamServerException(
+                f"HTTP请求失败: {response.status_code} ({error_status or 'Unknown'})",
+                details={
+                    "status_code": response.status_code,
+                    "response": error_text,
+                },
+            )
 
-        return LLMException(
-            f"HTTP请求失败: {response.status_code} ({error_status or 'Unknown'})",
-            code=error_code,
-            details={
-                "status_code": response.status_code,
-                "api_status": error_status,
-                "response": error_text,
-            },
-            recoverable=is_recoverable,
+        return UpstreamServerException(
+            f"未知网络错误 {response.status_code}: {error_msg}"
         )

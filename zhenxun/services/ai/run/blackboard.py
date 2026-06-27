@@ -2,11 +2,10 @@ import asyncio
 import json
 from typing import Any, Generic, TypeVar
 
-from pydantic import BaseModel, Field, ValidationError, create_model
+from pydantic import BaseModel, ValidationError
 
 from zhenxun.utils.pydantic_compat import (
     model_dump,
-    model_fields,
     model_json_schema,
     model_validate,
 )
@@ -42,11 +41,7 @@ class BlackboardManager(Generic[T]):
             return json.dumps(state_dict, ensure_ascii=False)
 
     async def update(self, **kwargs: Any) -> str:
-        """
-        部分更新状态。
-        将传入的 kwargs 与现有状态进行深度合并，并通过 Pydantic 进行严格校验。
-        如果类型错误或非法，将抛出带有详细定位信息的 ValueError。
-        """
+        """部分更新状态"""
         async with self._lock:
             current_dict = model_dump(self._state)
 
@@ -76,60 +71,5 @@ class BlackboardManager(Generic[T]):
                 raise ValueError(f"黑板状态更新失败，非法的数据格式:\n{err_msg}")
 
     def get_schema(self) -> dict[str, Any]:
-        """获取结构化 Schema，用于提供给大模型参考或组装 Tool"""
+        """获取结构化 Schema"""
         return model_json_schema(self.schema)
-
-
-def create_blackboard_tools(manager: BlackboardManager) -> list[Any]:
-    """
-    工具工厂函数：根据 BlackboardManager 实例动态生成大模型可调用的读写工具。
-    """
-    from zhenxun.services.ai.core.exceptions import ToolRetryError
-    from zhenxun.services.ai.tools.core.tool import FunctionTool
-    from zhenxun.services.ai.tools.models import ToolOptions, ToolResult
-
-    async def read_blackboard() -> ToolResult:
-        """读取当前团队的全局共享黑板状态。"""
-        content = await manager.read()
-        return ToolResult(output=content)
-
-    read_tool = FunctionTool(
-        func=read_blackboard,
-        name="read_blackboard",
-        description="读取当前团队的全局共享黑板最新状态。当你需要获取最新数据或了解现状时请调用此工具。",
-    )
-
-    optional_fields = {}
-    for field in model_fields(manager.schema):
-        desc = (
-            getattr(field.field_info, "description", None)
-            if hasattr(field, "field_info")
-            else None
-        )
-        optional_fields[field.name] = (
-            field.annotation | None,
-            Field(default=None, description=desc),
-        )
-
-    UpdateSchema = create_model(f"Update_{manager.schema.__name__}", **optional_fields)
-
-    async def update_blackboard(**kwargs) -> ToolResult:
-        valid_kwargs = {k: v for k, v in kwargs.items() if v is not None}
-        if not valid_kwargs:
-            return ToolResult(
-                output="警告：没有提供任何有效的更新字段，黑板状态未发生改变。"
-            )
-        try:
-            res = await manager.update(**valid_kwargs)
-            return ToolResult(output=res)
-        except ValueError as e:
-            raise ToolRetryError(str(e))
-
-    update_tool = FunctionTool(
-        func=update_blackboard,
-        name="update_blackboard",
-        description="局部更新全局黑板状态。请仅提供你需要修改的字段即可，不需要改变的字段请留空。",
-        settings=ToolOptions(args_schema=UpdateSchema),
-    )
-
-    return [read_tool, update_tool]

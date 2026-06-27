@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
-from zhenxun.services.ai.core.protocols.llm import LLMModelBase
+from zhenxun.services.ai.core.models import ModelIdentity
 
 from .base import (
     BaseAdapter,
@@ -35,17 +35,17 @@ class OpenAICompatAdapter(BaseAdapter):
         return "openai_request"
 
     @abstractmethod
-    def get_chat_endpoint(self, model: LLMModelBase) -> str:
+    def get_chat_endpoint(self, identity: ModelIdentity) -> str:
         """子类必须实现，返回 chat completions 的端点"""
         pass
 
-    def get_embedding_endpoint(self, model: LLMModelBase) -> str:
+    def get_embedding_endpoint(self, identity: ModelIdentity) -> str:
         """返回 embeddings 的默认端点"""
         return "/v1/embeddings"
 
     async def prepare_simple_request(
         self,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         api_key: str,
         prompt: str,
         history: list[dict[str, str]] | None = None,
@@ -70,14 +70,14 @@ class OpenAICompatAdapter(BaseAdapter):
                 else:
                     messages.append(UserMessage(content=[TextPart(text=content)]))
         messages.append(UserMessage(content=[TextPart(text=prompt)]))
-        config = model._generation_config
+        config = identity.generation_config
+
+        from zhenxun.services.ai.core.messages import ChatRequest
+        request = ChatRequest(messages=messages, config=config)
         return await self.prepare_advanced_request(
-            model=model,
+            identity=identity,
             api_key=api_key,
-            messages=messages,
-            config=config,
-            tools=None,
-            tool_choice=None,
+            request=request,
         )
 
 
@@ -103,16 +103,12 @@ class OpenAIAdapter(OpenAICompatAdapter):
         """支持的 API 类型及别名。"""
         return [
             "openai",
-            "openrouter",
             "openai_responses",
         ]
 
-    def get_chat_endpoint(self, model: LLMModelBase) -> str:
+    def get_chat_endpoint(self, identity: ModelIdentity) -> str:
         """返回聊天完成端点"""
-        if model.model_detail.endpoint:
-            return model.model_detail.endpoint
-
-        current_api_type = model._get_effective_api_type()
+        current_api_type = identity.api_type
 
         if current_api_type == "openai_responses":
             return "/v1/responses"
@@ -120,6 +116,6 @@ class OpenAIAdapter(OpenAICompatAdapter):
             return "/api/v3/chat/completions"
         return "/v1/chat/completions"
 
-    def get_embedding_endpoint(self, model: LLMModelBase) -> str:
+    def get_embedding_endpoint(self, identity: ModelIdentity) -> str:
         """返回嵌入端点。"""
         return "/v1/embeddings"

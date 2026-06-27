@@ -65,6 +65,7 @@ class TeamRunner:
         sub_context.capabilities = list(sub_context.capabilities)
 
         from zhenxun.services.ai.flow.team.strategy import RouteStrategy
+
         if isinstance(self.strategy, RouteStrategy):
             routing_cap = TeamRoutingCapability(
                 team_name=self.team.name,
@@ -78,11 +79,12 @@ class TeamRunner:
         agent_res = None
 
         try:
-            from zhenxun.services.ai.flow.agent.models import AgentRunProfile
+            from zhenxun.services.ai.flow.agent.models import AgentConfig
+
             async with target_agent.run_stream(
                 prompt=action.task,
                 context=sub_context,
-                profile=AgentRunProfile(message_history=action.history),
+                config=AgentConfig(message_history=action.history),
                 **(action.kwargs or {}),
             ) as stream_result:
                 async for event in stream_result.stream_events():
@@ -120,8 +122,6 @@ class TeamRunner:
                 return
 
             agent_res = AgentRunResult(output=f"Error: {e}", usage=UsageInfo())
-
-
 
         if agent_res and agent_res.handoff:
             target_name = agent_res.handoff.target

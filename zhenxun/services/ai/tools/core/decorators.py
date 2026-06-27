@@ -45,6 +45,40 @@ def require_sandbox(
     return decorator
 
 
+class ToolkitMethodDescriptor:
+    """用于 Toolkit 类方法的描述符，确保在实例化时绑定正确的 self 并生成 FunctionTool"""
+
+    def __init__(
+        self, func: Callable, name: str, description: str, settings: ToolOptions
+    ):
+        self.func = func
+        self.name = name
+        self.description = description
+        self.settings = settings
+        self.__toolkit_tool__ = True
+        self.__tool_original_name__ = name
+
+    def __get__(self, instance, owner):
+        if instance is None:
+            return self
+        import types
+
+        from zhenxun.services.ai.tools.core.tool import FunctionTool
+        from zhenxun.utils.pydantic_compat import model_copy
+
+        bound_func = types.MethodType(self.func, instance)
+        return FunctionTool(
+            func=bound_func,
+            name=self.name,
+            description=self.description,
+            settings=model_copy(self.settings, deep=True),
+        )
+
+    def __call__(self, *args, **kwargs):
+        """使其兼容 Callable 协议，避免静态类型检查器报错"""
+        return self.func(*args, **kwargs)
+
+
 def tool(
     name: str | None = None,
     description: str | None = None,
@@ -106,14 +140,13 @@ def tool(
                 pass
 
         if is_method:
-            setattr(func, "__toolkit_tool__", True)
-            setattr(func, "__tool_name__", tool_name)
-            setattr(func, "__tool_desc__", tool_desc)
-            setattr(func, "__tool_settings__", base_settings)
-            return func
+            return ToolkitMethodDescriptor(
+                func=func, name=tool_name, description=tool_desc, settings=base_settings
+            )
         else:
             if require_prefix:
                 from zhenxun.utils.utils import infer_plugin_namespace
+
                 ns = infer_plugin_namespace(default="global")
                 if ns and ns not in ("global", "unknown"):
                     if not tool_name.startswith(f"{ns}_"):
@@ -156,17 +189,8 @@ def with_cache(ttl: int = 3600, cache_function: Callable | None = None):
 def silent():
     """静默执行。工具执行过程与结果不会作为界面流渲染给用户，仅作大模型内部参考。"""
 
-    class SilentCapability(AbstractCapability):
-        async def wrap_tool_execute(self, context, tool_name, arguments, handler):
-            result = await handler(arguments)
-            from zhenxun.services.ai.tools.models import ToolResult
-
-            if isinstance(result, ToolResult):
-                result.ui_display = None
-            return result
-
     def decorator(func: Callable):
-        return _update_settings(func, capabilities=[SilentCapability()])
+        return _update_settings(func, silent=True)
 
     return decorator
 

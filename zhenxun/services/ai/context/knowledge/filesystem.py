@@ -25,9 +25,22 @@ class FileSystemKnowledge(BaseKnowledge):
         "**核心原则**：严禁凭空捏造事实，必须基于文件内容提取信息。"
     )
 
-    def __init__(self, base_dir: str | Path, **kwargs: Any):
+    def __init__(
+        self,
+        base_dir: str | Path,
+        allowed_extensions: tuple[str, ...] | None = None,
+        **kwargs: Any,
+    ):
         super().__init__(**kwargs)
         self.base_dir = Path(base_dir).resolve()
+        self.allowed_extensions = allowed_extensions or (
+            ".txt",
+            ".md",
+            ".json",
+            ".csv",
+            ".yaml",
+            ".log",
+        )
         if not self.base_dir.exists():
             logger.warning(f"[FileSystemKnowledge] 警告：目录不存在 {self.base_dir}")
             self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -53,7 +66,7 @@ class FileSystemKnowledge(BaseKnowledge):
 
         for root, _, files in os.walk(self.base_dir):
             for file in files:
-                if not file.endswith((".txt", ".md", ".json", ".csv")):
+                if not file.endswith(self.allowed_extensions):
                     continue
 
                 file_path = Path(root) / file

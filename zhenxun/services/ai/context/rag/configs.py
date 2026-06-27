@@ -3,8 +3,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from zhenxun.services.ai.context.rag.backends import Embedder, StorageBackend
-from zhenxun.services.ai.context.rag.consolidation import Consolidator
-from zhenxun.services.ai.context.rag.indexing import ChunkingStrategy
+from zhenxun.services.ai.context.rag.ingestion import ChunkingStrategy
 from zhenxun.services.ai.context.rag.retrieval import (
     BaseRetriever,
     PostProcessor,
@@ -27,14 +26,6 @@ class DedupConfig(BaseModel):
     """去重相似度阈值"""
 
 
-class ConsolidationConfig(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-    consolidator: Consolidator | None = None
-    """大模型记忆融合与反思器"""
-    threshold: float = 0.85
-    """融合相似度阈值"""
-
-
 class RerankConfig(BaseModel):
     enable: bool = False
     """是否开启重排"""
@@ -51,13 +42,6 @@ class HybridSearchConfig(BaseModel):
     """向量检索权重"""
     sparse_weight: float = 0.3
     """BM25 检索权重"""
-
-
-class QueryRewriteConfig(BaseModel):
-    enable: bool = False
-    """是否开启查询意图重写"""
-    model_name: str | None = None
-    """意图重写使用的模型名称"""
 
 
 class LifecycleConfig(BaseModel):
@@ -89,18 +73,13 @@ class RAGConfig(BaseModel):
     """文档切块配置"""
     dedup: DedupConfig = Field(default_factory=DedupConfig)
     """去重配置"""
-    consolidation: ConsolidationConfig = Field(default_factory=ConsolidationConfig)
-    """记忆融合反思配置"""
+
     rerank: RerankConfig = Field(default_factory=RerankConfig)
     """重排配置"""
     hybrid: HybridSearchConfig = Field(default_factory=HybridSearchConfig)
     """混合检索与 RRF 融合配置"""
     lifecycle: LifecycleConfig = Field(default_factory=LifecycleConfig)
     """生命周期打分配置"""
-    query_rewrite: QueryRewriteConfig = Field(default_factory=QueryRewriteConfig)
-    """查询意图重写配置"""
-    synonyms: dict[str, list[str]] = Field(default_factory=dict)
-    """静态同义词扩展字典 (如 {"ys": ["原神"], "db": ["数据库"]})"""
     pre_processors: list[PreProcessor] = Field(default_factory=list)
     """自定义查询前处理器列表"""
     post_processors: list[PostProcessor] = Field(default_factory=list)

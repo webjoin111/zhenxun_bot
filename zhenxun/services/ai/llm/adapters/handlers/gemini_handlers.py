@@ -8,19 +8,27 @@ import wave
 import httpx
 
 from zhenxun.services.ai.config import get_gemini_safety_threshold
-from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
+from zhenxun.services.ai.core.exceptions import (
+    ContentFilteredException,
+    InvalidRequestException,
+    QuotaExceededException,
+    RateLimitException,
+    ResponseParseException,
+)
 from zhenxun.services.ai.core.messages import (
     AssistantMessage,
     AudioPart,
     AudioResponse,
-    EmbedBatch,
+    ChatRequest,
+    EmbeddingRequest,
     FilePart,
     ImagePart,
+    ImageRequest,
     LLMContentPart,
     LLMGroundingAttribution,
     LLMGroundingMetadata,
     LLMMessage,
-    ResponseFormat,
+    SpeechRequest,
     SystemMessage,
     TextPart,
     ThoughtPart,
@@ -33,15 +41,15 @@ from zhenxun.services.ai.core.messages import (
 from zhenxun.services.ai.core.models import (
     ModelCapabilities,
     ModelDetail,
+    ModelIdentity,
     ReasoningMode,
-    ToolChoice,
 )
 from zhenxun.services.ai.core.options import (
     GenerationConfig,
     LLMEmbeddingConfig,
+    ResponseFormat,
     TTSConfig,
 )
-from zhenxun.services.ai.core.protocols.llm import LLMModelBase
 from zhenxun.services.ai.llm.adapters.base import (
     BaseAdapter,
     RequestData,
@@ -113,60 +121,32 @@ class GeminiConfigMapper(ConfigMapper):
                     fc_config["allowedFunctionNames"] = user_funcs
             params["toolConfig"] = {"functionCallingConfig": fc_config}
 
+        has_effort = bool(
+            config.common.reasoning_effort
+            and str(config.common.reasoning_effort).lower() != "none"
+        )
         if (
-            config.gemini_options.thinking_budget is not None
-            or config.gemini_options.thinking_level is not None
+            has_effort
+            and capabilities
+            and capabilities.reasoning_mode == ReasoningMode.LEVEL
         ):
             thinking_config = params.setdefault("thinkingConfig", {})
-            model_name = model_detail.model_name.lower() if model_detail else ""
-            mode = capabilities.reasoning_mode.value if capabilities else None
+            effort = str(config.common.reasoning_effort).lower()
 
-            if mode == "level":
-                lvl = config.gemini_options.thinking_level or "high"
-                if "3.1" in model_name and "pro" in model_name and lvl == "minimal":
-                    lvl = "low"
-                thinking_config["thinkingLevel"] = lvl
-            elif mode == "budget":
-                max_budget = 32768 if "pro" in model_name else 24576
-                b_tokens = config.gemini_options.thinking_budget
+            if capabilities.reasoning_effort_map:
+                effort = capabilities.reasoning_effort_map.get(effort, effort)
 
-                if b_tokens is None and config.gemini_options.thinking_level:
-                    level_multiplier = {
-                        "minimal": 0.2,
-                        "low": 0.4,
-                        "medium": 0.7,
-                        "high": 1.0,
-                    }
-                    lvl_str = config.gemini_options.thinking_level
-                    b_tokens = int(max_budget * level_multiplier.get(lvl_str, 1.0))
+            thinking_config["thinkingLevel"] = effort
 
-                if b_tokens is not None:
-                    b_tokens = int(b_tokens)
-                    if b_tokens == -1:
-                        thinking_config["thinkingBudget"] = -1
-                    elif b_tokens == 0:
-                        if "pro" in model_name:
-                            logger.warning(
-                                f"模型 {model_name} 不允许完全关闭思考，"
-                                "使用动态思考(-1)。"
-                            )
-                            thinking_config["thinkingBudget"] = -1
-                        else:
-                            thinking_config["thinkingBudget"] = 0
-                    else:
-                        min_budget = 128 if "pro" in model_name else 0
-                        clamped = max(min_budget, min(b_tokens, max_budget))
-                        thinking_config["thinkingBudget"] = clamped
+        if config.gemini_options.include_thoughts is not None:
+            thinking_config = params.setdefault("thinkingConfig", {})
+            thinking_config["includeThoughts"] = config.gemini_options.include_thoughts
+        elif capabilities and capabilities.reasoning_visibility == "visible":
+            thinking_config = params.setdefault("thinkingConfig", {})
+            thinking_config["includeThoughts"] = True
 
-            if config.gemini_options.include_thoughts is not None:
-                thinking_config["includeThoughts"] = (
-                    config.gemini_options.include_thoughts
-                )
-            elif capabilities and capabilities.reasoning_visibility == "visible":
-                thinking_config["includeThoughts"] = True
-
-            if not thinking_config:
-                params.pop("thinkingConfig", None)
+        if "thinkingConfig" in params and not params["thinkingConfig"]:
+            params.pop("thinkingConfig", None)
 
         image_config: dict[str, Any] = {}
 
@@ -199,7 +179,7 @@ class GeminiConfigMapper(ConfigMapper):
 
         if config.custom_kwargs:
             mapped_custom = config.custom_kwargs.copy()
-            for key in ("code_execution_timeout", "reflexion_retries"):
+            for key in ("code_execution_timeout", "reflexion_retries", "__cache_ttl__"):
                 mapped_custom.pop(key, None)
 
             for unsupported in [
@@ -393,7 +373,7 @@ class GeminiMessageConverter(MessageConverter):
 
 class GeminiToolSerializer(ToolSerializer):
     def sanitize_schema(self, schema: dict[str, Any]) -> dict[str, Any]:
-        from zhenxun.services.ai.llm.schema_transformer import (
+        from zhenxun.services.ai.llm.engine.schema_transformer import (
             GeminiCyclicRefTransformer,
             GeminiDeepRefInlineTransformer,
             GeminiEnumTransformer,
@@ -477,30 +457,25 @@ class GeminiResponseParser(ResponseParser):
                     if isinstance(d, dict)
                 )
                 if is_quota or "quota" in message.lower():
-                    raise LLMException(
+                    raise QuotaExceededException(
                         f"Gemini配额耗尽: {message}",
-                        code=LLMErrorCode.API_QUOTA_EXCEEDED,
                         details=error,
                     )
-                raise LLMException(
+                raise RateLimitException(
                     f"Gemini速率限制: {message}",
-                    code=LLMErrorCode.API_RATE_LIMITED,
                     details=error,
                 )
 
             if code == 400 or status in ("INVALID_ARGUMENT", "FAILED_PRECONDITION"):
-                raise LLMException(
+                raise InvalidRequestException(
                     f"Gemini参数错误: {message}",
-                    code=LLMErrorCode.INVALID_PARAMETER,
                     details=error,
-                    recoverable=False,
                 )
 
         if prompt_feedback := response_json.get("promptFeedback"):
             if block_reason := prompt_feedback.get("blockReason"):
-                raise LLMException(
+                raise ContentFilteredException(
                     f"内容被安全过滤: {block_reason}",
-                    code=LLMErrorCode.CONTENT_FILTERED,
                     details={
                         "block_reason": block_reason,
                         "safety_ratings": prompt_feedback.get("safetyRatings"),
@@ -662,16 +637,14 @@ class GeminiTextHandler(BaseTextHandler):
     async def prepare_text_request(
         self,
         adapter: BaseAdapter,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         api_key: str,
-        messages: list[LLMMessage],
-        config: GenerationConfig | None = None,
-        tools: list[Any] | None = None,
-        tool_choice: ToolChoice | str | dict[str, Any] | None = None,
+        request: ChatRequest,
     ) -> RequestData:
-        effective_config = (
-            config if config is not None else getattr(model, "_generation_config", None)
-        )
+        messages = request.messages
+        config = request.config
+        tools = request.tools
+        effective_config = config if config is not None else identity.generation_config
 
         (
             tool_defs,
@@ -684,7 +657,7 @@ class GeminiTextHandler(BaseTextHandler):
         gemini_settings = get_llm_config().provider_settings.gemini
 
         if server_tools and client_executables:
-            has_mixed_tools_cap = model.capabilities.has_feature("mixed_tools")
+            has_mixed_tools_cap = identity.capabilities.has_feature("mixed_tools")
             if not gemini_settings.allow_mixed_tools or not has_mixed_tools_cap:
                 server_tool_names = [
                     getattr(t, "name", "unknown") for t in server_tools
@@ -692,7 +665,7 @@ class GeminiTextHandler(BaseTextHandler):
                 reason = (
                     "全局开关 (allow_mixed_tools) 已关闭"
                     if not gemini_settings.allow_mixed_tools
-                    else f"模型 {model.model_name} 原生不支持工具混用"
+                    else f"模型 {identity.model_name} 原生不支持工具混用"
                 )
                 logger.warning(
                     "🌐 [Gemini Adapter] 检测到请求中混用了"
@@ -714,7 +687,7 @@ class GeminiTextHandler(BaseTextHandler):
                 is_structured = True
 
         has_reasoning_cap = False
-        if model.capabilities and model.capabilities.reasoning_mode in (
+        if identity.capabilities and identity.capabilities.reasoning_mode in (
             ReasoningMode.BUDGET,
             ReasoningMode.LEVEL,
         ):
@@ -723,24 +696,22 @@ class GeminiTextHandler(BaseTextHandler):
         if (
             has_function_tools or is_structured or has_reasoning_cap
         ) and effective_config:
-            if (
-                effective_config.gemini_options.thinking_budget is None
-                and effective_config.gemini_options.thinking_level is None
-            ):
+            if effective_config.common.reasoning_effort is None:
                 if has_function_tools or is_structured:
                     reason_desc = "工具调用" if has_function_tools else "结构化输出"
                     logger.debug(
                         f"检测到{reason_desc}，自动为模型 "
-                        f"{model.model_name} 开启思维链增强"
+                        f"{identity.model_name} 开启思维链增强"
                     )
                 else:
                     logger.debug(
-                        f"模型 {model.model_name} 声明原生支持思维链，自动开启思维链"
+                        f"模型 {identity.model_name} 声明原生支持思维链，自动开启思维链"
                     )
-                effective_config.gemini_options.thinking_budget = -1
+                effective_config.common.reasoning_effort = "medium"
+                effective_config.gemini_options.include_thoughts = True
 
-        endpoint = getattr(adapter, "_get_gemini_endpoint")(model, effective_config)
-        url = adapter.get_api_url(model, endpoint)
+        endpoint = getattr(adapter, "_get_gemini_endpoint")(identity, effective_config)
+        url = adapter.get_api_url(identity, endpoint)
         headers = adapter.get_base_headers(api_key)
 
         system_instruction_parts: list[dict[str, Any]] = []
@@ -763,11 +734,11 @@ class GeminiTextHandler(BaseTextHandler):
 
         if server_tools:
             server_payloads = self.serializer.serialize_server_tools(
-                server_tools, model.capabilities
+                server_tools, identity.capabilities
             )
             if server_payloads:
                 all_tools_for_request.extend(server_payloads)
-                if model.capabilities.has_feature("server_side_tool_invocations"):
+                if identity.capabilities.has_feature("server_side_tool_invocations"):
                     body.setdefault("toolConfig", {}).update(
                         {
                             "includeServerSideToolInvocations": True,
@@ -799,7 +770,7 @@ class GeminiTextHandler(BaseTextHandler):
         converted_params: dict[str, Any] = {}
         if effective_config:
             converted_params = self.mapper.map_config(
-                effective_config, model.model_detail, model.capabilities
+                effective_config, None, identity.capabilities
             )
 
         if converted_params:
@@ -827,7 +798,7 @@ class GeminiTextHandler(BaseTextHandler):
     def parse_text_response(
         self,
         adapter: BaseAdapter,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         response_json: dict[str, Any],
         is_advanced: bool = False,
     ) -> ResponseData:
@@ -840,19 +811,19 @@ class GeminiEmbeddingHandler(BaseEmbeddingHandler):
     async def prepare_embedding_request(
         self,
         adapter: BaseAdapter,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         api_key: str,
-        batch: EmbedBatch,
-        config: LLMEmbeddingConfig,
+        request: EmbeddingRequest,
     ) -> RequestData:
-
-        api_model_name = model.model_name
+        batch = request.batch
+        config = request.config or LLMEmbeddingConfig()
+        api_model_name = identity.model_name
         if not api_model_name.startswith("models/"):
             api_model_name = f"models/{api_model_name}"
 
         base_url = (
-            model.api_base.rstrip("/")
-            if model.api_base
+            identity.api_base.rstrip("/")
+            if identity.api_base
             else "https://generativelanguage.googleapis.com"
         )
         url = f"{base_url}/v1beta/{api_model_name}:batchEmbedContents"
@@ -912,16 +883,14 @@ class GeminiEmbeddingHandler(BaseEmbeddingHandler):
         if "embeddings" not in response_json or not isinstance(
             response_json["embeddings"], list
         ):
-            raise LLMException(
+            raise ResponseParseException(
                 "Gemini嵌入响应缺少'embeddings'字段或格式不正确",
-                code=LLMErrorCode.RESPONSE_PARSE_ERROR,
                 details=response_json,
             )
         for item in response_json["embeddings"]:
             if "values" not in item:
-                raise LLMException(
+                raise ResponseParseException(
                     "Gemini嵌入响应的条目中缺少'values'字段",
-                    code=LLMErrorCode.RESPONSE_PARSE_ERROR,
                     details=response_json,
                 )
 
@@ -932,9 +901,8 @@ class GeminiEmbeddingHandler(BaseEmbeddingHandler):
             logger.error(
                 f"解析Gemini嵌入响应时发生未知错误: {e}. 响应: {response_json}"
             )
-            raise LLMException(
+            raise ResponseParseException(
                 f"解析Gemini嵌入响应失败: {e}",
-                code=LLMErrorCode.RESPONSE_PARSE_ERROR,
                 cause=e,
             )
 
@@ -945,14 +913,15 @@ class GeminiImageHandler(BaseImageHandler):
     def prepare_image_request(
         self,
         adapter: BaseAdapter,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         api_key: str,
-        prompt: str,
-        images: list[Any] | None = None,
-        config: GenerationConfig | None = None,
+        request: ImageRequest,
     ) -> RequestData:
-        endpoint = getattr(adapter, "_get_gemini_endpoint")(model, config)
-        url = adapter.get_api_url(model, endpoint)
+        prompt = request.prompt
+        images = request.images
+        config = request.config
+        endpoint = getattr(adapter, "_get_gemini_endpoint")(identity, config)
+        url = adapter.get_api_url(identity, endpoint)
         headers = adapter.get_base_headers(api_key)
 
         parts: list[dict[str, Any]] = [{"text": prompt}]
@@ -967,10 +936,8 @@ class GeminiImageHandler(BaseImageHandler):
                     b64_data = img.split(",", 1)[1]
                     img_bytes = base64.b64decode(b64_data)
                 else:
-                    raise LLMException(
+                    raise InvalidRequestException(
                         "Gemini 图像编辑仅支持 bytes/Path/base64 URI",
-                        code=LLMErrorCode.INVALID_PARAMETER,
-                        recoverable=False,
                     )
                 mime_type = "image/jpeg"
                 if img_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -993,7 +960,7 @@ class GeminiImageHandler(BaseImageHandler):
             config = GenerationConfig()
 
         mapper = GeminiConfigMapper()
-        gen_config = mapper.map_config(config, model.model_detail, model.capabilities)
+        gen_config = mapper.map_config(config, None, identity.capabilities)
 
         if gen_config:
             body["generationConfig"] = gen_config
@@ -1013,14 +980,15 @@ class GeminiAudioHandler(BaseAudioHandler):
     def prepare_speech_request(
         self,
         adapter: BaseAdapter,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         api_key: str,
-        input_text: str,
-        voice: str,
-        config: TTSConfig,
+        request: SpeechRequest,
     ) -> RequestData:
-        endpoint = getattr(adapter, "_get_gemini_endpoint")(model, None)
-        url = adapter.get_api_url(model, endpoint)
+        input_text = request.input_text
+        voice = request.voice
+        config = request.config or TTSConfig()
+        endpoint = getattr(adapter, "_get_gemini_endpoint")(identity, None)
+        url = adapter.get_api_url(identity, endpoint)
         headers = adapter.get_base_headers(api_key)
 
         speech_config: dict[str, Any] = {}
@@ -1054,7 +1022,10 @@ class GeminiAudioHandler(BaseAudioHandler):
         return RequestData(url=url, headers=headers, body=body)
 
     async def parse_speech_response(
-        self, adapter: BaseAdapter, model: LLMModelBase, raw_response: httpx.Response
+        self,
+        adapter: BaseAdapter,
+        identity: ModelIdentity,
+        raw_response: httpx.Response,
     ) -> AudioResponse:
         resp_bytes = await raw_response.aread()
         data = json.loads(resp_bytes)
@@ -1066,7 +1037,7 @@ class GeminiAudioHandler(BaseAudioHandler):
                 "data"
             ]
         except (KeyError, IndexError):
-            raise LLMException("Gemini 响应中未找到音频数据", details=data)
+            raise ResponseParseException("Gemini 响应中未找到音频数据", details=data)
 
         audio_bytes = base64.b64decode(b64_data)
 
@@ -1083,5 +1054,5 @@ class GeminiAudioHandler(BaseAudioHandler):
             audio_bytes=wav_io.getvalue(),
             audio_format="wav",
             usage=UsageInfo(),
-            model_name=model.model_name,
+            model_name=identity.model_name,
         )

@@ -4,9 +4,10 @@ from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel
 
+from zhenxun.services.ai.core.events import ToolStreamChunk
 from zhenxun.services.ai.core.templates import PromptTemplate
 from zhenxun.services.ai.flow.agent.agent import Agent
-from zhenxun.services.ai.flow.agent.models import AgentSettings
+from zhenxun.services.ai.flow.agent.models import AgentConfig
 from zhenxun.services.ai.flow.team.models import (
     CallAction,
     ConcurrentCallAction,
@@ -65,7 +66,7 @@ class BaseTeamStrategy(ABC):
         统一的团队 Leader / Planner 装配工厂。
         自动处理无状态配置以及 HITL 状态继承。
         """
-        leader_config = AgentSettings(
+        leader_config = AgentConfig(
             stateless=team.runtime_config.stateless if team.runtime_config else True,
             enable_hitl=getattr(team.runtime_config, "leader_enable_hitl", False),
         )
@@ -86,7 +87,7 @@ class BaseTeamStrategy(ABC):
             instruction=instruction,
             model=target_model,
             tools=tools,
-            settings=leader_config,
+            config=leader_config,
         )
 
 
@@ -137,7 +138,7 @@ class RouteStrategy(BaseTeamStrategy):
 
     async def generate_plan(
         self, team: "Team", prompt: str | Task | None, context: RunContext, **kwargs
-    ):
+    ) -> AsyncGenerator[TeamAction, Any]:
         router = self.router
         if not router:
             from .router import ChainRouter, FunctionRouter, LLMRouter
@@ -304,7 +305,7 @@ class CoordinateStrategy(BaseTeamStrategy):
 
     async def generate_plan(
         self, team: "Team", prompt: str | Task | None, context: RunContext, **kwargs
-    ):
+    ) -> AsyncGenerator[TeamAction, Any]:
         delegation_tools = []
         for m in team.members:
             persona = getattr(m, "persona", None)
@@ -330,11 +331,9 @@ class CoordinateStrategy(BaseTeamStrategy):
             tools=leader_tools,
         )
 
-        logger.info(f"✨ **团队 [{team.name}] Leader** 正在汇总各方报告...")
+        logger.debug(f"✨ **团队 [{team.name}] Leader** 正在汇总各方报告...")
 
         if context.run.streamer:
-            from zhenxun.services.ai.core.stream_events import ToolStreamChunk
-
             await context.run.streamer.send(
                 ToolStreamChunk(
                     tool_name="Team Leader",
@@ -342,7 +341,7 @@ class CoordinateStrategy(BaseTeamStrategy):
                 )
             )
 
-        logger.info(f"👨💼 [CoordinateStrategy] '{team.name}' 正在启动协调推理循环...")
+        logger.debug(f"👨💼 [CoordinateStrategy] '{team.name}' 正在启动协调推理循环...")
 
         leader_res = yield CallAction(agent=leader_agent, task=prompt)
 
@@ -376,14 +375,12 @@ class BroadcastStrategy(BaseTeamStrategy):
 
     async def generate_plan(
         self, team: "Team", prompt: str | Task | None, context: RunContext, **kwargs
-    ):
+    ) -> AsyncGenerator[TeamAction, Any]:
         task_desc_str = (
             prompt.description if isinstance(prompt, Task) else (prompt or "")
         )
 
         if context.run.streamer:
-            from zhenxun.services.ai.core.stream_events import ToolStreamChunk
-
             await context.run.streamer.send(
                 ToolStreamChunk(
                     tool_name="Team Broadcaster",
@@ -395,8 +392,6 @@ class BroadcastStrategy(BaseTeamStrategy):
         results = yield ConcurrentCallAction(actions=actions)
 
         if context.run.streamer:
-            from zhenxun.services.ai.core.stream_events import ToolStreamChunk
-
             await context.run.streamer.send(
                 ToolStreamChunk(
                     tool_name="Team Leader",
@@ -404,7 +399,7 @@ class BroadcastStrategy(BaseTeamStrategy):
                 )
             )
 
-        logger.info(f"✨ **团队 [{team.name}] Leader** 正在汇总各方报告...")
+        logger.debug(f"✨ **团队 [{team.name}] Leader** 正在汇总各方报告...")
 
         summary_text = "\n\n".join(
             [f"### 【{name} 的意见】:\n{res.output}" for name, res in results]
@@ -469,18 +464,18 @@ class TaskStrategy(BaseTeamStrategy):
         self.max_iterations = max_iterations
 
         self.blackboard = None
-        self.bb_tools = []
+        self.bb_toolkit = None
         if blackboard_schema is not None:
-            from zhenxun.services.ai.run.blackboard import (
-                BlackboardManager,
-                create_blackboard_tools,
+            from zhenxun.services.ai.run.blackboard import BlackboardManager
+            from zhenxun.services.ai.tools.providers.builtin.blackboard import (
+                BlackboardToolkit,
             )
 
             self.blackboard = BlackboardManager(
                 schema=blackboard_schema, initial_state=initial_blackboard_state
             )
-            self.bb_tools = create_blackboard_tools(self.blackboard)
-            self.leader_tools.extend(self.bb_tools)
+            self.bb_toolkit = BlackboardToolkit(self.blackboard)
+            self.leader_tools.append(self.bb_toolkit)
 
     async def generate_plan(
         self, team: "Team", prompt: str | Task | None, context: RunContext, **kwargs
@@ -491,15 +486,14 @@ class TaskStrategy(BaseTeamStrategy):
         if self.blackboard is not None:
             context.session.blackboard = self.blackboard
 
-        if self.bb_tools:
+        if self.bb_toolkit:
             for m in team.members:
                 if not hasattr(m, "tool_definitions"):
                     setattr(m, "tool_definitions", [])
 
                 m_tools = getattr(m, "tool_definitions")
-                for t in self.bb_tools:
-                    if t not in m_tools:
-                        m_tools.append(t)
+                if self.bb_toolkit not in m_tools:
+                    m_tools.append(self.bb_toolkit)
 
         member_infos = []
         for m in team.members:
@@ -529,7 +523,7 @@ class TaskStrategy(BaseTeamStrategy):
             tools=leader_tools,
         )
 
-        logger.info(
+        logger.debug(
             f"📋 [TaskStrategy] '{team.name}' 正在启动 Engine-Driven 状态机循环..."
         )
 

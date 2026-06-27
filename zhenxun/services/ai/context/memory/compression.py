@@ -4,7 +4,7 @@ from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, Field
 
-from zhenxun.services.ai.context.memory.interfaces import (
+from zhenxun.services.ai.context.memory.storage.interfaces import (
     BaseMemoryReducer,
 )
 from zhenxun.services.ai.core.engine.token_counter import token_counter
@@ -456,7 +456,7 @@ class CondenserPipeline:
     ) -> "CondenserPipeline":
         """基于全局和局部配置组装压缩管线工厂方法"""
         from zhenxun.services.ai.config import get_llm_config
-        from zhenxun.services.ai.llm.capabilities import get_model_capabilities
+        from zhenxun.services.ai.llm.system.capabilities import get_model_capabilities
 
         config = get_llm_config().context_settings
         pipeline_reducers = []

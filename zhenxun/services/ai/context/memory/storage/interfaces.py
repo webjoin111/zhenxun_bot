@@ -1,12 +1,12 @@
 from abc import ABC, abstractmethod
 
 from zhenxun.services.ai.context.memory.types import (
-    MemoryQuery,
     MemorySlot,
     SessionMetadata,
 )
 from zhenxun.services.ai.core.messages import LLMMessage
-from zhenxun.services.ai.run import RunContext
+from zhenxun.services.ai.run.context import RunContext
+from zhenxun.services.ai.utils.scope import ScopeSelector
 
 
 class BaseChatContext(ABC):
@@ -44,7 +44,7 @@ class BaseChatContext(ABC):
         ...
 
     @abstractmethod
-    async def clear_by_query(self, query: MemoryQuery) -> None:
+    async def clear_by_query(self, query: ScopeSelector) -> None:
         """根据条件领域查询对象清理对话历史。"""
         ...
 
@@ -75,7 +75,12 @@ class BaseSlotContext(ABC):
         ...
 
     @abstractmethod
-    async def clear_by_query(self, query: MemoryQuery) -> None:
+    async def list_all_slots(self, session: SessionMetadata) -> list[MemorySlot]:
+        """列出当前会话的所有记忆槽（包括未置顶的）。"""
+        ...
+
+    @abstractmethod
+    async def clear_by_query(self, query: ScopeSelector) -> None:
         """根据条件领域查询对象清理记忆槽。"""
         ...
 

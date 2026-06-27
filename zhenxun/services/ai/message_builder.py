@@ -35,7 +35,7 @@ from zhenxun.services.ai.core.messages import (
 )
 from zhenxun.services.ai.core.options import LLMEmbeddingConfig
 from zhenxun.services.log import logger
-from zhenxun.utils.pydantic_compat import model_dump
+from zhenxun.utils.pydantic_compat import TypeAdapter, model_copy, model_dump
 from zhenxun.utils.utils import infer_plugin_namespace
 
 S = TypeVar("S", bound=Segment)
@@ -153,8 +153,6 @@ class MessageBuilder:
     @classmethod
     async def _transform_to_content_part(cls, item: Any) -> UserContentUnion:
         if isinstance(item, BaseContentPart):
-            from pydantic import TypeAdapter
-
             return TypeAdapter(UserContentUnion).validate_python(model_dump(item))
         if isinstance(item, str):
             return TextPart(text=item)
@@ -164,8 +162,6 @@ class MessageBuilder:
                 raise ValueError(f"无法从路径加载内容: {item}")
             return cast(UserContentUnion, part)
         if isinstance(item, dict):
-            from pydantic import TypeAdapter
-
             return TypeAdapter(UserContentUnion).validate_python(item)
         if PILImageType and isinstance(item, PILImageType):
             buffer = BytesIO()
@@ -188,10 +184,7 @@ class MessageBuilder:
             if allowed_modalities is not None:
                 if isinstance(seg, Image) and "image" not in allowed_modalities:
                     continue
-                if (
-                    isinstance(seg, Audio | Voice)
-                    and "audio" not in allowed_modalities
-                ):
+                if isinstance(seg, Audio | Voice) and "audio" not in allowed_modalities:
                     continue
                 if isinstance(seg, Video) and "video" not in allowed_modalities:
                     continue
@@ -361,8 +354,6 @@ class MessageBuilder:
         if reply_parts:
             for i, msg in enumerate(converted_msgs):
                 if getattr(msg, "role", None) == "user":
-                    from zhenxun.utils.pydantic_compat import model_copy
-
                     new_msg = model_copy(msg, deep=True)
                     new_msg.content = cast(list[Any], reply_parts) + new_msg.content
                     converted_msgs[i] = new_msg

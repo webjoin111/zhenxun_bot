@@ -8,29 +8,35 @@ from typing import Any, Literal, TypeVar, overload
 from pydantic import BaseModel
 
 from zhenxun.services.ai.core.exceptions import (
-    LLMErrorCode,
     LLMException,
+    UpstreamServerException,
     get_user_friendly_error_message,
 )
 from zhenxun.services.ai.core.messages import (
     AudioResponse,
+    ChatRequest,
+    ChatResponse,
+    EmbeddingRequest,
     EmbeddingResponse,
+    ImageRequest,
+    ImageResponse,
     LLMMessage,
-    LLMResponse,
     PromptInput,
+    RerankRequest,
     RerankResult,
+    SpeechRequest,
 )
-from zhenxun.services.ai.core.models import ModelModality, ModelName
+from zhenxun.services.ai.core.models import ModelName
 from zhenxun.services.ai.core.options import (
     GenerationConfig,
     LLMEmbeddingConfig,
     TTSConfig,
 )
 from zhenxun.services.ai.guardrails import GuardrailSource
+from zhenxun.services.ai.llm.engine.router import LLMOrchestrator
 from zhenxun.services.log import logger
 
-from .config import IntentBuilder
-from .manager import get_model_instance
+from .builder import IntentBuilder
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -42,7 +48,7 @@ async def chat(
     instruction: str | None = None,
     config: GenerationConfig | IntentBuilder | None = None,
     timeout: float | None = None,
-) -> LLMResponse:
+) -> ChatResponse:
     """
     无状态的聊天对话便捷函数，单次执行后立即销毁上下文。
 
@@ -58,7 +64,7 @@ async def chat(
         timeout: (可选) HTTP 请求超时时间（秒）。
 
     返回:
-        LLMResponse: 包含AI回复内容、使用信息和工具调用等的完整响应对象。
+        ChatResponse: 包含AI回复内容、使用信息和工具调用等的完整响应对象。
 
     异常:
         LLMException: 当网络超时、模型不存在或 API 返回错误时抛出，建议外层捕获。
@@ -170,16 +176,16 @@ async def embed(
         final_config.task_type = task_map.get(task)
 
     try:
-        async with await get_model_instance(model, task="embedding") as model_instance:
-            return await model_instance.generate_embeddings(batch, config=final_config)
+        request = EmbeddingRequest(batch=batch, config=final_config)
+        return await LLMOrchestrator.invoke(request, model_name=model, task="embedding")
     except LLMException as e:
         raise e.with_traceback(None) from None
     except Exception as e:
         friendly_msg = get_user_friendly_error_message(e)
         logger.error(f"文本嵌入失败: {e} | 建议: {friendly_msg}", e=e)
-        raise LLMException(
+        raise UpstreamServerException(
             f"文本嵌入失败: {friendly_msg}",
-            code=LLMErrorCode.EMBEDDING_FAILED,
+            cause=e,
         ).with_traceback(None) from None
 
 
@@ -200,8 +206,11 @@ async def rerank(
         model: 重排模型名称 (如 BAAI/bge-reranker-v2-m3)
     """
     try:
-        async with await get_model_instance(model, task="rerank") as model_instance:
-            return await model_instance.rerank(query, documents, top_n)
+        request = RerankRequest(query=query, documents=documents, top_n=top_n)
+        response = await LLMOrchestrator.invoke(
+            request, model_name=model, task="rerank"
+        )
+        return response.results
     except Exception as e:
         friendly_msg = get_user_friendly_error_message(e)
         logger.error(f"文档重排失败: {e} | 建议: {friendly_msg}", e=e)
@@ -249,9 +258,9 @@ async def generate_structured(
         from zhenxun.services.ai.core.engine.structured_parser import (
             BaseOutputProcessor,
         )
-        from zhenxun.services.ai.core.messages import ResponseFormat
         from zhenxun.services.ai.core.options import (
             OutputFormatConfig,
+            ResponseFormat,
             StructuredOutputStrategy,
         )
 
@@ -304,7 +313,7 @@ async def generate_structured(
             structured_config.merge_with(config) if config else structured_config
         )
 
-        from zhenxun.services.ai.tools.engine.global_capabilities import (
+        from zhenxun.services.ai.capabilities.builtin import (
             ReflexionCapability,
         )
 
@@ -344,7 +353,7 @@ async def generate(
     config: GenerationConfig | IntentBuilder | None = None,
     timeout: float | None = None,
     extra: dict[str, Any] | None = None,
-) -> LLMResponse:
+) -> ChatResponse:
     """
     [内部 API/高级用法] 直接传入底层消息实体列表生成响应。一般业务插件推荐使用 `chat`。
 
@@ -354,7 +363,7 @@ async def generate(
         config: (可选) 生成配置对象，将与默认配置合并后传递。
 
     返回:
-        LLMResponse: 包含AI回复内容、使用信息和工具调用等的完整响应对象。
+        ChatResponse: 包含AI回复内容、使用信息和工具调用等的完整响应对象。
     """
     try:
         resolved_config: GenerationConfig | None = None
@@ -363,19 +372,40 @@ async def generate(
         else:
             resolved_config = config
 
-        async with await get_model_instance(
-            model, override_config=None, task="chat"
-        ) as model_instance:
-            response = await model_instance.generate_response(
-                messages,
-                config=resolved_config,
-                tools=None,
-                tool_choice=None,
-                timeout=timeout,
-                extra=extra or {},
-            )
+        request = ChatRequest(
+            messages=messages,
+            config=resolved_config,
+            timeout=timeout,
+            extra=extra or {},
+        )
 
-        return response
+        sys_caps = request.extra.pop("__sys_capabilities", [])
+        run_ctx = request.extra.pop("run_context", None)
+
+        if sys_caps:
+            from zhenxun.services.ai.capabilities import CombinedCapability
+            from zhenxun.services.ai.core.models import LLMContext
+            from zhenxun.services.ai.run import RunContext
+
+            run_context = run_ctx or RunContext()
+            llm_context = LLMContext(request=request)
+            combined_cap = CombinedCapability(sys_caps)
+
+            async def inner_handler(ctx: LLMContext[Any, Any]) -> ChatResponse:
+                return await LLMOrchestrator.invoke(
+                    ctx.request,
+                    model_name=model,
+                    task="chat",
+                    override_config=resolved_config,
+                )
+
+            return await combined_cap.wrap_model_request(
+                run_context, llm_context, inner_handler
+            )
+        else:
+            return await LLMOrchestrator.invoke(
+                request, model_name=model, task="chat", override_config=resolved_config
+            )
     except LLMException as e:
         raise e.with_traceback(None) from None
     except Exception as e:
@@ -392,7 +422,8 @@ async def create_image(
     *,
     images: None = None,
     model: ModelName = None,
-) -> LLMResponse:
+    config: GenerationConfig | IntentBuilder | None = None,
+) -> ImageResponse:
     """根据文本提示生成一张新图片。"""
     ...
 
@@ -403,7 +434,8 @@ async def create_image(
     *,
     images: list[Path | bytes | str] | Path | bytes | str,
     model: ModelName = None,
-) -> LLMResponse:
+    config: GenerationConfig | IntentBuilder | None = None,
+) -> ImageResponse:
     """在给定图片的基础上，根据文本提示进行编辑或重新生成。"""
     ...
 
@@ -414,7 +446,7 @@ async def create_image(
     images: list[Path | bytes | str] | Path | bytes | str | None = None,
     model: ModelName = None,
     config: GenerationConfig | IntentBuilder | None = None,
-) -> LLMResponse:
+) -> ImageResponse:
     """
     多模态图片生成/编辑函数。
 
@@ -440,28 +472,14 @@ async def create_image(
     config = config or GenerationConfig()
 
     try:
-        from zhenxun.services.ai.core.protocols.middleware import LLMContext
-
-        async with await get_model_instance(model, task="image") as model_instance:
-            if not model_instance.capabilities.accepts_output(ModelModality.IMAGE):
-                raise LLMException(
-                    f"模型 {model_instance.model_name} 声明不支持图像生成能力"
-                    " (未配置输出模态为 IMAGE)。"
-                )
-
-            context = LLMContext(
-                messages=[],
-                config=config,
-                tools=None,
-                tool_choice=None,
-                timeout=None,
-                request_type="image_generation",
-                extra={
-                    "prompt": text_prompt,
-                    "images": image_list if image_list else None,
-                },
-            )
-            return await model_instance._execute_core_generation(context)
+        request = ImageRequest(
+            prompt=text_prompt,
+            images=image_list if image_list else None,
+            config=config,
+        )
+        return await LLMOrchestrator.invoke(
+            request, model_name=model, task="image", override_config=config
+        )
     except LLMException as e:
         raise e.with_traceback(None) from None
     except Exception as e:
@@ -490,10 +508,8 @@ async def create_speech(
         raise LLMException("TTS 输入文本不能为空")
 
     try:
-        async with await get_model_instance(model, task="tts") as model_instance:
-            return await model_instance.generate_speech(
-                input_text=text, voice=voice, config=config
-            )
+        request = SpeechRequest(input_text=text, voice=voice, config=config)
+        return await LLMOrchestrator.invoke(request, model_name=model, task="tts")
     except LLMException as e:
         raise e.with_traceback(None) from None
     except Exception as e:

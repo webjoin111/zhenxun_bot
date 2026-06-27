@@ -1,3 +1,4 @@
+import asyncio
 import base64
 from collections.abc import Callable
 import datetime
@@ -8,19 +9,16 @@ if TYPE_CHECKING:
     from zhenxun.services.ai.context.rag.engine import ScopedRAGClient
 
 from nonebot.utils import is_coroutine_callable
-from pydantic import TypeAdapter
 from tortoise import fields
 from tortoise.timezone import now
 
-from zhenxun.services.ai.context.memory.interfaces import (
+from zhenxun.services.ai.context.memory.storage.interfaces import (
     BaseChatContext,
     BaseSlotContext,
 )
 from zhenxun.services.ai.context.memory.types import (
-    MemoryQuery,
     MemorySlot,
     SessionMetadata,
-    SlotScope,
 )
 from zhenxun.services.ai.context.rag.models import BaseRecord, SearchResult
 from zhenxun.services.ai.core.messages import (
@@ -31,8 +29,9 @@ from zhenxun.services.ai.core.messages import (
     ToolMessage,
     UserMessage,
 )
+from zhenxun.services.ai.utils.scope import ScopeSelector
 from zhenxun.services.db_context import Model
-from zhenxun.utils.pydantic_compat import model_dump
+from zhenxun.utils.pydantic_compat import TypeAdapter, model_dump
 
 
 class DBMessageSerializer:
@@ -96,14 +95,8 @@ class MemoryScope:
     def __init__(
         self,
         rag_client: "ScopedRAGClient",
-        async_write: bool = True,
-        capacity_limit: int = 500,
-        evict_ratio: float = 0.2,
     ):
         self.rag_client = rag_client
-        self.async_write = async_write
-        self.capacity_limit = capacity_limit
-        self.evict_ratio = evict_ratio
         self._background_tasks: set[Any] = set()
 
     async def remember(
@@ -124,13 +117,7 @@ class MemoryScope:
         )
         record = BaseRecord(content=content, metadata=meta)
 
-        await self.rag_client.ingest([record], async_write=self.async_write)
-
-        import asyncio
-
-        task = asyncio.create_task(self._evict_if_needed(session.scope_prefix))
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        await self.rag_client.ingest([record])
 
     async def recall(
         self,
@@ -147,8 +134,6 @@ class MemoryScope:
             metadata_filters=metadata_filter,
         )
         if matches:
-            import asyncio
-
             task = asyncio.create_task(
                 self._reinforce_memories([m.record for m in matches])
             )
@@ -192,40 +177,6 @@ class MemoryScope:
             r.metadata["last_accessed_at"] = now
             await self.rag_client.storage.update(r)
 
-    async def _evict_if_needed(self, scope_prefix: str):
-        records = await self.rag_client.storage.get_all(scope_prefix)
-        if len(records) > self.capacity_limit * 1.1:
-            import math
-            import time
-
-            now = time.time()
-            scored_records = []
-            for r in records:
-                meta = r.metadata
-                created_at = meta.get("created_at", now)
-                last_acc = meta.get("last_accessed_at", created_at)
-                imp = meta.get("importance", 0.5)
-                acc = meta.get("access_count", 0)
-                age_days = max(0.0, (now - last_acc) / 86400.0)
-                decay = 0.5 ** (age_days / 30.0)
-                acc_score = min(1.0, math.log1p(acc) / 5.0)
-                score = (0.3 * decay) + (0.3 * imp) + (0.4 * acc_score)
-                scored_records.append((score, r.id))
-
-            scored_records.sort(key=lambda x: x[0])
-            evict_count = int(self.capacity_limit * self.evict_ratio)
-            to_delete = [r_id for _, r_id in scored_records[:evict_count]]
-            if to_delete:
-                await self.rag_client.delete(to_delete, scope_prefix=scope_prefix)
-                from zhenxun.services.log import logger
-
-                logger.info(
-                    "🧹 [容量管理] 作用域 "
-                    f"{scope_prefix} 记忆数超限，已静默清理最冷数据 "
-                    f"{len(to_delete)} 条。"
-                )
-
-
 class InMemoryChatContext(BaseChatContext):
     def __init__(self):
         self._messages: dict[str, list[LLMMessage]] = {}
@@ -259,7 +210,7 @@ class InMemoryChatContext(BaseChatContext):
     async def clear(self, session: SessionMetadata) -> None:
         self._messages.pop(session.session_id, None)
 
-    async def clear_by_query(self, query: MemoryQuery) -> None:
+    async def clear_by_query(self, query: ScopeSelector) -> None:
         """内存级：前缀匹配清理所有符合要求的短期会话"""
         scope_prefix = query.scope_prefix
         keys_to_delete = [
@@ -268,63 +219,6 @@ class InMemoryChatContext(BaseChatContext):
         for sid in keys_to_delete:
             self._messages.pop(sid, None)
 
-
-class InMemorySlotContext(BaseSlotContext):
-    """内存级记忆槽存储 (主要用于测试或无状态容器)"""
-
-    def __init__(self):
-        self._slots: dict[str, dict[str, MemorySlot]] = {}
-
-    async def get_slot(self, session: SessionMetadata, label: str) -> MemorySlot | None:
-        session_sid = session.get_slot_id(SlotScope.SESSION)
-        if session_sid in self._slots and label in self._slots[session_sid]:
-            return self._slots[session_sid][label]
-
-        global_sid = session.get_slot_id(SlotScope.GLOBAL)
-        if global_sid in self._slots and label in self._slots[global_sid]:
-            return self._slots[global_sid][label]
-
-        return None
-
-    async def set_slot(self, session: SessionMetadata, slot: MemorySlot) -> None:
-        target_sid = session.get_slot_id(slot.scope)
-        if target_sid not in self._slots:
-            self._slots[target_sid] = {}
-        self._slots[target_sid][slot.label] = slot
-
-    async def delete_slot(
-        self, session: SessionMetadata, label: str, scope: str
-    ) -> None:
-        target_sid = session.get_slot_id(SlotScope(scope))
-        if target_sid in self._slots:
-            self._slots[target_sid].pop(label, None)
-
-    async def list_pinned_slots(self, session: SessionMetadata) -> list[MemorySlot]:
-        global_sid = session.get_slot_id(SlotScope.GLOBAL)
-        session_sid = session.get_slot_id(SlotScope.SESSION)
-
-        merged = {}
-        if global_sid in self._slots:
-            for label, slot in self._slots[global_sid].items():
-                merged[label] = slot
-
-        if session_sid in self._slots:
-            for label, slot in self._slots[session_sid].items():
-                merged[label] = slot
-
-        return [s for s in merged.values() if s.pinned and s.content.strip()]
-
-    async def clear_by_query(self, query: MemoryQuery) -> None:
-        """内存级：前缀匹配清理槽位。同时处理无用户的 global_s_ 前缀回退数据。"""
-        scope_prefix = query.scope_prefix
-        keys_to_delete = [
-            sid
-            for sid in self._slots.keys()
-            if sid.startswith(scope_prefix)
-            or sid.startswith(f"global_s_{scope_prefix}")
-        ]
-        for sid in keys_to_delete:
-            self._slots.pop(sid, None)
 
 
 class AbstractMemoryRecord(Model):
@@ -443,7 +337,7 @@ class TortoiseChatContext(BaseChatContext):
     async def clear(self, session: SessionMetadata) -> None:
         await self.model_class.filter(session_id=session.session_id).delete()
 
-    async def clear_by_query(self, query: MemoryQuery) -> None:
+    async def clear_by_query(self, query: ScopeSelector) -> None:
         """ORM 级：利用数据库 startswith 原生语法批量级联删除短期记忆"""
         scope_prefix = query.scope_prefix
         await self.model_class.filter(session_id__startswith=scope_prefix).delete()
@@ -474,7 +368,8 @@ class AbstractSlotRecord(Model):
     content = fields.TextField()
     size_limit = fields.IntField(default=2000)
     pinned = fields.BooleanField(default=True)
-    scope = fields.CharField(max_length=32)
+    scope = fields.CharField(max_length=255)
+    description = fields.CharField(max_length=255, default="")
     created_at = fields.FloatField()
     updated_at = fields.FloatField()
 
@@ -492,36 +387,36 @@ class TortoiseSlotContext(BaseSlotContext):
             content=row.content,
             size_limit=row.size_limit,
             pinned=row.pinned,
-            scope=SlotScope(row.scope),
+            scope=row.scope,
+            description=row.description,
             created_at=row.created_at,
             updated_at=row.updated_at,
         )
 
     async def get_slot(self, session: SessionMetadata, label: str) -> MemorySlot | None:
-        session_sid = session.get_slot_id(SlotScope.SESSION)
-        row = await self.model_class.filter(session_id=session_sid, label=label).first()
-        if row:
-            return self._row_to_slot(row)
+        rows = await self.model_class.filter(
+            session_id__in=session.accessible_scopes, label=label
+        ).all()
 
-        global_sid = session.get_slot_id(SlotScope.GLOBAL)
-        row = await self.model_class.filter(session_id=global_sid, label=label).first()
-        if row:
-            return self._row_to_slot(row)
+        row_map = {r.session_id: r for r in rows}
+        for scope in reversed(session.accessible_scopes):
+            if scope in row_map:
+                return self._row_to_slot(row_map[scope])
         return None
 
     async def set_slot(self, session: SessionMetadata, slot: MemorySlot) -> None:
-        target_sid = session.get_slot_id(slot.scope)
-        composite_id = f"{target_sid}_{slot.label}"
+        composite_id = f"{slot.scope}_{slot.label}"
 
         await self.model_class.update_or_create(
             id=composite_id,
             defaults={
-                "session_id": target_sid,
+                "session_id": slot.scope,
                 "label": slot.label,
                 "content": slot.content,
                 "size_limit": slot.size_limit,
                 "pinned": slot.pinned,
-                "scope": slot.scope.value,
+                "scope": slot.scope,
+                "description": slot.description,
                 "created_at": slot.created_at,
                 "updated_at": slot.updated_at,
             },
@@ -530,38 +425,37 @@ class TortoiseSlotContext(BaseSlotContext):
     async def delete_slot(
         self, session: SessionMetadata, label: str, scope: str
     ) -> None:
-        target_sid = session.get_slot_id(SlotScope(scope))
-        composite_id = f"{target_sid}_{label}"
+        composite_id = f"{scope}_{label}"
         await self.model_class.filter(id=composite_id).delete()
 
     async def list_pinned_slots(self, session: SessionMetadata) -> list[MemorySlot]:
-        global_sid = session.get_slot_id(SlotScope.GLOBAL)
-        session_sid = session.get_slot_id(SlotScope.SESSION)
-
         rows = await self.model_class.filter(
-            session_id__in=[global_sid, session_sid], pinned=True
+            session_id__in=session.accessible_scopes, pinned=True
         ).all()
 
         merged = {}
-        for row in rows:
-            if row.scope == SlotScope.GLOBAL.value:
-                merged[row.label] = self._row_to_slot(row)
-
-        for row in rows:
-            if row.scope == SlotScope.SESSION.value:
-                merged[row.label] = self._row_to_slot(row)
+        for scope in session.accessible_scopes:
+            for row in rows:
+                if row.session_id == scope:
+                    merged[row.label] = self._row_to_slot(row)
 
         return [s for s in merged.values() if s.content.strip()]
 
-    async def clear_by_query(self, query: MemoryQuery) -> None:
-        """ORM 级：利用数据库 startswith 原生语法批量级联删除槽位"""
-        scope_prefix = query.scope_prefix
-        from tortoise.expressions import Q
+    async def list_all_slots(self, session: SessionMetadata) -> list[MemorySlot]:
+        rows = await self.model_class.filter(
+            session_id__in=session.accessible_scopes
+        ).all()
 
-        await self.model_class.filter(
-            Q(session_id__startswith=scope_prefix)
-            | Q(session_id__startswith=f"global_s_{scope_prefix}")
-        ).delete()
+        merged = {}
+        for scope in session.accessible_scopes:
+            for row in rows:
+                if row.session_id == scope:
+                    merged[row.label] = self._row_to_slot(row)
+        return list(merged.values())
+
+    async def clear_by_query(self, query: ScopeSelector) -> None:
+        scope_prefix = query.scope_prefix
+        await self.model_class.filter(session_id__startswith=scope_prefix).delete()
 
 
 def get_orm_slot_context(model_class: type[AbstractSlotRecord]) -> TortoiseSlotContext:

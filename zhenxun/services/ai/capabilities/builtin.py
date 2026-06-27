@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from collections.abc import Callable
+from contextlib import asynccontextmanager
 import json
 import time
-from typing import Any, ClassVar
-
-from nonebot.permission import SUPERUSER
+from typing import Any, Literal
 
 from zhenxun.models.user_console import UserConsole
 from zhenxun.services.ai.capabilities import (
@@ -15,66 +14,54 @@ from zhenxun.services.ai.capabilities import (
     WrapToolExecuteHandler,
 )
 from zhenxun.services.ai.core.exceptions import (
-    AbortException,
     ControlFlowExit,
     GuardrailViolationError,
-    LLMErrorCode,
     LLMException,
     ModelRetry,
-    NeedsAuthException,
+    ResponseParseException,
     SchemaParseError,
     ToolFatalError,
+    UpstreamServerException,
 )
-from zhenxun.services.ai.core.messages import LLMResponse
-from zhenxun.services.ai.core.protocols.middleware import LLMContext
-from zhenxun.services.ai.run import AgentRunResult, RunContext
-from zhenxun.services.ai.run.models import AgentRunSummary
+from zhenxun.services.ai.core.messages import (
+    ChatRequest,
+    ChatResponse,
+    ToolCallPart,
+)
+from zhenxun.services.ai.core.models import LLMContext
+from zhenxun.services.ai.run.context import RunContext
+from zhenxun.services.ai.run.models import AgentRunResult, AgentRunSummary
+from zhenxun.services.ai.run.ui import UIController
 from zhenxun.services.ai.tools.models import ToolResult
-from zhenxun.services.cache.runtime_cache import LevelUserMemoryCache
+from zhenxun.services.ai.utils import PermissionUtils
 from zhenxun.services.log import logger
 from zhenxun.utils.enum import GoldHandle
 from zhenxun.utils.exception import InsufficientGold
-from zhenxun.utils.utils import infer_plugin_namespace
 
 
-class DummyCredentialManager:
-    """一个模拟的全局凭证管理器"""
-
-    _tokens: ClassVar[dict[str, dict[str, str]]] = {}
-
-    @classmethod
-    def get_token(cls, user_id: str, provider: str) -> str | None:
-        return cls._tokens.get(user_id, {}).get(provider)
-
-    @classmethod
-    def set_token(cls, user_id: str, provider: str, token: str) -> None:
-        if user_id not in cls._tokens:
-            cls._tokens[user_id] = {}
-        cls._tokens[user_id][provider] = token
-
-    @classmethod
-    def clear_token(cls, user_id: str, provider: str) -> None:
-        if user_id in cls._tokens and provider in cls._tokens[user_id]:
-            del cls._tokens[user_id][provider]
+def _get_tool_meta(tool: Any, key: str, default: Any = None) -> Any:
+    """辅助方法：安全地提取工具元数据中指定的键值"""
+    if not tool:
+        return default
+    settings = getattr(tool, "settings", None)
+    meta = (settings.metadata if settings else None) or getattr(tool, "metadata", {})
+    return meta.get(key, default)
 
 
 class StuckDetectionCapability(AbstractCapability):
-    """死循环检测：替代原有的 Event Listener，使用前置请求拦截防止 LLM 陷入无限重试"""
+    """死循环检测：使用前置请求拦截防止 LLM 陷入无限重试"""
 
     async def wrap_model_request(
         self,
         context: RunContext,
-        llm_context: LLMContext,
+        llm_context: LLMContext[ChatRequest, ChatResponse],
         handler: WrapModelRequestHandler,
-    ) -> LLMResponse:
+    ) -> ChatResponse:
         import hashlib
-
-        from zhenxun.services.ai.core.exceptions import ToolFatalError
-        from zhenxun.services.ai.core.messages import ToolCallPart
 
         max_repeated_errors = 3
         action_hashes = []
-        messages = list(llm_context.messages)
+        messages = list(llm_context.request.messages)
         idx = len(messages) - 1
 
         while idx >= 0:
@@ -136,82 +123,6 @@ class StuckDetectionCapability(AbstractCapability):
         return await handler(llm_context)
 
 
-class RequireAuthCapability(AbstractCapability):
-    """声明式鉴权与动态授权(HITL)中间件"""
-
-    async def wrap_tool_execute(
-        self,
-        context: RunContext,
-        tool_name: str,
-        arguments: dict[str, Any],
-        handler: WrapToolExecuteHandler,
-    ) -> Any:
-        tool = context.call.current_tool
-        user_id = context.get_user_id()
-
-        settings = getattr(tool, "settings", None)
-        auth_provider = (
-            settings.metadata.get("auth_provider") if settings else None
-        ) or getattr(tool, "metadata", {}).get("auth_provider")
-        if auth_provider and user_id:
-            if token := DummyCredentialManager.get_token(user_id, auth_provider):
-                context.session.auth_tokens[auth_provider] = token
-
-        current_kwargs = dict(arguments)
-        while True:
-            try:
-                return await handler(current_kwargs)
-            except NeedsAuthException as e:
-                provider = e.provider
-                bot = context.get_bot()
-                event = context.get_event()
-
-                if not bot or not event or not user_id:
-                    logger.warning(
-                        f"由于缺少 {provider} 凭证，工具执行被拦截（非交互环境）。"
-                    )
-                    return (
-                        ToolResult(
-                            output=json.dumps(
-                                {
-                                    "error_type": "AuthFailed",
-                                    "message": f"缺失 {provider} 的授权凭证。",
-                                },
-                                ensure_ascii=False,
-                            ),
-                        )
-                        .show_to_user(f"❌ 执行失败: 缺少 {provider} 授权")
-                        .as_error(is_retryable=False)
-                    )
-
-                prompt_msg = (
-                    f"⚠️ 该功能需要绑定您的 [{provider}] 账号以初始化连接。\n\n"
-                    f"请点击链接完成 OAuth 授权，或直接在此回复您的 Token (回复'取消'中止操作)。"  # noqa: E501
-                )
-
-                try:
-                    from zhenxun.services.ai.run.hitl import HITLController
-
-                    hitl = HITLController(context)
-                    user_input = await hitl.ask_text(prompt_msg, timeout=60.0)
-                except (AbortException, ToolFatalError):
-                    return ToolResult(
-                        output=json.dumps(
-                            {
-                                "error_type": "UserCancellation",
-                                "message": "用户拒绝了授权绑定。",
-                            },
-                            ensure_ascii=False,
-                        ),
-                    ).as_error(is_retryable=False)
-
-                DummyCredentialManager.set_token(user_id, provider, user_input)
-                context.session.auth_tokens[provider] = user_input
-                await bot.send(
-                    event, f"✅ [{provider}] 凭证已加载，正在恢复任务执行..."
-                )
-
-
 class PermissionCapability(AbstractCapability):
     """权限校验中间件：在执行前根据确定参数进行动态鉴权"""
 
@@ -223,39 +134,24 @@ class PermissionCapability(AbstractCapability):
         handler: WrapToolExecuteHandler,
     ) -> dict[str, Any]:
         tool = context.call.current_tool
-        admin_level = getattr(tool, "metadata", {}).get("admin_level", 0)
+        admin_level = _get_tool_meta(tool, "admin_level", 0)
         if admin_level > 0:
-            user_id = context.get_user_id()
-            group_id = context.get_group_id()
-
-            bot = context.get_bot()
-            event = context.get_event()
-            if bot and event and await SUPERUSER(bot, event):
-                return await handler(arguments)
-
-            if user_id:
-                global_user, group_users = await LevelUserMemoryCache.get_levels(
-                    user_id, group_id
+            if not await PermissionUtils.check_admin_level(context, admin_level):
+                msg = (
+                    "系统警告：用户权限不足（需要等级 "
+                    f"{admin_level}）。"
+                    "请温和地向用户解释权限不足，并拒绝执行。"
                 )
-                user_level = global_user.user_level if global_user else 0
-                if group_id and group_users:
-                    user_level = max(user_level, group_users.user_level)
+                user_id = context.get_user_id()
+                logger.warning(
+                    f"🛡️ [Capability] 权限拦截: 用户 {user_id} 尝试调用 "
+                    f"{getattr(tool, 'name', 'unknown')}"
+                )
+                from zhenxun.services.ai.core.exceptions import ToolFatalError
 
-                if user_level < admin_level:
-                    msg = (
-                        "系统警告：用户权限不足（需要等级 "
-                        f"{admin_level}，用户仅有 {user_level}）。"
-                        "请温和地向用户解释权限不足，并拒绝执行。"
-                    )
-                    logger.warning(
-                        f"🛡️ [Capability] 权限拦截: 用户 {user_id} 尝试调用 "
-                        f"{getattr(tool, 'name', 'unknown')}"
-                    )
-                    from zhenxun.services.ai.core.exceptions import ToolFatalError
-
-                    raise ToolFatalError(
-                        msg, display_content=f"❌ 权限不足: 需要等级 {admin_level}"
-                    )
+                raise ToolFatalError(
+                    msg, display_content=f"❌ 权限不足: 需要等级 {admin_level}"
+                )
         return await handler(arguments)
 
 
@@ -270,10 +166,7 @@ class BillingCapability(AbstractCapability):
         handler: WrapToolExecuteHandler,
     ) -> dict[str, Any]:
         tool = context.call.current_tool
-        settings = getattr(tool, "settings", None)
-        cost_gold = (
-            settings.metadata.get("cost_gold", 0) if settings else 0
-        ) or getattr(tool, "metadata", {}).get("cost_gold", 0)
+        cost_gold = _get_tool_meta(tool, "cost_gold", 0)
         if cost_gold > 0:
             user_id = context.get_user_id()
             platform = context.get_platform()
@@ -306,103 +199,129 @@ class BillingCapability(AbstractCapability):
 class TelemetryCapability(AbstractCapability):
     """
     核心可观测性与遥测 拦截器。
-    利用洋葱模型接管完整的 Agent 生命周期，计算瀑布流耗时，并聚合生成全局运行摘要
+    利用洋葱模型接管完整的 Agent 生命周期，计算瀑布流耗时，并聚合生成全局运行摘要。
     """
 
     def __init__(self):
         self.summary = AgentRunSummary()
-        self.start_t = 0.0
 
     async def for_run(self, context: RunContext) -> "AbstractCapability":
         return TelemetryCapability()
+
+    @asynccontextmanager
+    async def _track_span(
+        self,
+        on_finish: Callable[
+            [float, Literal["ok", "control_flow", "error"], BaseException | None], None
+        ],
+    ):
+        """内部统一的追踪上下文管理器，剥离冗余的计时与异常路由逻辑"""
+        start_t = time.monotonic()
+        status: Literal["ok", "control_flow", "error"] = "ok"
+        error: BaseException | None = None
+        try:
+            yield
+        except ControlFlowExit as e:
+            status = "control_flow"
+            error = e
+            raise e.with_traceback(None) from None
+        except Exception as e:
+            status = "error"
+            error = e
+            raise e.with_traceback(None) from None
+        finally:
+            dur = (time.monotonic() - start_t) * 1000
+            on_finish(dur, status, error)
 
     async def wrap_run(
         self, context: RunContext, handler: WrapRunHandler
     ) -> "AgentRunResult[Any]":
         agent_name = context.run.agent_name or "unknown"
-
         logger.debug(f"🚀 [Telemetry] 智能体 {agent_name} 开始运行")
-        self.start_t = time.monotonic()
-        try:
+        res_box = {}
+
+        def on_finish(dur: float, status: str, error: BaseException | None):
+            self.summary.total_latency_ms = dur
+            if status == "control_flow":
+                logger.debug(
+                    f"🛑 [Telemetry] 智能体 {agent_name} 正常中止/控制流转移: "
+                    f"{type(error).__name__} (耗时: {dur:.2f}ms)"
+                )
+            elif status == "ok":
+                res = res_box.get("res")
+                if res:
+                    self.summary.usage = res.usage
+                    res.telemetry = self.summary
+                logger.debug(
+                    f"🏁 [Telemetry] 智能体 {agent_name} 运行结束 (总耗时: {dur:.2f}ms)"
+                )
+
+        async with self._track_span(on_finish):
             res = await handler()
-        except ControlFlowExit as e:
-            self.summary.total_latency_ms = (time.monotonic() - self.start_t) * 1000
-            latency = self.summary.total_latency_ms
-            logger.debug(
-                f"🛑 [Telemetry] 智能体 {agent_name} 正常中止/控制流转移: "
-                f"{type(e).__name__} (耗时: {latency:.2f}ms)"
-            )
-            raise e.with_traceback(None) from None
-        except Exception as e:
-            self.summary.total_latency_ms = (time.monotonic() - self.start_t) * 1000
-            latency = self.summary.total_latency_ms
-            raise e.with_traceback(None) from None
-
-        self.summary.total_latency_ms = (time.monotonic() - self.start_t) * 1000
-        self.summary.usage = res.usage
-        res.telemetry = self.summary
-
-        latency = self.summary.total_latency_ms
-        logger.debug(
-            f"🏁 [Telemetry] 智能体 {agent_name} 运行结束 (总耗时: {latency:.2f}ms)"
-        )
-        return res
+            res_box["res"] = res
+            return res
 
     async def wrap_model_request(
         self,
         context: RunContext,
-        llm_context: LLMContext,
+        llm_context: LLMContext[ChatRequest, ChatResponse],
         handler: WrapModelRequestHandler,
-    ) -> LLMResponse:
+    ) -> ChatResponse:
         model_name = context.run.current_model or "model_instance"
-        start_t = time.monotonic()
-        try:
-            response = await handler(llm_context)
-            dur = (time.monotonic() - start_t) * 1000
+        res_box = {}
 
+        def on_finish(dur: float, status: str, error: BaseException | None):
             self.summary.chats.total += 1
             self.summary.chats.total_latency_ms += dur
 
-            stop_reason = "tool_calls" if response.tool_calls else "stop"
-            self.summary.chats.by_stop_reason[stop_reason] = (
-                self.summary.chats.by_stop_reason.get(stop_reason, 0) + 1
-            )
-
-            for call in response.tool_calls:
-                if llm_context.tools:
-                    tool_inst = next(
-                        (
-                            t
-                            for t in llm_context.tools
-                            if getattr(t, "name", "") == call.tool_name
-                        ),
-                        None,
+            if status == "error":
+                self.summary.chats.by_stop_reason["error"] = (
+                    self.summary.chats.by_stop_reason.get("error", 0) + 1
+                )
+            elif status == "ok":
+                response = res_box.get("res")
+                if response:
+                    stop_reason = "tool_calls" if response.tool_calls else "stop"
+                    self.summary.chats.by_stop_reason[stop_reason] = (
+                        self.summary.chats.by_stop_reason.get(stop_reason, 0) + 1
                     )
-                    if (
-                        tool_inst
-                        and getattr(tool_inst, "execution_side", "client") == "server"
-                    ):
-                        self.summary.tools.total += 1
-                        self.summary.tools.ok += 1
-                        tool_stat = self.summary.tools.by_name.setdefault(
-                            call.tool_name,
-                            {"total": 0, "ok": 0, "error": 0, "latency_ms": 0.0},
-                        )
-                        tool_stat["total"] += 1
-                        tool_stat["ok"] += 1
 
-            logger.debug(
-                f"🧠 [Telemetry] 模型 {model_name} 调用完成 (耗时: {dur:.2f}ms)"
-            )
+                    for call in response.tool_calls:
+                        if llm_context.request.tools:
+                            tool_inst = next(
+                                (
+                                    t
+                                    for t in llm_context.request.tools
+                                    if getattr(t, "name", "") == call.tool_name
+                                ),
+                                None,
+                            )
+                            if (
+                                tool_inst
+                                and getattr(tool_inst, "execution_side", "client")
+                                == "server"
+                            ):
+                                self.summary.tools.total += 1
+                                self.summary.tools.ok += 1
+                                tool_stat = self.summary.tools.by_name.setdefault(
+                                    call.tool_name,
+                                    {
+                                        "total": 0,
+                                        "ok": 0,
+                                        "error": 0,
+                                        "latency_ms": 0.0,
+                                    },
+                                )
+                                tool_stat["total"] += 1
+                                tool_stat["ok"] += 1
+                logger.debug(
+                    f"🧠 [Telemetry] 模型 {model_name} 调用完成 (耗时: {dur:.2f}ms)"
+                )
+
+        async with self._track_span(on_finish):
+            response = await handler(llm_context)
+            res_box["res"] = response
             return response
-        except Exception as e:
-            dur = (time.monotonic() - start_t) * 1000
-            self.summary.chats.total += 1
-            self.summary.chats.total_latency_ms += dur
-            self.summary.chats.by_stop_reason["error"] = (
-                self.summary.chats.by_stop_reason.get("error", 0) + 1
-            )
-            raise e.with_traceback(None) from None
 
     async def wrap_tool_execute(
         self,
@@ -411,60 +330,42 @@ class TelemetryCapability(AbstractCapability):
         arguments: dict[str, Any],
         handler: WrapToolExecuteHandler,
     ) -> Any:
-        start_t = time.monotonic()
-        try:
-            result = await handler(arguments)
-            dur = (time.monotonic() - start_t) * 1000
+        res_box = {}
 
+        def on_finish(dur: float, status: str, error: BaseException | None):
             self.summary.tools.total += 1
             self.summary.tools.total_latency_ms += dur
-
             tool_stat = self.summary.tools.by_name.setdefault(
                 tool_name, {"total": 0, "ok": 0, "error": 0, "latency_ms": 0.0}
             )
             tool_stat["total"] += 1
             tool_stat["latency_ms"] += dur
 
-            if getattr(result, "is_error", False):
+            if status == "error":
                 self.summary.tools.error += 1
                 tool_stat["error"] += 1
-            else:
-                self.summary.tools.ok += 1
-                tool_stat["ok"] += 1
+            elif status == "ok":
+                result = res_box.get("res")
+                if getattr(result, "is_error", False):
+                    self.summary.tools.error += 1
+                    tool_stat["error"] += 1
+                else:
+                    self.summary.tools.ok += 1
+                    tool_stat["ok"] += 1
+                logger.debug(
+                    f"🛠️ [Telemetry] 工具 {tool_name} 执行完毕 (耗时: {dur:.2f}ms)"
+                )
 
-            logger.debug(f"🛠️ [Telemetry] 工具 {tool_name} 执行完毕 (耗时: {dur:.2f}ms)")
+        async with self._track_span(on_finish):
+            result = await handler(arguments)
+            res_box["res"] = result
             return result
-        except ControlFlowExit as e:
-            dur = (time.monotonic() - start_t) * 1000
-            self.summary.tools.total += 1
-            self.summary.tools.total_latency_ms += dur
-
-            tool_stat = self.summary.tools.by_name.setdefault(
-                tool_name, {"total": 0, "ok": 0, "error": 0, "latency_ms": 0.0}
-            )
-            tool_stat["total"] += 1
-            tool_stat["latency_ms"] += dur
-            raise e.with_traceback(None) from None
-        except Exception as e:
-            dur = (time.monotonic() - start_t) * 1000
-            self.summary.tools.total += 1
-            self.summary.tools.total_latency_ms += dur
-            self.summary.tools.error += 1
-
-            tool_stat = self.summary.tools.by_name.setdefault(
-                tool_name, {"total": 0, "ok": 0, "error": 0, "latency_ms": 0.0}
-            )
-            tool_stat["total"] += 1
-            tool_stat["latency_ms"] += dur
-            tool_stat["error"] += 1
-            raise e.with_traceback(None) from None
 
 
 class ToolSideEffectCapability(AbstractCapability):
     """
     副作用处理中间件。
     代理执行遗留的 ToolResult 副作用 (UI展现、状态流转、Prompt追加)，
-    将 AgentExecutor 从杂项中解放出来。
     """
 
     async def wrap_tool_execute(
@@ -475,12 +376,17 @@ class ToolSideEffectCapability(AbstractCapability):
         handler: WrapToolExecuteHandler,
     ) -> Any:
         result = await handler(arguments)
-        from zhenxun.services.ai.tools.models import StateSyncResult, ToolResult
+        from zhenxun.services.ai.tools.models import StateSyncResult
+
+        tool = context.call.current_tool
+        is_silent = (
+            getattr(tool.settings, "silent", False)
+            if tool and hasattr(tool, "settings")
+            else False
+        )
 
         if isinstance(result, ToolResult):
-            if result.ui_display is not None:
-                from zhenxun.services.ai.run.ui_controller import UIController
-
+            if result.ui_display is not None and not is_silent:
                 ui = UIController(context)
                 await ui.send_display(result.ui_display)
 
@@ -515,7 +421,7 @@ class ToolRetryAndReflectionCapability(AbstractCapability):
                 ToolFatalError,
                 ToolFinishException,
             )
-            from zhenxun.services.ai.tools.engine.policy import ToolExecutionPolicy
+            from zhenxun.services.ai.tools.engine.executor import ToolExecutionPolicy
             from zhenxun.services.ai.tools.models import ToolResult
 
             if isinstance(e, ControlFlowExit):
@@ -572,21 +478,21 @@ class ReflexionCapability(AbstractCapability):
     async def wrap_model_request(
         self,
         context: RunContext,
-        llm_context: LLMContext,
+        llm_context: LLMContext[ChatRequest, ChatResponse],
         handler: WrapModelRequestHandler,
-    ) -> LLMResponse:
-        output_processor = llm_context.extra.get("output_processor")
-        guardrails = llm_context.extra.get("guardrails", [])
+    ) -> ChatResponse:
+        output_processor = llm_context.request.extra.get("output_processor")
+        guardrails = llm_context.request.extra.get("guardrails", [])
 
         if not output_processor and not guardrails:
             return await handler(llm_context)
 
-        max_retries = llm_context.extra.get("max_retries", 3)
+        max_retries = llm_context.request.extra.get("max_retries", 3)
         error_template = (
             output_processor.error_template if output_processor else "{error_msg}"
         )
 
-        ivr_messages = list(llm_context.messages)
+        ivr_messages = list(llm_context.request.messages)
         last_exception: Exception | None = None
 
         from zhenxun.services.ai.guardrails import GuardrailPipeline
@@ -594,14 +500,16 @@ class ReflexionCapability(AbstractCapability):
         pipeline = GuardrailPipeline(guardrails) if guardrails else None
 
         for attempt in range(max_retries + 1):
-            llm_context.messages = list(ivr_messages)
+            llm_context.request.messages = list(ivr_messages)
             current_response_text: str = ""
 
             try:
                 if pipeline:
-                    llm_context.messages = await pipeline.run_input_pipeline(
-                        llm_context.messages, context
+                    llm_context.request.messages = await pipeline.run_input_pipeline(
+                        llm_context.request.messages, context
                     )
+
+                from typing import cast
 
                 response = await handler(llm_context)
                 current_response_text = response.text
@@ -622,7 +530,7 @@ class ReflexionCapability(AbstractCapability):
                     )
                     from typing import cast
 
-                    response = cast("LLMResponse", resp_out)
+                    response = cast("ChatResponse", resp_out)
                     final_obj = final_obj_out
                     current_response_text = response.text
 
@@ -644,10 +552,8 @@ class ReflexionCapability(AbstractCapability):
                 if (
                     not is_model_retry
                     and llm_error
-                    and llm_error.code
-                    not in (
-                        LLMErrorCode.RESPONSE_PARSE_ERROR,
-                        LLMErrorCode.API_RESPONSE_INVALID,
+                    and not isinstance(
+                        llm_error, (ResponseParseException, UpstreamServerException)
                     )
                 ):
                     raise e
@@ -724,32 +630,6 @@ class ReflexionCapability(AbstractCapability):
 
         if last_exception:
             raise last_exception.with_traceback(None) from None
-        raise LLMException(
+        raise UpstreamServerException(
             "反思循环耗尽，未能生成符合所有校验规则的合法结果。",
-            code=LLMErrorCode.GENERATION_FAILED,
         ).with_traceback(None) from None
-
-
-GLOBAL_CAPABILITIES: dict[str, list[AbstractCapability]] = defaultdict(list)
-
-for _cap in [
-    StuckDetectionCapability(),
-    PermissionCapability(),
-    BillingCapability(),
-    RequireAuthCapability(),
-    TelemetryCapability(),
-    ToolSideEffectCapability(),
-    ToolRetryAndReflectionCapability(),
-    ReflexionCapability(),
-]:
-    GLOBAL_CAPABILITIES["global"].append(_cap)
-
-
-def register_global_capability(
-    capability: AbstractCapability, scope: str | None = None
-) -> None:
-    ns = scope if scope is not None else infer_plugin_namespace()
-    GLOBAL_CAPABILITIES[ns].append(capability)
-    logger.debug(
-        f"已注册全局 Capability: {capability.__class__.__name__} -> Namespace: {ns}"
-    )

@@ -3,7 +3,6 @@ from typing import Any
 
 from zhenxun.configs.config import Config
 from zhenxun.configs.utils import parse_as
-from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_dump
 
 from .models import DebugLogOptions, LLMConfig, ProviderConfig
@@ -89,17 +88,6 @@ def get_default_providers() -> list[dict[str, Any]]:
             ],
         },
         {
-            "name": "Jina",
-            "api_key": "YOUR_JINA_API_KEY",
-            "api_base": "https://api.jina.ai",
-            "api_type": "jina",
-            "models": [
-                {"model_name": "jina-embeddings-v3"},
-                {"model_name": "jina-embeddings-v5-omni-small"},
-                {"model_name": "jina-reranker-v2-base-multilingual"},
-            ],
-        },
-        {
             "name": "MiniMax",
             "api_key": "YOUR_API_KEY",
             "api_base": "https://api.minimaxi.com",
@@ -126,7 +114,6 @@ def get_default_providers() -> list[dict[str, Any]]:
 
 def register_llm_configs():
     """注册 LLM 服务的配置项"""
-    logger.info("注册 LLM 服务的配置项")
 
     llm_config = LLMConfig()
 
@@ -284,76 +271,3 @@ def get_llm_config() -> LLMConfig:
 def get_gemini_safety_threshold() -> str:
     """获取 Gemini 安全过滤阈值配置。"""
     return get_llm_config().provider_settings.gemini.safety_threshold
-
-
-def validate_llm_config() -> tuple[bool, list[str]]:
-    """验证 LLM 配置有效性并返回错误列表。"""
-    errors = []
-
-    try:
-        llm_config = get_llm_config()
-
-        if llm_config.client_settings.timeout <= 0:
-            errors.append("timeout 必须大于 0")
-
-        if llm_config.client_settings.max_retries < 0:
-            errors.append("max_retries 不能小于 0")
-
-        if llm_config.client_settings.retry_delay <= 0:
-            errors.append("retry_delay 必须大于 0")
-
-        if not llm_config.providers:
-            errors.append("至少需要配置一个 AI 服务提供商")
-        else:
-            provider_names = set()
-            for provider in llm_config.providers:
-                if provider.name in provider_names:
-                    errors.append(f"提供商名称重复: {provider.name}")
-                provider_names.add(provider.name)
-
-                if not provider.api_key:
-                    errors.append(f"提供商 {provider.name} 缺少 API Key")
-
-                if not provider.models:
-                    errors.append(f"提供商 {provider.name} 没有配置任何模型")
-                else:
-                    model_names = set()
-                    for model in provider.models:
-                        if model.model_name in model_names:
-                            errors.append(
-                                f"提供商 {provider.name} 中模型名称重复: "
-                                f"{model.model_name}"
-                            )
-                        model_names.add(model.model_name)
-
-        for task, m_name in model_dump(llm_config.default_models).items():
-            if m_name:
-                if not llm_config.validate_model_name(m_name):
-                    errors.append(f"任务 {task} 的默认模型 {m_name} 在配置中不存在")
-
-    except Exception as e:
-        errors.append(f"配置解析失败: {e!s}")
-
-    return len(errors) == 0, errors
-
-
-def set_default_model(task: str, provider_model_name: str | None) -> bool:
-    """设置默认模型名称"""
-    if provider_model_name:
-        llm_config = get_llm_config()
-        if not llm_config.validate_model_name(provider_model_name):
-            logger.error(f"模型 {provider_model_name} 在配置中不存在")
-            return False
-
-    ai_config = get_ai_config()
-    current_defaults = ai_config.get("default_models", {})
-    current_defaults[task] = provider_model_name
-
-    Config.set_config("AI", "default_models", current_defaults, auto_save=True)
-
-    if provider_model_name:
-        logger.info(f"任务 {task} 的默认模型已设置为: {provider_model_name}")
-    else:
-        logger.info(f"任务 {task} 的默认模型已清除")
-
-    return True

@@ -1,15 +1,11 @@
 from .agent import Agent
 from .models import (
-    AgentRunProfile,
-    AgentSettings,
-    AgentState,
+    AgentConfig,
     Persona,
 )
 
 __all__ = [
     "Agent",
-    "AgentRunProfile",
-    "AgentSettings",
-    "AgentState",
+    "AgentConfig",
     "Persona",
 ]

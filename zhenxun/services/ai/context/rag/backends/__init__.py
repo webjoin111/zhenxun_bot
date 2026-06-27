@@ -1,5 +1,6 @@
-from zhenxun.services.ai.context.rag.backends.embedders import DefaultEmbedder, Embedder
-from zhenxun.services.ai.context.rag.backends.storages import (
+from .embedders import DefaultEmbedder, Embedder
+from .storages import (
+    AbstractVectorRecord,
     DictStorageBackend,
     LanceDBStorageBackend,
     QdrantStorageBackend,
@@ -8,6 +9,7 @@ from zhenxun.services.ai.context.rag.backends.storages import (
 )
 
 __all__ = [
+    "AbstractVectorRecord",
     "DefaultEmbedder",
     "DictStorageBackend",
     "Embedder",

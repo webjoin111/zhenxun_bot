@@ -19,7 +19,7 @@ from zhenxun.services.ai.tools.models import (
     ToolResult,
 )
 from zhenxun.services.log import logger
-from zhenxun.utils.pydantic_compat import model_dump, model_validate
+from zhenxun.utils.pydantic_compat import model_dump, model_json_schema, model_validate
 
 from .schema import (
     _parse_docstring,
@@ -28,6 +28,13 @@ from .schema import (
     check_field_permissions,
     prune_schema_by_permissions,
 )
+
+_tool_runner_class: type | None = None
+
+
+def register_tool_runner(runner_class: type) -> None:
+    global _tool_runner_class
+    _tool_runner_class = runner_class
 
 
 class BaseTool:
@@ -121,17 +128,6 @@ class BaseTool:
 
         return new_tool
 
-    async def should_confirm(
-        self, context: RunContext | None = None, **kwargs: Any
-    ) -> str | None:
-        """拦截高危工具执行"""
-        from zhenxun.services.ai.tools.core.capabilities import ApprovalCapability
-
-        if any(isinstance(c, ApprovalCapability) for c in self.settings.capabilities):
-            args_str = json.dumps(kwargs, ensure_ascii=False, indent=2)
-            return f"即将在本地执行高危工具 [{self.name}]\n参数：\n{args_str}"
-        return None
-
     async def _handle_validation_error(self, e: ValidationError, kwargs: dict) -> None:
         """
         将 Pydantic 参数校验失败转化为 ToolRetryError 或 NeedsInputException
@@ -178,15 +174,11 @@ class BaseTool:
         args_schema = getattr(self, "args_schema", None)
         if args_schema is not None:
             if context is not None:
-                from zhenxun.utils.pydantic_compat import model_json_schema
-
                 base_schema = model_json_schema(args_schema)
                 schema = await prune_schema_by_permissions(
                     args_schema, context, base_schema
                 )
             else:
-                from zhenxun.utils.pydantic_compat import model_json_schema
-
                 schema = model_json_schema(args_schema)
         elif getattr(self, "_base_schema", None) is not None:
             schema = (
@@ -307,9 +299,12 @@ class BaseTool:
             )
         self.current_usage_count += 1
 
-        from zhenxun.services.ai.tools.engine.runner import NativeToolRunner
+        if _tool_runner_class is None:
+            raise ToolFatalError(
+                f"工具 '{self.name}' 运行时错误：未注册 ToolRunner 执行器。"
+            )
 
-        runner = NativeToolRunner()
+        runner = _tool_runner_class()
         final_result = await runner.run(tool=self, context=context, **kwargs)
 
         if not final_result.is_error:
@@ -369,8 +364,9 @@ class FunctionTool(BaseTool):
         super().__init__(name=name, description=description, settings=settings)
 
         self._original_func = func
-        from zhenxun.services.ai.utils.runtime_utils import wrap_to_async
+        from zhenxun.services.ai.utils.utils import wrap_to_async
 
+        self.__name__ = self.name
         self._func = wrap_to_async(func)
         self._schema_built = False
 
@@ -401,8 +397,6 @@ class FunctionTool(BaseTool):
         """JIT 懒加载：推迟到第一次请求定义或验证参数时再构建 Schema (耗时操作)"""
         if not self._schema_built:
             if self.args_schema:
-                from zhenxun.utils.pydantic_compat import model_json_schema
-
                 self._base_schema = model_json_schema(self.args_schema)
                 self._param_model = self.args_schema
             else:

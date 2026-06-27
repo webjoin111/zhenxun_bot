@@ -8,7 +8,7 @@ from typing import Any, Literal, cast
 import anyio
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 import httpx
-from mcp import ClientSession
+from mcp import ClientSession  # type: ignore
 from mcp.client.sse import sse_client
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamable_http_client
@@ -290,7 +290,6 @@ class MCPToolkit(BaseToolkit):
         self._shared_session: ClientSession | None = None
         self._tools: list[BaseTool] = []
         self._is_initialized = False
-        self._bound_sandbox_session_id: str | None = None
 
         self.lifespan_manager = LifespanManager()
 
@@ -360,17 +359,6 @@ class MCPToolkit(BaseToolkit):
             logger.error(f"执行预热安装异常: {e}")
             raise e
 
-    async def enter_session(self, session_id: str, context: RunContext) -> None:
-        """会话隔离级别的生命周期入口"""
-        await super().enter_session(session_id, context)
-        if not self.sandbox_session_id:
-            self._bound_sandbox_session_id = session_id
-
-    async def exit_session(self, session_id: str) -> None:
-        """会话隔离级别的生命周期出口"""
-        await super().exit_session(session_id)
-        pass
-
     async def get_session(
         self, context: RunContext | None = None
     ) -> ClientSession | None:
@@ -436,7 +424,6 @@ class MCPToolkit(BaseToolkit):
 
                             target_session_id = (
                                 self.sandbox_session_id
-                                or self._bound_sandbox_session_id
                                 or "mcp_global_session"
                             )
                             bp = self.sandbox_blueprint or SandboxBlueprint()

@@ -1,11 +1,10 @@
-import asyncio
 from typing import Any
 
 from zhenxun.services.ai.context.rag.backends import (
     StorageBackend,
 )
 from zhenxun.services.ai.context.rag.configs import RAGConfig
-from zhenxun.services.ai.context.rag.indexing import (
+from zhenxun.services.ai.context.rag.ingestion import (
     IndexPipeline,
 )
 from zhenxun.services.ai.context.rag.models import (
@@ -16,7 +15,6 @@ from zhenxun.services.ai.context.rag.retrieval import (
     BaseRetriever,
 )
 from zhenxun.services.ai.utils.scope import normalize_scope_path
-from zhenxun.services.log import logger
 
 
 class ScopedRAGClient:
@@ -33,6 +31,16 @@ class ScopedRAGClient:
         scopes: str | list[str] = "/",
         config: RAGConfig | None = None,
     ):
+        """
+        初始化 ScopedRAGClient 实例。
+
+        参数:
+            storage: 底层向量/文档存储后端。
+            retriever: 数据召回检索器。
+            pipeline: 数据入库和索引分块处理管线。
+            scopes: 数据隔离作用域，支持单作用域前缀或多作用域前缀列表。
+            config: 全局的 RAG 配置项。
+        """
         self.storage = storage
         self.retriever = retriever
         self.pipeline = pipeline
@@ -45,18 +53,14 @@ class ScopedRAGClient:
 
         self.scope_prefix = self.scopes[0] if self.scopes else "/"
 
-    async def ingest(self, records: list[BaseRecord], async_write: bool = False) -> int:
+    async def ingest(self, records: list[BaseRecord]) -> int:
         """通过 RAG Ingestion Pipeline 处理并入库数据"""
-        if async_write:
-            import asyncio
+        for r in records:
+            if "scope" not in r.metadata:
+                r.metadata["scope"] = self.scope_prefix
 
-            task = asyncio.create_task(self.pipeline.run(records))
-            self._background_tasks.add(task)
-            task.add_done_callback(self._background_tasks.discard)
-            return len(records)
-        else:
-            res = await self.pipeline.run(records)
-            return len(res)
+        res = await self.pipeline.run(records)
+        return len(res)
 
     async def search(
         self,
@@ -80,37 +84,8 @@ class ScopedRAGClient:
         if not target_scopes:
             return []
 
-        if len(target_scopes) == 1:
-            kwargs["scope_prefix"] = target_scopes[0]
-            return await self.retriever.retrieve(query, limit=limit, **kwargs)
-
-        oversample_limit = limit * 2
-        tasks = []
-
-        for scope in target_scopes:
-            call_kwargs = kwargs.copy()
-            call_kwargs["scope_prefix"] = scope
-            tasks.append(
-                self.retriever.retrieve(query, limit=oversample_limit, **call_kwargs)
-            )
-
-        results_lists = await asyncio.gather(*tasks, return_exceptions=True)
-
-        all_results: list[SearchResult] = []
-        seen_ids: set[str] = set()
-
-        for res_list in results_lists:
-            if isinstance(res_list, BaseException):
-                logger.error(f"[ScopedRAGClient] 并发检索子任务失败: {res_list}")
-                continue
-
-            for res in res_list:
-                if res.record.id not in seen_ids:
-                    seen_ids.add(res.record.id)
-                    all_results.append(res)
-
-        all_results.sort(key=lambda x: x.score, reverse=True)
-        return all_results[:limit]
+        kwargs["scopes"] = target_scopes
+        return await self.retriever.retrieve(query, limit=limit, **kwargs)
 
     async def update(self, record: BaseRecord) -> None:
         record.metadata["scope"] = self.scope_prefix

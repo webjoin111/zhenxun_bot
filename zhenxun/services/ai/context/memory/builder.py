@@ -7,14 +7,14 @@ from typing_extensions import Self
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from zhenxun.services.ai.context.memory.interfaces import (
+    from zhenxun.services.ai.context.memory.models import MemorySlot
+    from zhenxun.services.ai.context.memory.storage.interfaces import (
         BaseChatContext,
         BaseMemoryIngestionMiddleware,
         BaseSlotContext,
     )
-    from zhenxun.services.ai.context.memory.models import MemorySlot
     from zhenxun.services.ai.context.rag.backends import Embedder, StorageBackend
-    from zhenxun.services.ai.context.rag.consolidation import Consolidator
+    from zhenxun.services.ai.context.rag.engine import ScopedRAGClient
 
 from zhenxun.services.ai.context.memory.compression import MemoryPolicy
 from zhenxun.services.ai.context.memory.models import (
@@ -25,7 +25,10 @@ from zhenxun.services.ai.context.memory.models import (
     ShortTermConfig,
     SlotMemoryConfig,
 )
-from zhenxun.services.ai.context.memory.types import MemoryIsolationLevel
+from zhenxun.services.ai.context.memory.types import (
+    AutoRecallPolicy,
+)
+from zhenxun.services.ai.utils.scope import ScopeBuilder
 
 
 class MemoryBuilder:
@@ -53,9 +56,6 @@ class MemoryBuilder:
         创建一个开箱即用的默认记忆配置构建器。
 
         默认开启隔离的短期记忆，并使用 LLM 对话摘要进行上下文压缩。
-
-        返回:
-            MemoryBuilder: 链式配置构建器实例。
         """
         return cls().with_short_term(enable=True).with_llm_summary()
 
@@ -68,29 +68,37 @@ class MemoryBuilder:
         if isinstance(memory, cls):
             return memory.build()
         if isinstance(memory, bool):
-            return MemoryConfig(short_term=ShortTermConfig(enable=memory))
+            return MemoryConfig(
+                short_term=ShortTermConfig(enable=memory),
+                long_term=LongTermConfig(enable=memory),
+            )
 
         return MemoryConfig(short_term=ShortTermConfig(enable=False))
+
+    def with_base_isolation(self, isolation: ScopeBuilder) -> Self:
+        """设置顶层基准隔离级别，短期/中期/长期记忆将默认继承此级别"""
+        self._config.base_isolation = isolation
+        self._config.short_term.isolation = isolation
+        return self
 
     def with_short_term(
         self,
         enable: bool = True,
-        isolation_level: MemoryIsolationLevel = MemoryIsolationLevel.AGENT_USER,
-        backend: "BaseChatContext | None" = None,
+        isolation: ScopeBuilder | None = None,
+        backend: "str | BaseChatContext | None" = None,
     ) -> Self:
         """
         配置短期对话历史记忆。
 
         参数:
             enable: 是否开启短期记忆。
-            isolation_level: 记忆隔离级别，决定会话历史记录的区分范围。
+            isolation: 记忆隔离级别 (ScopeBuilder)，决定会话历史记录的区分范围。
             backend: 短期记忆存储后端实例，如果为 None 则使用全局默认后端。
-
-        返回:
-            Self: 链式构建器自身，用于链式调用。
         """
         self._config.short_term.enable = enable
-        self._config.short_term.isolation_level = isolation_level
+        if isolation is not None:
+            self._config.base_isolation = isolation
+            self._config.short_term.isolation = isolation
         if backend is not None:
             self._config.short_term.backend = backend
         return self
@@ -98,59 +106,66 @@ class MemoryBuilder:
     def with_slots(
         self,
         enable: bool = True,
+        scopes: dict[str, ScopeBuilder] | None = None,
         default_slots: list["MemorySlot"] | None = None,
-        backend: "BaseSlotContext | None" = None,
+        backend: "str | BaseSlotContext | None" = None,
+        instructions: str | None = None,
     ) -> Self:
         """
         配置核心槽位记忆 (Memory Slots)。
 
         参数:
             enable: 是否启用槽位记忆。
+            scopes: 语义化作用域映射字典。如果只有一个键值对，则大模型不可见该参数。
             default_slots: 首次初始化时自动写入的默认槽位列表。
             backend: 槽位记忆存储后端，如果为 None 则使用全局默认后端。
-
-        返回:
-            Self: 链式构建器自身，用于链式调用。
+            instructions: 覆写内置槽位管理工具箱的默认系统提示词规则。
         """
         self._config.slots.enable = enable
+        if scopes is not None:
+            self._config.slots.scopes = scopes
         if default_slots is not None:
             self._config.slots.default_slots = default_slots
         if backend is not None:
             self._config.slots.backend = backend
+        if instructions is not None:
+            self._config.slots.instructions = instructions
         return self
 
     def with_long_term(
         self,
         enable: bool = True,
-        scope: str | None = None,
-        backend: "StorageBackend | None" = None,
+        scopes: dict[str, ScopeBuilder] | None = None,
+        engine: "ScopedRAGClient | None" = None,
+        backend: "str | StorageBackend | None" = None,
         embedder: "Embedder | str | None" = None,
-        auto_consolidate: bool = True,
-        consolidator: "Consolidator | None" = None,
-        async_write: bool = True,
+        agentic: bool = True,
+        auto_recall: AutoRecallPolicy = False,
+        instructions: str | None = None,
     ) -> Self:
         """
         配置长期向量记忆与 RAG 设定。
 
         参数:
             enable: 是否启用长期记忆。
-            scope: 长期记忆的作用域标识，控制记忆召回与存储的边界。
+            scopes: 语义化作用域映射字典。如果只有一个键值对，则大模型不可见该参数。
+            engine: 高级 RAG 检索引擎实例 (推荐)。若提供，将接管记忆的底层检索、混合与重排。
             backend: 长期记忆存储后端。
             embedder: 用于向量化的文本嵌入模型实例。
-            auto_consolidate: 是否开启背景自动记忆整合。
-            consolidator: 记忆整合器实例。
-            async_write: 是否使用异步非阻塞写入长期记忆。
-
-        返回:
-            Self: 链式构建器自身，用于链式调用。
-        """
+            agentic: 是否开启主动智能体记忆管理 (增删改查工具自动注入)。
+            auto_recall: 长期记忆的自动召回策略，支持 bool 或 Callable 函数。
+            instructions: 覆写内置长期记忆工具箱的默认系统提示词规则。
+        """  # noqa: E501
         self._config.long_term.enable = enable
-        self._config.long_term.scope = scope
+        self._config.long_term.engine = engine
+        if scopes is not None:
+            self._config.long_term.scopes = scopes
         self._config.long_term.backend = backend
         self._config.long_term.embedder = embedder
-        self._config.long_term.auto_consolidate = auto_consolidate
-        self._config.long_term.consolidator = consolidator
-        self._config.long_term.async_write = async_write
+        self._config.long_term.agentic = agentic
+        self._config.long_term.auto_recall = auto_recall
+        if instructions is not None:
+            self._config.long_term.instructions = instructions
         return self
 
     def with_multimodal_window(self, window_size: int = 5) -> Self:
@@ -161,9 +176,6 @@ class MemoryBuilder:
 
         参数:
             window_size: 允许保留多模态信息的最新的对话轮数。
-
-        返回:
-            Self: 链式构建器自身，用于链式调用。
         """
         self._config.compression.vision_window = window_size
         return self
@@ -185,9 +197,6 @@ class MemoryBuilder:
             keep_recent_turns: 在大模型总结之外，强制保留的最近原始对话轮数。
             summarization_model: 负责生成总结的大模型名称。
             summarization_prompt: 生成总结时所使用的系统提示词。
-
-        返回:
-            Self: 链式构建器自身，用于链式调用。
         """
         self._config.compression.policy = MemoryPolicy.llm_summarize(
             trigger_tokens=trigger_tokens,
@@ -220,9 +229,6 @@ class MemoryBuilder:
             prompt_template: (可选) 提取提示词模板，
                 支持 {prev_summary} 和 {dialogue} 变量。
             format_callback: (可选) 将提取出的 Pydantic 实例格式化为字符串的回调函数。
-
-        返回:
-            Self: 链式构建器自身，用于链式调用。
         """
         self._config.compression.policy = MemoryPolicy.structured_summarize(
             trigger_tokens=trigger_tokens,
@@ -257,4 +263,8 @@ class MemoryBuilder:
         """
         生成最终构建好的 MemoryConfig 配置对象。
         """
+        if not self._config.slots.scopes:
+            self._config.slots.scopes = {"私有": self._config.base_isolation}
+        if not self._config.long_term.scopes:
+            self._config.long_term.scopes = {"私有": self._config.base_isolation}
         return self._config

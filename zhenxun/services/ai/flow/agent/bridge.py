@@ -1,15 +1,17 @@
+import asyncio
 from typing import Any, Generic, cast
 from typing_extensions import TypeVar
 
 from nonebot.adapters import Bot, Event
 from nonebot_plugin_alconna.uniseg import UniMessage
 
+from zhenxun.services.ai.core.events import ToolStreamChunk
 from zhenxun.services.ai.core.exceptions import ControlFlowExit
 from zhenxun.services.ai.core.messages import UsageInfo
-from zhenxun.services.ai.core.stream_events import ToolStreamChunk
 from zhenxun.services.ai.flow.base import BaseRunnable
 from zhenxun.services.ai.run import AgentRunResult, RunContext
 from zhenxun.services.ai.run.models import AgentRunEnd, AgentRunError
+from zhenxun.services.ai.run.ui import UIController
 from zhenxun.services.log import logger
 from zhenxun.utils.message import MessageUtils
 
@@ -123,19 +125,9 @@ class AgentRunner(Generic[T_Out]):
             logger.debug(
                 f"{self.runnable.name} 控制流正常中断: {type(e).__name__} - {e}"
             )
-            display_msg = getattr(e, "display", None)
-            if display_msg and self._bot and self._event:
-                try:
-                    if isinstance(display_msg, UniMessage):
-                        await display_msg.send(
-                            self._event, bot=self._bot, reply_to=reply_to
-                        )
-                    else:
-                        await self._bot.send(self._event, str(display_msg))
-                except Exception:
-                    pass
-
-            import asyncio
+            await UIController.handle_control_flow_exit_display(
+                e, self.context, reply_to
+            )
 
             raise asyncio.CancelledError()
 

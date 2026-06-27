@@ -2,8 +2,8 @@ from abc import ABC, abstractmethod
 import asyncio
 import re
 
-from zhenxun.services.ai.context.memory.utils import cosine_similarity
 from zhenxun.services.ai.context.rag.models import BaseRecord
+from zhenxun.services.ai.context.rag.utils import cosine_similarity
 from zhenxun.services.log import logger
 
 
@@ -73,7 +73,7 @@ class DocumentChunking(ChunkingStrategy):
 
 
 class RecursiveCharacterChunking(ChunkingStrategy):
-    """递归字符分块策略 (Recursive Character Text Splitter)"""
+    """递归字符分块策略"""
 
     def __init__(
         self,
@@ -281,24 +281,16 @@ class BaseMapNode(ABC):
     ) -> BaseRecord | list[BaseRecord] | None: ...
 
 
-class ScopeInjectionNode(BaseBatchNode):
-    """作用域注入节点。针对独立知识库，在管线前端强制将指定前缀注入到元数据中。"""
-
-    def __init__(self, scope_prefix: str):
-        self.scope_prefix = scope_prefix
-
-    async def process_batch(self, records: list[BaseRecord]) -> list[BaseRecord]:
-        for r in records:
-            r.metadata["scope"] = self.scope_prefix
-        return records
-
-
 class DynamicChunkingNode(BaseBatchNode):
     """智能路由切块节点。根据记录的扩展名动态选择切块策略。"""
 
-    def __init__(self, default_strategy: ChunkingStrategy):
+    def __init__(
+        self,
+        default_strategy: ChunkingStrategy,
+        custom_strategies: dict[str, ChunkingStrategy] | None = None,
+    ):
         self.default_strategy = default_strategy
-        self.strategies = {".csv": RowChunking(rows_per_chunk=30)}
+        self.strategies = custom_strategies or {".csv": RowChunking(rows_per_chunk=30)}
 
     async def process_batch(self, records: list[BaseRecord]) -> list[BaseRecord]:
         chunks = []
@@ -309,61 +301,12 @@ class DynamicChunkingNode(BaseBatchNode):
         return chunks
 
 
-class ConsolidationNode(BaseMapNode):
-    """无状态的数据融合决策节点 (Map)。请求大模型生成合并/删除/插入意图。"""
-
-    def __init__(self, storage, consolidator, threshold: float = 0.85):
-        self.storage = storage
-        self.consolidator = consolidator
-        self.threshold = threshold
-
-    async def process_one(self, record: BaseRecord) -> list[BaseRecord]:
-        if not record.embedding:
-            return [record]
-
-        scope = record.metadata.get("scope", "/")
-        from zhenxun.services.ai.context.rag.models import QueryRequest
-
-        rag_query = QueryRequest(
-            text=record.content, embedding=record.embedding, limit=5
-        )
-        rag_results = await self.storage.search(rag_query, scope_prefix=scope)
-        similar_records = [
-            res.record for res in rag_results if res.score >= self.threshold
-        ]
-
-        plan = await self.consolidator.consolidate(record.content, similar_records)
-
-        results = []
-        for action in plan.actions:
-            if action.action == "delete":
-                results.append(
-                    BaseRecord(id=action.record_id, content="", action="delete")
-                )
-            elif action.action == "update" and action.new_content:
-                old_record = next(
-                    (r for r in similar_records if r.id == action.record_id), None
-                )
-                if old_record:
-                    old_record.content = action.new_content
-                    old_record.action = "update"
-                    results.append(old_record)
-
-        if plan.insert_new:
-            record.action = "insert"
-            results.append(record)
-        else:
-            record.action = "ignore"
-            results.append(record)
-
-        return results
-
-
 class BaseEmbeddingBatchNode(BaseBatchNode):
     """批量向量化抽象基类：提取文本、分批请求 API 并将结果写回的公共逻辑"""
 
-    def __init__(self, embedder):
+    def __init__(self, embedder, batch_size: int = 80):
         self.embedder = embedder
+        self.batch_size = batch_size
 
     @abstractmethod
     def _filter_target_records(self, records: list[BaseRecord]) -> list[BaseRecord]:
@@ -381,9 +324,8 @@ class BaseEmbeddingBatchNode(BaseBatchNode):
         texts = [r.content for r in target_records]
         try:
             vecs = []
-            batch_size = 80
-            for i in range(0, len(texts), batch_size):
-                batch_texts = texts[i : i + batch_size]
+            for i in range(0, len(texts), self.batch_size):
+                batch_texts = texts[i : i + self.batch_size]
                 batch_vecs = await self.embedder(batch_texts, task="document")
                 vecs.extend(batch_vecs)
 
@@ -401,17 +343,6 @@ class EmbeddingNode(BaseEmbeddingBatchNode):
 
     def _filter_target_records(self, records: list[BaseRecord]) -> list[BaseRecord]:
         return [r for r in records if r.content.strip()]
-
-
-class UpdateEmbeddingNode(BaseEmbeddingBatchNode):
-    """
-    更新向量化节点。
-    专门负责为被 Consolidator 融合更新 (action == 'update') 的记录重新生成 Embedding。
-    彻底解耦模型推理与数据库提交。
-    """
-
-    def _filter_target_records(self, records: list[BaseRecord]) -> list[BaseRecord]:
-        return [r for r in records if r.action == "update" and r.content.strip()]
 
 
 class DedupNode(BaseBatchNode):
@@ -455,7 +386,7 @@ class StorageCommitNode(BaseBatchNode):
         if to_insert:
             await self.storage.save(to_insert)
 
-        logger.info(
+        logger.debug(
             "💾 RAG 事务提交完成：插入 "
             f"{len(to_insert)} 条, 更新 {len(to_update)} 条, "
             f"删除 {len(to_delete)} 条。"
@@ -510,3 +441,19 @@ class IndexPipeline:
                 raise ValueError(f"未知的管道节点类型: {type(node)}")
 
         return current_records
+
+
+__all__ = [
+    "BaseBatchNode",
+    "BaseMapNode",
+    "ChunkingStrategy",
+    "DedupNode",
+    "DeduplicationProcessor",
+    "DocumentChunking",
+    "DynamicChunkingNode",
+    "EmbeddingNode",
+    "IndexPipeline",
+    "RecursiveCharacterChunking",
+    "RowChunking",
+    "StorageCommitNode",
+]

@@ -2,17 +2,20 @@
 运行时（Run）相关核心类型定义
 """
 
-import asyncio
 from collections.abc import AsyncIterator
 import json
 from typing import Any, Generic, cast
 from typing_extensions import TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
+from zhenxun.services.ai.core.events import (
+    BaseStreamEvent,
+    ToolCallStart,
+    ToolStreamChunk,
+)
 from zhenxun.services.ai.core.messages import LLMMessage, UsageInfo
-from zhenxun.services.ai.core.stream_events import AgentStreamEvent
-from zhenxun.utils.pydantic_compat import model_dump
+from zhenxun.utils.pydantic_compat import model_dump, model_validator
 
 
 class ChatSummary(BaseModel):
@@ -39,6 +42,7 @@ class ToolSummary(BaseModel):
 
 class AgentRunSummary(BaseModel):
     """Agent 单次运行的全局可观测性遥测摘要"""
+
     chats: ChatSummary = Field(default_factory=ChatSummary)
     """大模型调用遥测摘要"""
     tools: ToolSummary = Field(default_factory=ToolSummary)
@@ -49,40 +53,15 @@ class AgentRunSummary(BaseModel):
     """智能体运行总耗时（毫秒）"""
 
 
-class CancellationToken:
-    """全局取消令牌，用于在异步链路中传递中止信号"""
-
-    def __init__(self):
-        self._cancelled = False
-        self._futures: list[asyncio.Future] = []
-
-    def cancel(self) -> None:
-        self._cancelled = True
-        for f in self._futures:
-            if not f.done():
-                f.cancel()
-
-    def is_cancelled(self) -> bool:
-        return self._cancelled
-
-    def raise_if_cancelled(self) -> None:
-        if self._cancelled:
-            raise asyncio.CancelledError(
-                "任务已被主动取消 (CancellationToken triggered)"
-            )
-
-    def link_future(self, future: asyncio.Future) -> None:
-        if self._cancelled:
-            future.cancel()
-        else:
-            self._futures.append(future)
-
-
 class HandoffPayload(BaseModel):
     """移交信息载荷"""
+
     target: str
+    """移交的目标智能体名称"""
     reason: str = ""
+    """移交的原因描述"""
     context_data: Any = ""
+    """随移交传递的上下文数据"""
 
 
 OutputDataT = TypeVar("OutputDataT", default=str)
@@ -108,22 +87,25 @@ class AgentRunResult(BaseModel, Generic[OutputDataT]):
         arbitrary_types_allowed = True
 
 
-class AgentRunStart(AgentStreamEvent):
+class AgentRunStart(BaseStreamEvent):
     """智能体运行开始"""
 
     agent_name: str
+    """启动运行的智能体名称"""
 
 
-class AgentRunError(AgentStreamEvent):
+class AgentRunError(BaseStreamEvent):
     """智能体运行发生异常"""
 
     error: BaseException
+    """智能体运行过程中抛出的异常"""
 
 
-class AgentRunEnd(AgentStreamEvent):
+class AgentRunEnd(BaseStreamEvent):
     """智能体运行完全结束"""
 
     result: AgentRunResult[Any]
+    """智能体运行结束后的完整结果"""
 
 
 class StreamedRunResult(Generic[OutputDataT]):
@@ -194,6 +176,36 @@ class StreamedRunResult(Generic[OutputDataT]):
 
         return cast(AgentRunResult[OutputDataT], self._result)
 
+    async def forward_to(
+        self, target_streamer: Any, prefix_name: str
+    ) -> AgentRunResult[OutputDataT]:
+        """将底层的事件流自动格式化并转发给另一个事件发射器，
+        常用于 DelegateTool 嵌套调用"""
+        async for event in self.stream_events():
+            if not target_streamer:
+                continue
+
+            if isinstance(event, ToolStreamChunk):
+                await target_streamer.send(
+                    ToolStreamChunk(
+                        tool_name=f"{prefix_name} -> {event.tool_name}",
+                        content=event.content,
+                        metadata=event.metadata,
+                    )
+                )
+            elif isinstance(event, ToolCallStart):
+                intent_str = (
+                    f" (意图: {event.intent})" if getattr(event, "intent", None) else ""
+                )
+                await target_streamer.send(
+                    ToolStreamChunk(
+                        tool_name=prefix_name,
+                        content=f"🔁 正在调用工具: {event.tool_name}...{intent_str}",
+                    )
+                )
+
+        return await self.get_run_result()
+
 
 class TaskResult(BaseModel):
     """单个数据契约任务的执行结果"""
@@ -253,7 +265,6 @@ class Task(BaseModel):
 
 __all__ = [
     "AgentRunResult",
-    "CancellationToken",
     "OutputDataT",
     "StreamedRunResult",
     "Task",

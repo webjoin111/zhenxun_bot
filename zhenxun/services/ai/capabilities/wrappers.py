@@ -4,7 +4,7 @@ from collections.abc import Callable
 import graphlib
 from typing import TYPE_CHECKING, Any
 
-from zhenxun.services.ai.core.messages import LLMResponse
+from zhenxun.services.ai.core.messages import ChatRequest, ChatResponse
 from zhenxun.services.ai.core.options import GenerationConfig
 
 from .base import (
@@ -17,7 +17,7 @@ from .base import (
 )
 
 if TYPE_CHECKING:
-    from zhenxun.services.ai.core.protocols.middleware import LLMContext
+    from zhenxun.services.ai.core.models import LLMContext
     from zhenxun.services.ai.run import AgentRunResult, RunContext
 
 
@@ -169,9 +169,9 @@ class CombinedCapability(AbstractCapability):
     async def wrap_model_request(
         self,
         context: RunContext,
-        llm_context: LLMContext,
+        llm_context: LLMContext[ChatRequest, ChatResponse],
         handler: WrapModelRequestHandler,
-    ) -> LLMResponse:
+    ) -> ChatResponse:
         chain = handler
         for cap in reversed(self.capabilities):
             chain = _make_wrap_link(
@@ -315,9 +315,9 @@ class WrapperCapability(AbstractCapability):
     async def wrap_model_request(
         self,
         context: RunContext,
-        llm_context: LLMContext,
+        llm_context: LLMContext[ChatRequest, ChatResponse],
         handler: WrapModelRequestHandler,
-    ) -> LLMResponse:
+    ) -> ChatResponse:
         return await self.wrapped.wrap_model_request(context, llm_context, handler)
 
     async def wrap_tool_validate(

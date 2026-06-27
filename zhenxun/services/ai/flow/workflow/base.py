@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -77,8 +78,6 @@ class BaseNode(ABC):
         )
 
         if policy_result.action == PolicyAction.RETRY:
-            import asyncio
-
             if policy_result.delay > 0:
                 await asyncio.sleep(policy_result.delay)
             new_input = policy_result.new_input or step_input

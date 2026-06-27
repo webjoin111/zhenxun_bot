@@ -5,13 +5,13 @@ import uuid
 import numpy as np
 from tortoise import fields
 
-from zhenxun.services.ai.context.memory.types import MemoryQuery
 from zhenxun.services.ai.context.rag.models import (
     BaseRecord,
     QueryRequest,
     SearchResult,
 )
 from zhenxun.services.ai.context.rag.retrieval import FilterEvaluator
+from zhenxun.services.ai.utils.scope import ScopeSelector
 from zhenxun.services.db_context import Model
 
 
@@ -24,7 +24,7 @@ class StorageBackend(Protocol):
         ...
 
     async def search(
-        self, query: QueryRequest, scope_prefix: str | None = None
+        self, query: QueryRequest, scopes: list[str] | None = None
     ) -> list[SearchResult]:
         """按向量和前缀检索数据块"""
         ...
@@ -39,7 +39,7 @@ class StorageBackend(Protocol):
         """删除数据块"""
         ...
 
-    async def clear_by_query(self, query: MemoryQuery) -> int:
+    async def clear_by_query(self, query: ScopeSelector) -> int:
         """根据统一领域查询对象清理数据块（在各实现中回退到 delete）"""
         ...
 
@@ -83,12 +83,12 @@ class DictStorageBackend(StorageBackend):
                 self._vectors.pop(r.id, None)
 
     async def search(
-        self, query: QueryRequest, scope_prefix: str | None = None
+        self, query: QueryRequest, scopes: list[str] | None = None
     ) -> list[SearchResult]:
         candidate_ids = []
         for record in self._records.values():
-            if scope_prefix and scope_prefix != "/":
-                if not record.metadata.get("scope", "").startswith(scope_prefix):
+            if scopes is not None:
+                if record.metadata.get("scope", "/") not in scopes:
                     continue
             if not FilterEvaluator.evaluate(record.metadata, query.metadata_filters):
                 continue
@@ -154,8 +154,8 @@ class DictStorageBackend(StorageBackend):
     ) -> int:
         to_delete = []
         for r_id, r in self._records.items():
-            if scope_prefix and scope_prefix != "/":
-                if not r.metadata.get("scope", "").startswith(scope_prefix):
+            if scope_prefix is not None:
+                if not r.metadata.get("scope", "/").startswith(scope_prefix):
                     continue
             if record_ids and r_id not in record_ids:
                 continue
@@ -165,14 +165,14 @@ class DictStorageBackend(StorageBackend):
             self._vectors.pop(r_id, None)
         return len(to_delete)
 
-    async def clear_by_query(self, query: MemoryQuery) -> int:
+    async def clear_by_query(self, query: ScopeSelector) -> int:
         return await self.delete(scope_prefix=query.scope_prefix)
 
     async def get_all(self, scope_prefix: str | None = None) -> list[BaseRecord]:
         res = []
         for r in self._records.values():
-            if scope_prefix and scope_prefix != "/":
-                if not r.metadata.get("scope", "").startswith(scope_prefix):
+            if scope_prefix is not None:
+                if r.metadata.get("scope", "/") != scope_prefix:
                     continue
             res.append(r)
         return res
@@ -214,11 +214,11 @@ class TortoiseStorageBackend(StorageBackend):
             )
 
     async def search(
-        self, query: QueryRequest, scope_prefix: str | None = None
+        self, query: QueryRequest, scopes: list[str] | None = None
     ) -> list[SearchResult]:
         query_orm = self.model_class.all()
-        if scope_prefix and scope_prefix != "/":
-            query_orm = query_orm.filter(scope__startswith=scope_prefix)
+        if scopes is not None:
+            query_orm = query_orm.filter(scope__in=scopes)
 
         if query.search_type == "sparse" and query.text:
             import jieba
@@ -316,7 +316,7 @@ class TortoiseStorageBackend(StorageBackend):
         self, record_ids: list[str] | None = None, scope_prefix: str | None = None
     ) -> int:
         query = self.model_class.all()
-        if scope_prefix and scope_prefix != "/":
+        if scope_prefix is not None:
             query = query.filter(scope__startswith=scope_prefix)
         if record_ids is not None:
             if not record_ids:
@@ -325,13 +325,13 @@ class TortoiseStorageBackend(StorageBackend):
 
         return await query.delete()
 
-    async def clear_by_query(self, query: MemoryQuery) -> int:
+    async def clear_by_query(self, query: ScopeSelector) -> int:
         return await self.delete(scope_prefix=query.scope_prefix)
 
     async def get_all(self, scope_prefix: str | None = None) -> list[BaseRecord]:
         query = self.model_class.all()
-        if scope_prefix and scope_prefix != "/":
-            query = query.filter(scope__startswith=scope_prefix)
+        if scope_prefix is not None:
+            query = query.filter(scope=scope_prefix)
         rows = await query
         return [self._to_base_record(row) for row in rows]
 
@@ -390,7 +390,7 @@ class QdrantStorageBackend(StorageBackend):
         await self.client.upsert(collection_name=self.collection_name, points=points)
 
     async def search(
-        self, query: QueryRequest, scope_prefix: str | None = None
+        self, query: QueryRequest, scopes: list[str] | None = None
     ) -> list[SearchResult]:
         if query.search_type == "dense" and not query.embedding:
             return []
@@ -401,10 +401,19 @@ class QdrantStorageBackend(StorageBackend):
 
         must_conditions = []
 
-        if scope_prefix and scope_prefix != "/":
-            must_conditions.append(
-                FieldCondition(key="metadata.scope", match=MatchText(text=scope_prefix))
-            )
+        if scopes is not None:
+            try:
+                from qdrant_client.models import MatchAny
+
+                must_conditions.append(
+                    FieldCondition(key="metadata.scope", match=MatchAny(any=scopes))
+                )
+            except ImportError:
+                scope_conditions = [
+                    FieldCondition(key="metadata.scope", match=MatchValue(value=s))
+                    for s in scopes
+                ]
+                must_conditions.append(Filter(should=scope_conditions))
 
         if query.metadata_filters:
             for k, v in query.metadata_filters.items():
@@ -468,7 +477,7 @@ class QdrantStorageBackend(StorageBackend):
         from qdrant_client.models import FieldCondition, Filter, MatchText
 
         query_filter = None
-        if scope_prefix and scope_prefix != "/":
+        if scope_prefix is not None:
             query_filter = Filter(
                 must=[
                     FieldCondition(
@@ -482,7 +491,7 @@ class QdrantStorageBackend(StorageBackend):
             )
         return 1
 
-    async def clear_by_query(self, query: MemoryQuery) -> int:
+    async def clear_by_query(self, query: ScopeSelector) -> int:
         return await self.delete(scope_prefix=query.scope_prefix)
 
     async def get_all(self, scope_prefix: str | None = None) -> list[BaseRecord]:
@@ -554,7 +563,7 @@ class LanceDBStorageBackend(StorageBackend):
             self.db.open_table(self.table_name).add(data)
 
     async def search(
-        self, query: QueryRequest, scope_prefix: str | None = None
+        self, query: QueryRequest, scopes: list[str] | None = None
     ) -> list[SearchResult]:
         if self.table_name not in self.db.table_names():
             return []
@@ -599,7 +608,7 @@ class LanceDBStorageBackend(StorageBackend):
     ) -> int:
         return 0
 
-    async def clear_by_query(self, query: MemoryQuery) -> int:
+    async def clear_by_query(self, query: ScopeSelector) -> int:
         return await self.delete(scope_prefix=query.scope_prefix)
 
     async def get_all(self, scope_prefix: str | None = None) -> list[BaseRecord]:
@@ -612,8 +621,8 @@ class LanceDBStorageBackend(StorageBackend):
         res = []
         for _, row in df.iterrows():
             meta = ast.literal_eval(row["metadata"]) if "metadata" in row else {}
-            if scope_prefix and scope_prefix != "/":
-                if not meta.get("scope", "").startswith(scope_prefix):
+            if scope_prefix is not None:
+                if meta.get("scope", "/") != scope_prefix:
                     continue
             res.append(BaseRecord(id=row["id"], content=row["content"], metadata=meta))
         return res

@@ -8,13 +8,13 @@ from nonebot.matcher import Matcher
 from nonebot.utils import is_coroutine_callable
 from nonebot_plugin_session import EventSession, extract_session
 
-from zhenxun.services.ai.context.memory.manager import AgentSessionFacade
+from zhenxun.services.ai.context.memory.facades import AgentSessionFacade
 from zhenxun.services.ai.run.blackboard import BlackboardManager
 from zhenxun.utils.utils import infer_plugin_namespace
 
 from .context import ProviderFunc, RunContext, _is_run_context_type
 from .hitl import HITLController
-from .ui_controller import UIController
+from .ui import UIController
 
 
 class Hidden:
@@ -55,7 +55,6 @@ CurrentState = Annotated[dict[str, Any], Hidden(), _InjectMarker("state")]
 CurrentSharedState = Annotated[dict[str, Any], Hidden(), _InjectMarker("shared_state")]
 CurrentOriginalInput = Annotated[str, Hidden(), _InjectMarker("original_input")]
 UpstreamResults = Annotated[dict[str, Any], Hidden(), _InjectMarker("upstream_results")]
-ToolkitState = Annotated[Any, Hidden(), _InjectMarker("toolkit_state")]
 CurrentBlackboard = Annotated[
     BlackboardManager | None, Hidden(), _InjectMarker("blackboard")
 ]
@@ -149,9 +148,6 @@ class Inject:
 
     UpstreamResults = UpstreamResults
     """自动注入：当前工作流中所有上游节点的产出字典 (Key: Agent Name)"""
-
-    ToolkitState = ToolkitState
-    """自动注入：当前 GroupSharedToolkit 的物理隔离状态实例"""
 
     Blackboard = CurrentBlackboard
     """自动注入：当前工作流/团队挂载的强类型黑板 (BlackboardManager) 实例"""
@@ -376,29 +372,6 @@ Inject.register_provider("ui", lambda ctx: UIController(ctx), scope="global")
 from zhenxun.services.ai.sandbox.manager import sandbox_manager
 
 Inject.register_provider("sandbox", lambda ctx: sandbox_manager, scope="global")
-
-
-def _resolve_toolkit_state(ctx: RunContext):
-    """自动从当前执行的 Tool 中溯源 Toolkit 并获取状态"""
-    tool = ctx.call.current_tool
-    if not tool:
-        raise ValueError("Inject.ToolkitState 只能在工具执行阶段被解析")
-    tk = getattr(tool, "parent_toolkit", None)
-    if not tk or not hasattr(tk, "get_active_state"):
-        raise RuntimeError(
-            f"工具 '{getattr(tool, 'name', 'unknown')}' 所属的 Toolkit "
-            "不支持状态管理 (非 GroupSharedToolkit/UserPersonalToolkit)"
-        )
-    state = tk.get_active_state(ctx.session_id)
-    if state is None:
-        raise RuntimeError(
-            f"状态工具箱 {tk.__class__.__name__} 的状态未初始化，"
-            "请确保已正确执行 enter_session。"
-        )
-    return state
-
-
-Inject.register_provider("toolkit_state", _resolve_toolkit_state, scope="global")
 
 
 __all__ = [

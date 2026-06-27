@@ -5,13 +5,12 @@ import json
 import re
 from typing import Annotated, Any, get_args, get_origin, get_type_hints
 
-from nonebot.permission import SUPERUSER
 from pydantic import BaseModel, Field, create_model
 from pydantic.fields import FieldInfo
 
 from zhenxun.services.ai.run.context import RunContext
 from zhenxun.services.ai.run.di import DependencyInjector
-from zhenxun.services.cache.runtime_cache import LevelUserMemoryCache
+from zhenxun.services.ai.utils import PermissionUtils
 from zhenxun.utils.pydantic_compat import model_json_schema
 
 
@@ -28,11 +27,7 @@ class RequireSuperUser(FieldPermission):
     """仅限超级管理员可见的字段参数"""
 
     async def check(self, context: RunContext) -> bool:
-        bot = context.get_bot()
-        event = context.get_event()
-        if bot and event:
-            return await SUPERUSER(bot, event)
-        return False
+        return await PermissionUtils.check_superuser(context)
 
 
 class RequireAdminLevel(FieldPermission):
@@ -42,26 +37,7 @@ class RequireAdminLevel(FieldPermission):
         self.min_level = min_level
 
     async def check(self, context: RunContext) -> bool:
-        bot = context.get_bot()
-        event = context.get_event()
-
-        if bot and event and await SUPERUSER(bot, event):
-            return True
-
-        user_id = context.get_user_id()
-        group_id = context.get_group_id()
-
-        if not user_id or not group_id:
-            return False
-
-        global_user, group_users = await LevelUserMemoryCache.get_levels(
-            user_id, group_id
-        )
-        user_level = global_user.user_level if global_user else 0
-        if group_users:
-            user_level = max(user_level, group_users.user_level)
-
-        return user_level >= self.min_level
+        return await PermissionUtils.check_admin_level(context, self.min_level)
 
 
 def _parse_docstring(docstring: str | None) -> tuple[str, dict[str, str]]:
@@ -158,7 +134,7 @@ def build_tool_model(
         DynamicModel = create_model(
             f"DynamicToolModel_{func.__name__}", **field_definitions
         )
-        schema_def = DynamicModel.model_json_schema(mode="serialization")
+        schema_def = model_json_schema(DynamicModel, mode="serialization")
     except Exception as e:
         error_msg = str(e)
         raise ValueError(

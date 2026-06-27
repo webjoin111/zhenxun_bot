@@ -1,6 +1,6 @@
-from zhenxun.services.ai.core.messages import EmbedBatch
+from zhenxun.services.ai.core.messages import EmbeddingRequest
+from zhenxun.services.ai.core.models import ModelIdentity
 from zhenxun.services.ai.core.options import LLMEmbeddingConfig
-from zhenxun.services.ai.core.protocols.llm import LLMModelBase
 from zhenxun.services.ai.llm.adapters.base import BaseAdapter, RequestData
 from zhenxun.services.ai.llm.adapters.handlers.openai_handlers import (
     OpenAIEmbeddingHandler,
@@ -15,17 +15,17 @@ class JinaEmbeddingHandler(OpenAIEmbeddingHandler):
     async def prepare_embedding_request(
         self,
         adapter: BaseAdapter,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         api_key: str,
-        batch: EmbedBatch,
-        config: "LLMEmbeddingConfig",
+        request: EmbeddingRequest,
     ) -> RequestData:
-
-        endpoint = getattr(adapter, "get_embedding_endpoint")(model)
-        url = adapter.get_api_url(model, endpoint)
+        batch = request.batch
+        config = request.config or LLMEmbeddingConfig()
+        endpoint = getattr(adapter, "get_embedding_endpoint")(identity)
+        url = adapter.get_api_url(identity, endpoint)
         headers = adapter.get_base_headers(api_key)
 
-        is_omni = "omni" in model.model_name.lower()
+        is_omni = "omni" in identity.model_name.lower()
         inputs_payload = []
 
         if is_omni:
@@ -76,11 +76,11 @@ class JinaEmbeddingHandler(OpenAIEmbeddingHandler):
                 inputs_payload.append({"content": jina_content})
         else:
             inputs_payload = batch.to_text_only(
-                f"{model.model_name} (API: {adapter.api_type})"
+                f"{identity.model_name} (API: {adapter.api_type})"
             )
 
         body = {
-            "model": model.model_name,
+            "model": identity.model_name,
             "input": inputs_payload,
         }
 
@@ -122,8 +122,8 @@ class JinaAdapter(OpenAICompatAdapter):
         """当前适配器支持的 API 类型列表。"""
         return ["jina"]
 
-    def get_chat_endpoint(self, model: LLMModelBase) -> str:
+    def get_chat_endpoint(self, identity: ModelIdentity) -> str:
         raise NotImplementedError("Jina API 专精于检索，暂不支持常规对话生成。")
 
-    def get_embedding_endpoint(self, model: LLMModelBase) -> str:
+    def get_embedding_endpoint(self, identity: ModelIdentity) -> str:
         return "/v1/embeddings"

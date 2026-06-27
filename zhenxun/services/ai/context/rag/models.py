@@ -45,19 +45,3 @@ class QueryRequest(BaseModel):
 
 
 StorageConfigType = dict[str, Any]
-
-
-class ConsolidationAction(BaseModel):
-    action: Literal["keep", "update", "delete"]
-    """对旧记录执行的动作"""
-    record_id: str
-    """目标旧记录的 ID"""
-    new_content: str | None = Field(default=None)
-    """更新后的文本内容（仅在 update 时需要）"""
-
-
-class ConsolidationPlan(BaseModel):
-    actions: list[ConsolidationAction] = Field(default_factory=list)
-    """对历史记录的操作列表"""
-    insert_new: bool = Field(default=True)
-    """是否将当前的新内容作为独立记录插入"""

@@ -62,6 +62,10 @@ class VectorKnowledge(BaseKnowledge):
         injection_mode: Literal["tool", "auto", "smart"] = "tool",
         query_rewrite_model: str | None = None,
         auto_inject_template: str | None = None,
+        query_rewrite_prompt: str | None = None,
+        query_rewrite_instruction: str | None = None,
+        search_limit: int = 8,
+        inject_limit: int = 12,
         **kwargs: Any,
     ):
         """
@@ -80,6 +84,15 @@ class VectorKnowledge(BaseKnowledge):
         self.auto_inject_template = (
             auto_inject_template or self.default_auto_inject_template
         )
+        self.query_rewrite_prompt = (
+            query_rewrite_prompt
+            or "用户原始提问：{query}\n\n请提取核心搜索词用于专业知识库向量检索。"
+        )
+        self.query_rewrite_instruction = (
+            query_rewrite_instruction or "你是一个资深的数据检索架构师。"
+        )
+        self.search_limit = search_limit
+        self.inject_limit = inject_limit
 
         if injection_mode in ("auto", "smart"):
             config = kwargs.get("config")
@@ -117,11 +130,11 @@ class VectorKnowledge(BaseKnowledge):
         """
         根据 NoneBot 的 Event 自动推导并创建一个物理隔离的向量知识库实例。
         """
-        from zhenxun.services.ai.context.memory.models import MemoryIsolationLevel
-        from zhenxun.services.ai.context.memory.utils import generate_session_meta
+        from zhenxun.services.ai.context.memory.types import Isolation
         from zhenxun.services.ai.context.rag.backends import DictStorageBackend
         from zhenxun.services.ai.context.rag.builder import RAGBuilder
         from zhenxun.services.ai.run.context import NoneBotDeps
+        from zhenxun.services.ai.utils import ContextUtils
 
         if not bot or not event:
             deps = NoneBotDeps.get_current()
@@ -134,13 +147,13 @@ class VectorKnowledge(BaseKnowledge):
                 "如果您在定时任务或后台线程中使用，请显式传入 bot 和 event 参数。"
             )
 
-        iso_level = (
-            MemoryIsolationLevel.GROUP_SHARED
+        scope_builder = (
+            Isolation.GROUP_SHARED()
             if isolation == "group"
-            else MemoryIsolationLevel.USER_GLOBAL
+            else Isolation.USER_GLOBAL()
         )
-        session_meta = generate_session_meta(
-            bot=bot, event=event, isolation_level=iso_level, namespace="auto_kb"
+        session_meta = ContextUtils.generate_session_meta(
+            bot=bot, event=event, scope_builder=scope_builder, namespace="auto_kb"
         )
 
         if cls._global_storage is None:
@@ -192,11 +205,12 @@ class VectorKnowledge(BaseKnowledge):
         if self.injection_mode == "smart":
             try:
                 model_to_use = self.query_rewrite_model or context.run.current_model
+                prompt = self.query_rewrite_prompt.format(query=user_input)
                 res = await generate_structured(
-                    message=f"用户原始提问：{user_input}\n\n请提取核心搜索词用于专业知识库向量检索。",
+                    message=prompt,
                     response_model=QueryAnalysis,
                     model=model_to_use,
-                    instruction="你是一个资深的数据检索架构师。",
+                    instruction=self.query_rewrite_instruction,
                 )
                 if res.keywords:
                     logger.info(
@@ -210,7 +224,7 @@ class VectorKnowledge(BaseKnowledge):
         all_results = []
         seen_ids = set()
         for q in queries_to_search:
-            results = await self.rag_client.search(query=q, limit=8)
+            results = await self.rag_client.search(query=q, limit=self.search_limit)
             for res in results:
                 if res.record.id not in seen_ids:
                     seen_ids.add(res.record.id)
@@ -220,7 +234,7 @@ class VectorKnowledge(BaseKnowledge):
             return
 
         all_results.sort(key=lambda x: x.score, reverse=True)
-        all_results = all_results[:12]
+        all_results = all_results[:self.inject_limit]
 
         formatted_results = []
         for result in all_results:
@@ -261,8 +275,7 @@ class VectorKnowledge(BaseKnowledge):
         if not doc:
             return 0
 
-        records = await self.rag_client.pipeline.run([doc])
-        return len(records)
+        return await self.rag_client.ingest([doc])
 
     async def add_directory(self, dir_path: str | Path) -> int:
         """扫描目录并注入所有支持的文件"""
@@ -293,7 +306,7 @@ class VectorKnowledge(BaseKnowledge):
         for result in results:
             doc_name = result.record.metadata.get("name", "未命名文档")
             formatted_results.append(
-                f"📄 来源: {doc_name} (相关度: {result.score:.2f})\n"
+                f"📄 来源: {doc_name}\n"
                 f"片段内容:\n{result.record.content}"
             )
 

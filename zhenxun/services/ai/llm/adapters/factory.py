@@ -7,13 +7,12 @@ from __future__ import annotations
 import fnmatch
 from typing import Any, ClassVar
 
-from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
-from zhenxun.services.ai.core.messages import EmbedBatch, LLMMessage
-from zhenxun.services.ai.core.models import ToolChoice
-from zhenxun.services.ai.core.options import GenerationConfig, LLMEmbeddingConfig
-from zhenxun.services.ai.core.protocols.llm import LLMModelBase
+import httpx
 
-from .base import BaseAdapter, RequestData, ResponseData
+from zhenxun.services.ai.core.exceptions import ConfigurationException
+from zhenxun.services.ai.core.models import ModelIdentity
+
+from .base import BaseAdapter, RequestData
 
 
 class LLMAdapterFactory:
@@ -36,8 +35,10 @@ class LLMAdapterFactory:
         from .mimo import MiMoAdapter
         from .minimax import MiniMaxAdapter
         from .openai import OpenAIAdapter
+        from .openrouter import OpenRouterAdapter
 
         cls.register_adapter(OpenAIAdapter())
+        cls.register_adapter(OpenRouterAdapter())
         cls.register_adapter(DeepSeekAdapter())
         cls.register_adapter(JinaAdapter())
         cls.register_adapter(GeminiAdapter())
@@ -63,9 +64,8 @@ class LLMAdapterFactory:
 
         adapter_key = cls._api_type_mapping.get(api_type)
         if not adapter_key:
-            raise LLMException(
+            raise ConfigurationException(
                 f"不支持的API类型: {api_type}",
-                code=LLMErrorCode.UNKNOWN_API_TYPE,
                 details={
                     "api_type": api_type,
                     "supported_types": list(cls._api_type_mapping.keys()),
@@ -131,14 +131,14 @@ class SmartAdapter(BaseAdapter):
         """当前适配器支持的 API 类型列表。"""
         return ["smart"]
 
-    def _get_delegate_adapter(self, model: LLMModelBase) -> BaseAdapter:
+    def _get_delegate_adapter(self, identity: ModelIdentity) -> BaseAdapter:
         """
         核心路由逻辑：决定使用哪个适配器 (带缓存)
         """
-        if model.model_detail.api_type:
-            return get_adapter_for_api_type(model.model_detail.api_type)
+        if identity.api_type and identity.api_type != "smart":
+            return get_adapter_for_api_type(identity.api_type)
 
-        model_name = model.model_name
+        model_name = identity.model_name
         if model_name in self._adapter_cache:
             return self._adapter_cache[model_name]
 
@@ -154,82 +154,14 @@ class SmartAdapter(BaseAdapter):
         self._adapter_cache[model_name] = adapter
         return adapter
 
-    async def prepare_advanced_request(
-        self,
-        model: LLMModelBase,
-        api_key: str,
-        messages: list[LLMMessage],
-        config: GenerationConfig | None = None,
-        tools: list[Any] | None = None,
-        tool_choice: str | dict[str, Any] | ToolChoice | None = None,
+    async def prepare_payload(
+        self, identity: ModelIdentity, api_key: str, request: Any
     ) -> RequestData:
-        """按模型路由到目标适配器并准备高级对话请求。"""
-        adapter = self._get_delegate_adapter(model)
-        return await adapter.prepare_advanced_request(
-            model, api_key, messages, config, tools, tool_choice
-        )
+        adapter = self._get_delegate_adapter(identity)
+        return await adapter.prepare_payload(identity, api_key, request)
 
-    def parse_response(
-        self,
-        model: LLMModelBase,
-        response_json: dict[str, Any],
-        is_advanced: bool = False,
-    ) -> ResponseData:
-        """按模型路由并解析文本响应。"""
-        adapter = self._get_delegate_adapter(model)
-        return adapter.parse_response(model, response_json, is_advanced)
-
-    async def prepare_embedding_request(
-        self,
-        model: LLMModelBase,
-        api_key: str,
-        batch: EmbedBatch,
-        config: LLMEmbeddingConfig,
-    ) -> RequestData:
-        """按模型路由并准备嵌入请求。"""
-        adapter = self._get_delegate_adapter(model)
-        return await adapter.prepare_embedding_request(model, api_key, batch, config)
-
-    def parse_embedding_response(
-        self, response_json: dict[str, Any]
-    ) -> list[list[float]]:
-        """使用默认 OpenAI 兼容逻辑解析嵌入响应。"""
-        return get_adapter_for_api_type("openai").parse_embedding_response(
-            response_json
-        )
-
-    def prepare_image_request(
-        self,
-        model: LLMModelBase,
-        api_key: str,
-        prompt: str,
-        images: list[Any] | None = None,
-        config: GenerationConfig | None = None,
-    ) -> RequestData:
-        """按模型路由并准备图像请求。"""
-        adapter = self._get_delegate_adapter(model)
-        return adapter.prepare_image_request(model, api_key, prompt, images, config)
-
-    def parse_image_response(self, response_json: dict[str, Any]) -> ResponseData:
-        """按响应结构选择 Gemini 或 OpenAI 的图像解析器。"""
-        if "candidates" in response_json or "image_generation" in response_json:
-            return get_adapter_for_api_type("gemini").parse_image_response(
-                response_json
-            )
-        return get_adapter_for_api_type("openai").parse_image_response(response_json)
-
-    def prepare_rerank_request(
-        self,
-        model: LLMModelBase,
-        api_key: str,
-        query: str,
-        documents: list[str | dict[str, str]],
-        top_n: int,
-    ) -> RequestData:
-        """按模型路由并准备重排请求。"""
-        adapter = self._get_delegate_adapter(model)
-        return adapter.prepare_rerank_request(model, api_key, query, documents, top_n)
-
-    def parse_rerank_response(self, response_json: dict[str, Any]) -> list[Any]:
-        """使用默认 OpenAI 兼容逻辑解析重排响应。"""
-        return get_adapter_for_api_type("openai").parse_rerank_response(response_json)
+    async def parse_payload(
+        self, identity: ModelIdentity, request: Any, raw_response: httpx.Response
+    ) -> Any:
+        adapter = self._get_delegate_adapter(identity)
+        return await adapter.parse_payload(identity, request, raw_response)

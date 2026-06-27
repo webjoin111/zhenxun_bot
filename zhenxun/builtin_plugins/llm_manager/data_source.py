@@ -3,14 +3,11 @@ import time
 from typing import Any
 
 from zhenxun.configs.path_config import DATA_PATH
-from zhenxun.services.ai import LLMException, LLMMessage
-from zhenxun.services.ai.llm.manager import (
-    get_default_model as _get_default_model,
-)
+from zhenxun.services.ai.core.exceptions import LLMException
+from zhenxun.services.ai.core.messages import ChatRequest, LLMMessage
 from zhenxun.services.ai.llm.manager import (
     get_model_instance,
     list_available_models,
-    set_global_default_model_name,
 )
 from zhenxun.services.ai.tools.providers.mcp.provider import mcp_provider
 
@@ -40,26 +37,13 @@ class DataSource:
             return None
 
     @staticmethod
-    async def get_default_model() -> str | None:
-        """获取全局默认模型"""
-        return _get_default_model("chat")
-
-    @staticmethod
-    async def set_default_model(model_name_str: str) -> tuple[bool, str]:
-        """设置全局默认模型"""
-        success = set_global_default_model_name("chat", model_name_str)
-        if success:
-            return True, f"✅ 成功将默认模型设置为: {model_name_str}"
-        else:
-            return False, f"❌ 设置失败，模型 '{model_name_str}' 不存在或无效。"
-
-    @staticmethod
     async def test_model_connectivity(model_name_str: str) -> tuple[bool, str]:
         """测试模型连通性"""
         start_time = time.monotonic()
         try:
             async with await get_model_instance(model_name_str) as model:
-                await model.generate_response([LLMMessage.user("你好")])
+                request = ChatRequest(messages=[LLMMessage.user("你好")])
+                await model.generate_response(request=request)
             end_time = time.monotonic()
             latency = (end_time - start_time) * 1000
             return (
@@ -70,7 +54,7 @@ class DataSource:
             return (
                 False,
                 f"❌ 模型 '{model_name_str}' 连接测试失败:\n"
-                f"{e.user_friendly_message}\n错误码: {e.code.name}",
+                f"{e.user_friendly_message}\n错误类型: {e.__class__.__name__}",
             )
         except Exception as e:
             return False, f"❌ 测试时发生未知错误: {e!s}"

@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 import uuid
@@ -8,6 +9,7 @@ if TYPE_CHECKING:
 
 
 from zhenxun.services.ai.core.messages import PromptInput
+from zhenxun.services.ai.core.events import EventStreamer
 from zhenxun.services.ai.flow.base import BaseRunnable, BaseRuntimeConfig
 from zhenxun.services.ai.flow.workflow.nodes import Steps
 from zhenxun.services.ai.flow.workflow.types import (
@@ -162,7 +164,7 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
         )
         safe_context = context or RunContext(session_id=session_id)
 
-        logger.info(f"🏭 **工作流 [{self.name}] 启动**")
+        logger.debug(f"🏭 **工作流 [{self.name}] 启动**")
 
         initial_input = StepInput(input=prompt)
         if kwargs:
@@ -171,7 +173,7 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
         try:
             final_output = await self.root_steps.aexecute(initial_input, safe_context)
 
-            logger.info(f"🏭 **工作流 [{self.name}] 运行结束**")
+            logger.debug(f"🏭 **工作流 [{self.name}] 运行结束**")
 
             return self._build_result(initial_input, safe_context, final_output)
 
@@ -179,7 +181,7 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
             from zhenxun.services.ai.core.exceptions import ControlFlowExit
 
             if isinstance(e, ControlFlowExit):
-                logger.info(f"⏭️ 工作流执行被业务控制流安全中止: {e}")
+                logger.debug(f"⏭️ 工作流执行被业务控制流安全中止: {e}")
                 dummy_output = StepOutput(content=str(e), success=False)
                 return self._build_result(initial_input, safe_context, dummy_output)
 
@@ -196,9 +198,6 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
         **kwargs: Any,
     ) -> AsyncIterator["StreamedRunResult[Any]"]:
         """对齐 BaseRunnable 接口的流式上下文管理器"""
-        import asyncio
-
-        from zhenxun.services.ai.core.stream_events import EventStreamer
         from zhenxun.services.ai.run import StreamedRunResult
         from zhenxun.services.ai.run.models import AgentRunError
 
@@ -234,7 +233,7 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
         )
         safe_context = context or RunContext(session_id=session_id)
 
-        logger.info(f"🏭 **工作流 [{self.name}] 启动**")
+        logger.debug(f"🏭 **工作流 [{self.name}] 启动**")
 
         initial_input = StepInput(input=prompt)
         if kwargs:
@@ -251,7 +250,7 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
                     yield event
 
             if final_output:
-                logger.info(f"🏭 **工作流 [{self.name}] 运行结束**")
+                logger.debug(f"🏭 **工作流 [{self.name}] 运行结束**")
 
                 from zhenxun.services.ai.core.messages import UsageInfo
                 from zhenxun.services.ai.run import AgentRunResult
@@ -294,7 +293,7 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
             previous_step_content=run_result.last_step_content,
         )
 
-        logger.info(
+        logger.debug(
             f"🚀 工作流 [{self.name}] 状态已恢复，"
             f"正在快进到步骤: {run_result.paused_step_name}..."
         )

@@ -1,28 +1,30 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import asyncio
 from typing import Any
 
 import httpx
 
 from zhenxun.services.ai.core.messages import (
     AudioResponse,
-    EmbedBatch,
+    ChatRequest,
+    EmbeddingRequest,
+    ImageRequest,
     LLMMessage,
+    RerankRequest,
     RerankResult,
+    SpeechRequest,
 )
 from zhenxun.services.ai.core.models import (
     ModelCapabilities,
     ModelDetail,
-    ToolChoice,
+    ModelIdentity,
     ToolDefinition,
 )
 from zhenxun.services.ai.core.options import (
     GenerationConfig,
-    LLMEmbeddingConfig,
-    TTSConfig,
 )
-from zhenxun.services.ai.core.protocols.llm import LLMModelBase
 from zhenxun.services.ai.llm.adapters.base import BaseAdapter, RequestData, ResponseData
 
 
@@ -109,8 +111,6 @@ class BaseTextHandler(ABC):
         """
         client_executables, server_tools, tool_defs = [], [], []
         if tools:
-            import asyncio
-
             raw_tools = list(tools.values()) if isinstance(tools, dict) else tools
             for tool in raw_tools:
                 if getattr(tool, "execution_side", "client") == "server":
@@ -125,19 +125,16 @@ class BaseTextHandler(ABC):
     async def prepare_text_request(
         self,
         adapter: BaseAdapter,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         api_key: str,
-        messages: list[LLMMessage],
-        config: GenerationConfig | None = None,
-        tools: list[Any] | None = None,
-        tool_choice: ToolChoice | str | dict[str, Any] | None = None,
+        request: ChatRequest,
     ) -> RequestData: ...
 
     @abstractmethod
     def parse_text_response(
         self,
         adapter: BaseAdapter,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         response_json: dict[str, Any],
         is_advanced: bool = False,
     ) -> ResponseData: ...
@@ -152,10 +149,9 @@ class BaseEmbeddingHandler(ABC):
     async def prepare_embedding_request(
         self,
         adapter: BaseAdapter,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         api_key: str,
-        batch: EmbedBatch,
-        config: LLMEmbeddingConfig,
+        request: EmbeddingRequest,
     ) -> RequestData: ...
 
     @abstractmethod
@@ -173,11 +169,9 @@ class BaseImageHandler(ABC):
     def prepare_image_request(
         self,
         adapter: BaseAdapter,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         api_key: str,
-        prompt: str,
-        images: list[Any] | None = None,
-        config: GenerationConfig | None = None,
+        request: ImageRequest,
     ) -> RequestData: ...
 
     @abstractmethod
@@ -195,11 +189,9 @@ class BaseRerankHandler(ABC):
     def prepare_rerank_request(
         self,
         adapter: BaseAdapter,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         api_key: str,
-        query: str,
-        documents: list[str | dict[str, str]],
-        top_n: int,
+        request: RerankRequest,
     ) -> RequestData: ...
 
     @abstractmethod
@@ -217,14 +209,15 @@ class BaseAudioHandler(ABC):
     def prepare_speech_request(
         self,
         adapter: BaseAdapter,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         api_key: str,
-        input_text: str,
-        voice: str,
-        config: TTSConfig,
+        request: SpeechRequest,
     ) -> RequestData: ...
 
     @abstractmethod
     async def parse_speech_response(
-        self, adapter: BaseAdapter, model: LLMModelBase, raw_response: httpx.Response
+        self,
+        adapter: BaseAdapter,
+        identity: ModelIdentity,
+        raw_response: httpx.Response,
     ) -> AudioResponse: ...

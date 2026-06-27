@@ -10,6 +10,7 @@ from .backends.storages import (
 )
 from .builder import RAGBuilder
 from .configs import RAGConfig
+from .engine import ScopedRAGClient
 from .models import BaseRecord, SearchResult
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "Embedder",
     "RAGBuilder",
     "RAGConfig",
+    "ScopedRAGClient",
     "SearchResult",
     "StorageBackend",
     "TortoiseStorageBackend",

@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+import asyncio
 from collections.abc import AsyncIterator
 import contextlib
 from enum import Enum
@@ -7,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 from pydantic import BaseModel, Field
 
 from zhenxun.services.ai.run.context import RunContext
+from zhenxun.services.ai.run.ui import UIController
 
 if TYPE_CHECKING:
     from zhenxun.services.ai.flow.agent.models import Persona
@@ -32,6 +34,7 @@ class ConcurrencyPolicy(str, Enum):
 
 class ConcurrencyScope(str, Enum):
     """并发作用域枚举（决定锁的粒度，解耦于会话隔离）"""
+
     GLOBAL = "global"
     """全局互斥：整个系统同一时间只能执行一个该任务"""
     GROUP = "group"
@@ -116,26 +119,7 @@ class BaseRunnable(ABC, Generic[T_RunResult]):
         except ControlFlowExit as e:
             logger.info(f"[{self.name}] 触发底层控制流，已安全退出: {e}")
 
-            display_msg = getattr(e, "display", None) or getattr(
-                e, "display_content", None
-            )
-            if display_msg:
-                try:
-                    from nonebot_plugin_alconna import UniMessage
-
-                    if isinstance(display_msg, UniMessage):
-                        bot = context.get_bot() if context else None
-                        event = context.get_event() if context else None
-                        if bot and event:
-                            await display_msg.send(event, bot=bot)
-                    else:
-                        from zhenxun.utils.message import MessageUtils
-
-                        await MessageUtils.build_message(str(display_msg)).send()
-                except Exception:
-                    pass
-
-            import asyncio
+            await UIController.handle_control_flow_exit_display(e, context)
 
             raise asyncio.CancelledError()
 

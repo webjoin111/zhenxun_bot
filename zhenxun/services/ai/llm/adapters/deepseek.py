@@ -3,9 +3,9 @@ from typing import Any
 from zhenxun.services.ai.core.models import (
     ModelCapabilities,
     ModelDetail,
+    ModelIdentity,
 )
 from zhenxun.services.ai.core.options import GenerationConfig
-from zhenxun.services.ai.core.protocols.llm import LLMModelBase
 from zhenxun.services.ai.llm.adapters.handlers.openai_handlers import (
     OpenAIConfigMapper,
     OpenAITextHandler,
@@ -25,7 +25,7 @@ class DeepSeekToolSerializer(OpenAIToolSerializer):
         super().__init__(api_type=api_type)
 
     def sanitize_schema(self, schema: dict[str, Any]) -> dict[str, Any]:
-        from zhenxun.services.ai.llm.schema_transformer import (
+        from zhenxun.services.ai.llm.engine.schema_transformer import (
             DeepSeekFallbackTransformer,
             OpenAIUnionFlattenTransformer,
             RefComplianceTransformer,
@@ -84,7 +84,13 @@ class DeepSeekConfigMapper(OpenAIConfigMapper):
             if isinstance(rf, dict) and rf.get("type") == "json_schema":
                 params["response_format"] = {"type": "json_object"}
 
-        if (
+        if config.common.reasoning_effort:
+            effort = str(config.common.reasoning_effort).lower()
+            if effort == "none":
+                params["thinking"] = {"type": "disabled"}
+            else:
+                params["thinking"] = {"type": "enabled"}
+        elif (
             hasattr(config, "deepseek_options")
             and config.deepseek_options.thinking is not None
         ):
@@ -129,8 +135,6 @@ class DeepSeekAdapter(OpenAICompatAdapter):
         """当前适配器支持的 API 类型列表。"""
         return ["deepseek"]
 
-    def get_chat_endpoint(self, model: LLMModelBase) -> str:
+    def get_chat_endpoint(self, identity: ModelIdentity) -> str:
         """返回对话端点，优先使用模型级自定义端点。"""
-        if model.model_detail.endpoint:
-            return model.model_detail.endpoint
         return "/v1/chat/completions"

@@ -1,4 +1,4 @@
-from zhenxun.services.ai.core.protocols.llm import LLMModelBase
+from zhenxun.services.ai.core.models import ModelIdentity
 from zhenxun.services.ai.llm.adapters.handlers.mimo_handlers import (
     MiMoAudioHandler,
     MiMoTextHandler,
@@ -26,7 +26,5 @@ class MiMoAdapter(OpenAICompatAdapter):
     def supported_api_types(self) -> list[str]:
         return ["mimo"]
 
-    def get_chat_endpoint(self, model: LLMModelBase) -> str:
-        if model.model_detail.endpoint:
-            return model.model_detail.endpoint
+    def get_chat_endpoint(self, identity: ModelIdentity) -> str:
         return "/v1/chat/completions"

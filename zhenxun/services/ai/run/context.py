@@ -11,7 +11,7 @@ from nonebot.adapters import Bot, Event
 from nonebot.matcher import Matcher
 from pydantic import BaseModel, ConfigDict, Field
 
-from zhenxun.services.ai.utils.runtime_utils import ContextUtils
+from zhenxun.services.ai.utils import ContextUtils
 from zhenxun.utils.utils import infer_plugin_namespace
 
 AgentDepsT = TypeVar("AgentDepsT", default=Any)
@@ -80,8 +80,10 @@ class SessionContext(Generic[AgentDepsT]):
         获取当前会话的持久化记忆访问门面 (AgentSessionFacade)。
         提供极简的 history 和 slots 操作 API。
         """
-        from zhenxun.services.ai.context.memory.manager import AgentSessionFacade
+        from zhenxun.services.ai.context.memory.facades import AgentSessionFacade
+        from zhenxun.services.ai.context.memory.manager import memory_manager
         from zhenxun.services.ai.context.memory.types import SessionMetadata
+        from zhenxun.services.ai.utils.scope import ScopeSelector
 
         user_id = ContextUtils.extract_user_id(self.deps)
         group_id = ContextUtils.extract_group_id(self.deps)
@@ -89,12 +91,14 @@ class SessionContext(Generic[AgentDepsT]):
 
         meta = SessionMetadata(
             session_id=self.session_id,
-            user_id=user_id,
-            group_id=group_id,
-            platform=platform,
-            namespace=self.namespace,
+            selector=ScopeSelector(
+                user_id=user_id,
+                group_id=group_id,
+                platform=platform,
+                namespace=self.namespace,
+            )
         )
-        return AgentSessionFacade(meta)
+        return AgentSessionFacade(memory_manager, meta)
 
 
 @dataclasses.dataclass
@@ -241,16 +245,15 @@ class RunContext(Generic[AgentDepsT]):
 
         if not self.session_id and self.deps:
             from zhenxun.services.ai.context.memory.types import (
-                MemoryIsolationLevel,
+                Isolation,
             )
-            from zhenxun.services.ai.context.memory.utils import generate_session_meta
 
             bot = self.get_bot()
             event = self.get_event()
 
             if bot and event:
-                meta = generate_session_meta(
-                    bot, event, isolation_level=MemoryIsolationLevel.AGENT_USER
+                meta = ContextUtils.generate_session_meta(
+                    bot, event, scope_builder=Isolation.AGENT_USER()
                 )
                 self.session_id = meta.session_id
                 self._is_auto_session_id = True

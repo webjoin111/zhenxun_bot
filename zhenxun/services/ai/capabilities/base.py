@@ -4,17 +4,19 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Union
 
-from zhenxun.services.ai.core.messages import LLMResponse
+from zhenxun.services.ai.core.messages import ChatRequest, ChatResponse
 from zhenxun.services.ai.core.options import GenerationConfig
 
 if TYPE_CHECKING:
-    from zhenxun.services.ai.core.protocols.middleware import LLMContext
+    from zhenxun.services.ai.core.models import LLMContext
     from zhenxun.services.ai.run import AgentRunResult, RunContext
 
 WrapRunHandler = Callable[[], Awaitable["AgentRunResult[Any]"]]
 """整个 Agent 运行过程包裹的处理函数类型"""
 
-WrapModelRequestHandler = Callable[["LLMContext"], Awaitable[LLMResponse]]
+WrapModelRequestHandler = Callable[
+    ["LLMContext[ChatRequest, ChatResponse]"], Awaitable[ChatResponse]
+]
 """单次大模型 API 请求包裹的处理函数类型"""
 
 WrapToolValidateHandler = Callable[[str | dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -45,7 +47,6 @@ class CapabilityOrdering:
     """当前拦截器必须被包裹（即在...之后执行）目标拦截器"""
     requires: Sequence[type["AbstractCapability"]] = ()
     """当前拦截器依赖的其他拦截器类型，若缺失则报错"""
-
 
 
 class AbstractCapability:
@@ -109,9 +110,9 @@ class AbstractCapability:
     async def wrap_model_request(
         self,
         context: RunContext,
-        llm_context: LLMContext,
+        llm_context: LLMContext[ChatRequest, ChatResponse],
         handler: WrapModelRequestHandler,
-    ) -> LLMResponse:
+    ) -> ChatResponse:
         """包裹单次大模型 API 请求 (洋葱模型)。"""
         return await handler(llm_context)
 

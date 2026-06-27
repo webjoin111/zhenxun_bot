@@ -5,16 +5,20 @@ from typing import Any
 
 import httpx
 
-from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
+from zhenxun.services.ai.core.exceptions import LLMException, ResponseParseException
 from zhenxun.services.ai.core.messages import (
     AssistantMessage,
     AudioResponse,
     LLMMessage,
+    SpeechRequest,
     ThoughtPart,
 )
-from zhenxun.services.ai.core.models import ModelCapabilities, ModelDetail
+from zhenxun.services.ai.core.models import (
+    ModelCapabilities,
+    ModelDetail,
+    ModelIdentity,
+)
 from zhenxun.services.ai.core.options import GenerationConfig, TTSConfig
-from zhenxun.services.ai.core.protocols.llm import LLMModelBase
 from zhenxun.services.ai.llm.adapters.base import BaseAdapter, RequestData
 from zhenxun.services.ai.llm.adapters.handlers.base import BaseAudioHandler
 
@@ -32,15 +36,18 @@ class MiniMaxAudioHandler(BaseAudioHandler):
     def prepare_speech_request(
         self,
         adapter: BaseAdapter,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         api_key: str,
-        input_text: str,
-        voice: str,
-        config: TTSConfig,
+        request: SpeechRequest,
     ) -> RequestData:
+        input_text = request.input_text
+        voice = request.voice
+        config = request.config or TTSConfig()
         endpoint = "/v1/t2a_v2"
         base_url = (
-            model.api_base.rstrip("/") if model.api_base else "https://api.minimaxi.com"
+            identity.api_base.rstrip("/")
+            if identity.api_base
+            else "https://api.minimaxi.com"
         )
         if base_url.endswith("/v1"):
             base_url = base_url[:-3]
@@ -70,7 +77,7 @@ class MiniMaxAudioHandler(BaseAudioHandler):
         }
 
         body: dict[str, Any] = {
-            "model": model.model_name,
+            "model": identity.model_name,
             "text": input_text,
             "stream": False,
             "voice_setting": voice_setting,
@@ -87,16 +94,18 @@ class MiniMaxAudioHandler(BaseAudioHandler):
         return RequestData(url=url, headers=headers, body=body)
 
     async def parse_speech_response(
-        self, adapter: BaseAdapter, model: LLMModelBase, raw_response: httpx.Response
+        self,
+        adapter: BaseAdapter,
+        identity: ModelIdentity,
+        raw_response: httpx.Response,
     ) -> AudioResponse:
         resp_bytes = await raw_response.aread()
         data = json.loads(resp_bytes)
 
         base_resp = data.get("base_resp", {})
         if base_resp.get("status_code", 0) != 0:
-            raise LLMException(
+            raise ResponseParseException(
                 f"MiniMax 语音合成失败: {base_resp.get('status_msg')}",
-                code=LLMErrorCode.API_RESPONSE_INVALID,
                 details=data,
             )
 
@@ -104,7 +113,7 @@ class MiniMaxAudioHandler(BaseAudioHandler):
             audio_hex = data["data"]["audio"]
             audio_bytes = bytes.fromhex(audio_hex)
         except (KeyError, ValueError) as e:
-            raise LLMException(f"解析 MiniMax 语音 Hex 数据失败: {e}", details=data)
+            raise ResponseParseException(f"解析 MiniMax 语音 Hex 数据失败: {e}", details=data)
 
         extra_info = data.get("extra_info", {})
         audio_format = extra_info.get("audio_format", "mp3")
@@ -119,7 +128,7 @@ class MiniMaxAudioHandler(BaseAudioHandler):
             audio_bytes=audio_bytes,
             audio_format=audio_format,
             usage=usage,
-            model_name=model.model_name,
+            model_name=identity.model_name,
             raw_response=data,
         )
 
@@ -209,15 +218,15 @@ class MiniMaxAdapter(OpenAICompatAdapter):
         """当前适配器支持的 API 类型列表。"""
         return ["minimax"]
 
-    def get_chat_endpoint(self, model: LLMModelBase) -> str:
+    def get_chat_endpoint(self, identity: ModelIdentity) -> str:
         """根据官方兼容要求，重写获取端点，允许自定义覆盖"""
-        if model.model_detail.endpoint:
-            return model.model_detail.endpoint
         return "/v1/chat/completions"
 
-    def _get_base_url(self, model: LLMModelBase) -> str:
+    def _get_base_url(self, identity: ModelIdentity) -> str:
         base_url = (
-            model.api_base.rstrip("/") if model.api_base else "https://api.minimaxi.com"
+            identity.api_base.rstrip("/")
+            if identity.api_base
+            else "https://api.minimaxi.com"
         )
         if base_url.endswith("/v1"):
             base_url = base_url[:-3]

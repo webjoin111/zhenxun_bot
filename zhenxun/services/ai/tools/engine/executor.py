@@ -1,28 +1,39 @@
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
 import ast
 import asyncio
+from contextlib import asynccontextmanager
+import inspect
 import json
 from typing import TYPE_CHECKING, Any, cast
 
 import json_repair
+from nonebot.adapters import Message as PlatformMessage
 
 from zhenxun.services.ai.capabilities import CombinedCapability
-from zhenxun.services.ai.core.exceptions import (
-    ToolRetryError,
-)
-from zhenxun.services.ai.core.messages import AnyLLMMessage, LLMMessage, ToolCallPart
-from zhenxun.services.ai.core.stream_events import (
+from zhenxun.services.ai.core.events import (
     EventStreamer,
     ToolCallResultEvent,
     ToolCallStart,
+    ToolStreamChunk,
 )
+from zhenxun.services.ai.core.exceptions import (
+    ToolFatalError,
+    ToolRetryError,
+)
+from zhenxun.services.ai.core.messages import AnyLLMMessage, LLMMessage, ToolCallPart
 from zhenxun.services.ai.run.context import RunContext
+from zhenxun.services.ai.run.di import DependencyInjector
 from zhenxun.services.ai.tools.models import (
+    ToolOptions,
     ToolResult,
     ValidatedToolCall,
 )
 from zhenxun.services.log import logger
 
 if TYPE_CHECKING:
+    from zhenxun.services.ai.tools.core.tool import BaseTool
     from zhenxun.services.ai.tools.engine.registry import ToolCollection
 
 
@@ -48,6 +59,102 @@ class ToolExecutor:
                 all_caps.append(c)
         return CombinedCapability(all_caps)
 
+    @asynccontextmanager
+    async def _tool_stream_scope(
+        self,
+        event_streamer: EventStreamer | None,
+        tool_name: str,
+        arguments: dict[str, Any],
+        intent: str | None,
+    ):
+        """生命周期上下文管理器：接管事件流的发送与异常包装样板代码"""
+        if event_streamer:
+            await event_streamer.send(
+                ToolCallStart(tool_name=tool_name, arguments=arguments, intent=intent)
+            )
+        result_box: dict[str, Any] = {}
+        try:
+            yield result_box
+        finally:
+            if event_streamer and "result" in result_box:
+                res = result_box["result"]
+                await event_streamer.send(
+                    ToolCallResultEvent(
+                        tool_name=tool_name, result=res, is_error=res.is_error
+                    )
+                )
+
+    @staticmethod
+    def _robust_parse_args(
+        args_raw: str | dict[str, Any],
+    ) -> tuple[bool, dict[str, Any], str | None, str]:
+        """容错解析参数纯函数，返回 (是否成功, 解析后的字典, intent意图, 原始字符串)"""
+        if isinstance(args_raw, dict):
+            arguments = args_raw.copy()
+            parsed_successfully = True
+            args_str = json.dumps(args_raw, ensure_ascii=False)
+        else:
+            args_str = args_raw
+            arguments = {}
+            parsed_successfully = False
+            if not args_str.strip():
+                parsed_successfully = True
+            else:
+                try:
+                    parsed = json.loads(args_str)
+                    if isinstance(parsed, dict):
+                        arguments, parsed_successfully = parsed, True
+                except json.JSONDecodeError:
+                    try:
+                        parsed = ast.literal_eval(args_str)
+                        if isinstance(parsed, dict):
+                            arguments, parsed_successfully = parsed, True
+                    except (ValueError, SyntaxError):
+                        try:
+                            repaired_str = str(
+                                json_repair.repair_json(args_str, skip_json_loads=True)
+                            )
+                            parsed = json.loads(repaired_str)
+                            if isinstance(parsed, dict):
+                                arguments, parsed_successfully = parsed, True
+                                logger.debug(
+                                    "⚒️ 成功修复损坏的工具参数: "
+                                    f"{args_str} -> {repaired_str}",
+                                    "ToolExecutor",
+                                )
+                        except Exception:
+                            pass
+        intent_str = None
+        if parsed_successfully:
+            _intent = arguments.pop("_intent", None)
+            if _intent:
+                intent_str = str(_intent)
+        return parsed_successfully, arguments, intent_str, args_str
+
+    def _prepare_tool_context(
+        self,
+        context: RunContext | None,
+        tool_call_id: str,
+        tool_name: str,
+        executable: Any,
+        event_streamer: EventStreamer | None,
+        available_tools: "ToolCollection | dict[str, Any] | None" = None,
+    ) -> RunContext:
+        """准备/克隆工具调用所使用的隔离 RunContext"""
+        from zhenxun.services.ai.run import RunContext
+
+        safe_context = (
+            context.clone_for_tool_call(tool_call_id, tool_name)
+            if context
+            else RunContext()
+        )
+        safe_context.run.streamer = event_streamer
+        safe_context.call.tool_name = tool_name
+        safe_context.call.current_tool = executable
+        if available_tools is not None:
+            safe_context.state["__available_tools"] = available_tools
+        return safe_context
+
     async def validate_tool_call(
         self,
         tool_call: ToolCallPart,
@@ -66,68 +173,24 @@ class ToolExecutor:
             )
 
         tool_name = tool_call.tool_name
-        arguments_str = (
-            tool_call.args
-            if isinstance(tool_call.args, str)
-            else json.dumps(tool_call.args, ensure_ascii=False)
+        parsed_successfully, arguments, intent_str, arguments_str = (
+            self._robust_parse_args(tool_call.args)
         )
-        arguments: dict[str, Any] = {}
-        intent_str: str | None = None
 
-        if arguments_str:
-            parsed_successfully = False
-
-            try:
-                arguments = json.loads(arguments_str)
-                if isinstance(arguments, dict):
-                    parsed_successfully = True
-            except json.JSONDecodeError:
-                pass
-
-            if not parsed_successfully:
-                try:
-                    arguments = ast.literal_eval(arguments_str)
-                    if isinstance(arguments, dict):
-                        parsed_successfully = True
-                except (ValueError, SyntaxError):
-                    pass
-
-            if not parsed_successfully:
-                try:
-                    repaired_str = str(
-                        json_repair.repair_json(arguments_str, skip_json_loads=True)
-                    )
-                    arguments = json.loads(repaired_str)
-                    if isinstance(arguments, dict):
-                        parsed_successfully = True
-                        logger.debug(
-                            f"⚒️ [Cascade Parse] 成功修复损坏的工具参数: "
-                            f"{arguments_str} -> {repaired_str}",
-                            "ToolExecutor",
-                        )
-                except Exception:
-                    pass
-
-            if parsed_successfully and isinstance(arguments, dict):
-                _intent = arguments.pop("_intent", None)
-                if _intent:
-                    logger.info(
-                        f"🧠 [Agent Intent] 调用工具 {tool_name} 的意图: {_intent}"
-                    )
-                    intent_str = str(_intent)
-
-            if not parsed_successfully:
-                if context:
-                    context.run.tool_retries[tool_name] = (
-                        context.run.tool_retries.get(tool_name, 0) + 1
-                    )
-                return ValidatedToolCall(
-                    call=tool_call,
-                    args_valid=False,
-                    validation_error=ToolRetryError(
-                        f"参数JSON解析失败，请检查 JSON 语法是否合法: {arguments_str}"
-                    ),
+        if tool_call.args and not parsed_successfully:
+            if context:
+                context.run.tool_retries[tool_name] = (
+                    context.run.tool_retries.get(tool_name, 0) + 1
                 )
+            return ValidatedToolCall(
+                call=tool_call,
+                args_valid=False,
+                validation_error=ToolRetryError(
+                    f"参数JSON解析失败，请检查 JSON 语法是否合法: {arguments_str}"
+                ),
+            )
+        elif intent_str:
+            logger.info(f"🧠 [Agent Intent] 调用工具 {tool_name} 的意图: {intent_str}")
 
         executable = available_tools.get(tool_name)
         if not executable or not hasattr(executable, "execute"):
@@ -137,18 +200,9 @@ class ToolExecutor:
                 validation_error=ToolRetryError(f"Tool '{tool_name}' not found."),
             )
 
-        from zhenxun.services.ai.run import RunContext
-
-        if context:
-            safe_context = context.clone_for_tool_call(tool_call.id, tool_name)
-            safe_context.run.streamer = event_streamer
-            safe_context.call.tool_name = tool_name
-        else:
-            safe_context = RunContext()
-            safe_context.run.streamer = event_streamer
-            safe_context.call.tool_name = tool_name
-
-        safe_context.call.current_tool = executable
+        safe_context = self._prepare_tool_context(
+            context, tool_call.id, tool_name, executable, event_streamer
+        )
 
         combined_cap = self._get_combined_capability(executable, safe_context)
 
@@ -217,23 +271,14 @@ class ToolExecutor:
         executable = validated.tool
         arguments = validated.validated_args or {}
 
-        from zhenxun.services.ai.run import RunContext
-
-        safe_context = (
-            context.clone_for_tool_call(validated.call.id, tool_name)
-            if context
-            else RunContext()
+        safe_context = self._prepare_tool_context(
+            context,
+            validated.call.id,
+            tool_name,
+            executable,
+            event_streamer,
+            available_tools,
         )
-        safe_context.run.streamer = event_streamer
-        safe_context.call.tool_name = tool_name
-        safe_context.call.current_tool = executable
-        safe_context.state["__available_tools"] = available_tools
-
-        call_event = ToolCallStart(
-            tool_name=tool_name, arguments=arguments, intent=validated.intent
-        )
-        if event_streamer:
-            await event_streamer.send(call_event)
 
         from zhenxun.services.ai.run.context import set_run_context
 
@@ -242,32 +287,26 @@ class ToolExecutor:
         async def inner_handler(args_inner: dict) -> Any:
             return await executable.execute(context=safe_context, **args_inner)
 
-        with set_run_context(safe_context):
-            try:
-                result = await combined_cap.wrap_tool_execute(
-                    safe_context, tool_name, arguments, inner_handler
-                )
+        async with self._tool_stream_scope(
+            event_streamer, tool_name, arguments, validated.intent
+        ) as box:
+            with set_run_context(safe_context):
+                try:
+                    result = await combined_cap.wrap_tool_execute(
+                        safe_context, tool_name, arguments, inner_handler
+                    )
+                    if not isinstance(result, ToolResult):
+                        result = ToolResult(output=result)
+                except BaseException as e:
+                    from zhenxun.services.ai.core.exceptions import ControlFlowExit
 
-                if not isinstance(result, ToolResult):
-                    result = ToolResult(output=result)
-            except BaseException as e:
-                from zhenxun.services.ai.core.exceptions import ControlFlowExit
+                    if isinstance(e, ControlFlowExit):
+                        raise e
+                    logger.error(f"洋葱模型异常穿透: {e}")
+                    result = ToolResult(output=f"System Fatal Error: {e}").as_error()
+            box["result"] = result
 
-                if isinstance(e, ControlFlowExit):
-                    raise e
-                logger.error(f"洋葱模型异常穿透: {e}")
-                result = ToolResult(output=f"System Fatal Error: {e}").as_error()
-
-        if event_streamer:
-            await event_streamer.send(
-                ToolCallResultEvent(
-                    tool_name=tool_name,
-                    result=result,
-                    is_error=result.is_error,
-                )
-            )
-
-        return validated.call, result
+        return validated.call, box["result"]
 
     async def execute_batch(
         self,
@@ -296,11 +335,6 @@ class ToolExecutor:
         validated_calls = await asyncio.gather(*val_tasks)
 
         results: list[Any] = [None] * len(validated_calls)
-        shared_tasks = []
-
-        loop = asyncio.get_running_loop()
-        last_exclusive_task = loop.create_future()
-        last_exclusive_task.set_result(None)
 
         async def _run_tool(index: int, val_call: ValidatedToolCall):
             try:
@@ -316,41 +350,28 @@ class ToolExecutor:
             except Exception as e:
                 results[index] = e
 
-        try:
-            for i, val_call in enumerate(validated_calls):
-                executable = getattr(val_call, "tool", None)
-                concurrency_mode = getattr(
-                    getattr(executable, "settings", None), "concurrency", "shared"
-                )
+        chunks: list[list[tuple[int, ValidatedToolCall]]] = []
+        current_chunk: list[tuple[int, ValidatedToolCall]] = []
 
-                if concurrency_mode == "exclusive":
-                    await last_exclusive_task
-                    if shared_tasks:
-                        await asyncio.gather(*shared_tasks, return_exceptions=True)
-                        shared_tasks.clear()
+        for i, val_call in enumerate(validated_calls):
+            executable = getattr(val_call, "tool", None)
+            concurrency_mode = getattr(
+                getattr(executable, "settings", None), "concurrency", "shared"
+            )
 
-                    task = asyncio.create_task(_run_tool(i, val_call))
-                    last_exclusive_task = task
-                else:
+            if concurrency_mode == "exclusive":
+                if current_chunk:
+                    chunks.append(current_chunk)
+                    current_chunk = []
+                chunks.append([(i, val_call)])
+            else:
+                current_chunk.append((i, val_call))
 
-                    async def _run_shared(
-                        idx=i, vc=val_call, barrier=last_exclusive_task
-                    ):
-                        await barrier
-                        await _run_tool(idx, vc)
+        if current_chunk:
+            chunks.append(current_chunk)
 
-                    task = asyncio.create_task(_run_shared())
-                    shared_tasks.append(task)
-
-            await last_exclusive_task
-            if shared_tasks:
-                await asyncio.gather(*shared_tasks, return_exceptions=True)
-        finally:
-            if not last_exclusive_task.done():
-                last_exclusive_task.cancel()
-            for t in shared_tasks:
-                if not t.done():
-                    t.cancel()
+        for chunk in chunks:
+            await asyncio.gather(*[_run_tool(i, call) for i, call in chunk])
 
         tool_messages: list[AnyLLMMessage] = []
         for index, result_pair in enumerate(results):
@@ -379,3 +400,130 @@ class ToolExecutor:
                 )
             )
         return tool_messages
+
+
+class ToolExecutionPolicy:
+    """
+    工具执行策略 (Strategy Pattern)。
+    负责解析工具私有配置与系统全局配置，决定最大重试次数、Fallback 路由目标等流转行为。
+    """
+
+    def __init__(self, tool: BaseTool, global_max_retries: int = 0):
+        self.tool = tool
+        self.settings: ToolOptions = getattr(tool, "settings", ToolOptions())
+        self.metadata: dict[str, Any] = (
+            self.settings.metadata if self.settings else getattr(tool, "metadata", {})
+        )
+        self.global_max_retries = global_max_retries
+
+    @property
+    def max_retries(self) -> int:
+        """
+        计算当前工具的绝对最大重试次数。
+        优先使用工具级配置 (ToolOptions.max_retries)，如果未设置，则使用全局配置。
+        由于重试机制是保证 Agent 稳定性的防线，
+        即使全局为 0，底层默认也会给予至少 1 次的机会。
+        """
+        tool_retries = getattr(self.settings, "max_retries", None)
+        if tool_retries is not None:
+            return tool_retries
+        return max(self.global_max_retries, 1)
+
+
+class ToolRunner(ABC):
+    """
+    工具运行器基类协议。
+    负责将参数请求物理落实为目标执行。
+    """
+
+    @abstractmethod
+    async def run(
+        self, tool: BaseTool, context: RunContext, **kwargs: Any
+    ) -> ToolResult:
+        pass
+
+
+class NativeToolRunner(ToolRunner):
+    """
+    原生 Python 函数工具运行器。
+    负责处理依赖注入 (DI)、异步包装、生成器流式收集以及框架级的多模态消息转换。
+    """
+
+    async def run(
+        self, tool: BaseTool, context: RunContext, **kwargs: Any
+    ) -> ToolResult:
+        target_func = tool.get_execute_target()
+        signature_target = tool.get_signature_target()
+
+        if not target_func:
+            return ToolResult(output="Error: 未找到有效的执行目标(run 方法)").as_error()
+
+        call_kwargs = dict(kwargs)
+
+        try:
+            target_call_kwargs = await DependencyInjector.resolve_all(
+                sig=inspect.signature(signature_target),
+                call_kwargs=dict(call_kwargs),
+                context=context,
+            )
+        except ValueError as e:
+            logger.error(f"工具 {tool.name} 依赖注入失败: {e}", e=e)
+            raise ToolFatalError(f"框架依赖注入失败: {e}")
+
+        is_async_gen = getattr(
+            target_func, "_is_async_gen", False
+        ) or inspect.isasyncgenfunction(target_func)
+        if is_async_gen:
+            res = None
+            async for chunk in target_func(**target_call_kwargs):
+                if isinstance(chunk, ToolResult):
+                    res = chunk
+                else:
+                    from zhenxun.services.ai.tools.models import ToolResultChunk
+
+                    chunk_obj = (
+                        chunk
+                        if isinstance(chunk, ToolResultChunk)
+                        else ToolResultChunk(content=str(chunk))
+                    )
+                    is_silent = (
+                        getattr(tool.settings, "silent", False)
+                        if tool and hasattr(tool, "settings")
+                        else False
+                    )
+                    if context.run.streamer and not is_silent:
+                        await context.run.streamer.send(
+                            ToolStreamChunk(
+                                tool_name=tool.name,
+                                content=chunk_obj.content,
+                                metadata=chunk_obj.metadata,
+                            )
+                        )
+            if res is None:
+                res = ToolResult(output="Stream finished successfully.")
+        else:
+            res = await target_func(**target_call_kwargs)
+
+        if isinstance(res, ToolResult):
+            final_result = res
+        else:
+            if str(type(res)).find("Message") != -1:
+                from zhenxun.services.ai.message_builder import MessageBuilder
+
+                uni_msg = (
+                    MessageBuilder.message_to_unimessage(res)
+                    if isinstance(res, PlatformMessage)
+                    else res
+                )
+                parts = await MessageBuilder.unimsg_to_llm_parts(uni_msg)
+
+                final_result = ToolResult(output=parts).show_to_user(uni_msg)
+            else:
+                final_result = ToolResult(output=res)
+
+        return final_result
+
+
+from zhenxun.services.ai.tools.core.tool import register_tool_runner
+
+register_tool_runner(NativeToolRunner)

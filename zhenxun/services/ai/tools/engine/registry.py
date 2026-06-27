@@ -24,12 +24,13 @@ T = TypeVar("T", bound=ToolExecutable)
 class ToolCollection(list[T], Generic[T]):
     """支持按索引和按名称获取的工具集合 (List + Dict)"""
 
-    def __init__(self, tools: Iterable[T] | None = None):
-        super().__init__(tools or [])
+    def __init__(self, iterable: Iterable[T] | None = None):
+        super().__init__(iterable or [])
         self._name_cache: dict[str, T] = {}
         self._build_name_cache()
 
     def _build_name_cache(self) -> None:
+        """构建工具名称小写到工具实例的映射缓存。"""
         self._name_cache = {}
         for tool in self:
             name = getattr(tool, "name", None)
@@ -62,8 +63,6 @@ class ToolCollection(list[T], Generic[T]):
     def __setitem__(self, key: Any, value: Any) -> None:
         if isinstance(key, str):
             name = key.lower()
-            if not hasattr(value, "name"):
-                setattr(value, "name", key)
             if name in self._name_cache:
                 old_tool = self._name_cache[name]
                 try:
@@ -76,38 +75,35 @@ class ToolCollection(list[T], Generic[T]):
             self._name_cache[name] = value
         else:
             super().__setitem__(key, value)
-            name = getattr(value, "name", None)
-            if name:
-                self._name_cache[name.lower()] = value
+            self._name_cache[value.name.lower()] = value
 
     def get(self, key: str, default: Any = None) -> T | Any:
         return self._name_cache.get(key.lower(), default)
 
-    def append(self, tool: T) -> None:
-        name = getattr(tool, "name", None)
-        if name and name.lower() in self._name_cache:
+    def append(self, object: T) -> None:
+        name = object.name
+        if name.lower() in self._name_cache:
             old_tool = self._name_cache[name.lower()]
             try:
                 idx = super().index(old_tool)
-                super().__setitem__(idx, tool)
+                super().__setitem__(idx, object)
             except ValueError:
-                super().append(tool)
+                super().append(object)
         else:
-            super().append(tool)
-        if name:
-            self._name_cache[name.lower()] = tool
+            super().append(object)
+        self._name_cache[name.lower()] = object
 
-    def extend(self, tools: Iterable[T]) -> None:
-        for t in tools:
+    def extend(self, iterable: Iterable[T]) -> None:
+        for t in iterable:
             self.append(t)
 
-    def remove(self, tool: T) -> None:
-        super().remove(tool)
-        name = getattr(tool, "name", None)
+    def remove(self, value: T) -> None:
+        super().remove(value)
+        name = getattr(value, "name", None)
         if name and name.lower() in self._name_cache:
             del self._name_cache[name.lower()]
 
-    def pop(self, index: Any = -1) -> T:
+    def pop(self, index: SupportsIndex = -1) -> T:
         tool = super().pop(index)
         name = getattr(tool, "name", None)
         if name and name.lower() in self._name_cache:
@@ -140,6 +136,11 @@ class ToolCollection(list[T], Generic[T]):
 
 
 class _StringResolver:
+    """字符串格式的工具路由解析器。
+
+    负责解析像 'ns.tool_name'、'ns.*' 或 'ns.#tag' 的语法路由。
+    """
+
     def __init__(
         self, name: str, manager: "ToolProviderManager", default_namespace: str
     ):
@@ -176,22 +177,34 @@ class _StringResolver:
             query = Query(name=target, namespace=ns)
 
         logger.debug(f"🔍 [StringRouter] 语法解析: '{self.name}' -> {query}")
-        return await _QueryResolver(query, self.manager).resolve(context)
+        return await _QueryResolver(
+            query, self.manager, self.default_namespace
+        ).resolve(context)
 
 
 class _QueryResolver:
-    def __init__(self, query: Query, manager: "ToolProviderManager"):
+    """Query 查询对象格式的工具路由解析器。
+
+    负责根据 namespace、标签或工具名称检索匹配的工具。
+    """
+
+    def __init__(
+        self, query: Query, manager: "ToolProviderManager", default_namespace: str
+    ):
         self.query = query
         self.manager = manager
+        self.default_namespace = default_namespace
 
     async def resolve(self, context: RunContext | None = None) -> ResolvedToolPayload:
         payload = ResolvedToolPayload()
         namespaces_to_search = []
 
-        if self.query.namespace == "global":
+        target_namespace = self.query.namespace or self.default_namespace
+
+        if target_namespace == "global":
             namespaces_to_search = list(self.manager._namespaced_tools.keys())
-        elif self.query.namespace:
-            namespaces_to_search = [self.query.namespace]
+        elif target_namespace:
+            namespaces_to_search = [target_namespace]
         else:
             raise ValueError(f"Query 对象必须显式指定 namespace 作用域: {self.query}")
 
@@ -199,14 +212,11 @@ class _QueryResolver:
             if ns in self.manager._namespaced_tools:
                 for tool in self.manager._namespaced_tools[ns]:
                     if self.query.match(tool):
-                        if hasattr(tool, "resolve"):
-                            p = await tool.resolve(context)
-                            if p:
-                                payload.tools.extend(p.tools)
-                                payload.injected_prompts.extend(p.injected_prompts)
-                                payload.toolkits.extend(p.toolkits)
-                        else:
-                            payload.tools.append(tool)
+                        p = await tool.resolve(context)
+                        if p:
+                            payload.tools.extend(p.tools)
+                            payload.injected_prompts.extend(p.injected_prompts)
+                            payload.toolkits.extend(p.toolkits)
 
         if self.query.name and not payload.tools and not self.query.tags:
             specific = await self.manager.resolve_specific_tools([self.query.name])
@@ -218,6 +228,11 @@ class _QueryResolver:
 
 
 class _CallableResolver:
+    """普通 Python 函数/可调用对象格式的工具路由解析器。
+
+    负责将其包装为 FunctionTool 实例。
+    """
+
     def __init__(self, func: Callable, manager: "ToolProviderManager"):
         self.func = func
         self.manager = manager
@@ -230,9 +245,7 @@ class _CallableResolver:
             if candidate:
                 for ns_tools in self.manager._namespaced_tools.values():
                     if t := ns_tools.get(candidate):
-                        if hasattr(t, "resolve"):
-                            return await t.resolve(context)
-                        return ResolvedToolPayload(tools=[t])
+                        return await t.resolve(context)
         from zhenxun.services.ai.tools.core.tool import FunctionTool
 
         t = FunctionTool(func=self.func)
@@ -240,6 +253,8 @@ class _CallableResolver:
 
 
 class _TypeAdapterResolver:
+    """基于自定义类型映射注册的工具路由解析器。负责调用对应类型的解析函数。"""
+
     def __init__(
         self,
         item: Any,
@@ -261,21 +276,6 @@ class _TypeAdapterResolver:
         return await self.manager._normalize_to_resolver(
             resolved, self.default_namespace
         ).resolve(context)
-
-
-class _LegacyExecutableResolver:
-    def __init__(self, executable: Any):
-        self.executable = executable
-
-    async def resolve(self, context: RunContext | None = None) -> ResolvedToolPayload:
-        import copy
-
-        if hasattr(self.executable, "get_definition"):
-            run_scoped_tool = copy.copy(self.executable)
-            if not hasattr(run_scoped_tool, "name"):
-                setattr(run_scoped_tool, "name", f"instance_{id(run_scoped_tool)}")
-            return ResolvedToolPayload(tools=[run_scoped_tool])
-        return ResolvedToolPayload(tools=[self.executable])
 
 
 class ToolProviderManager:
@@ -314,12 +314,10 @@ class ToolProviderManager:
         """注册一个新的 ToolProvider。"""
         if provider not in self._providers:
             self._providers.append(provider)
-            logger.info(f"已注册工具提供者: {provider.__class__.__name__}")
+            logger.debug(f"已注册工具提供者: {provider.__class__.__name__}")
 
     def register_tool(self, tool: ToolExecutable):
         """注册由 @tool 生成的单一工具"""
-        if not hasattr(tool, "name"):
-            setattr(tool, "name", str(id(tool)))
         ns = infer_plugin_namespace()
         if ns not in self._namespaced_tools:
             self._namespaced_tools[ns] = ToolCollection()
@@ -347,46 +345,18 @@ class ToolProviderManager:
         await self._init_promise
 
     async def _initialize_providers(self) -> None:
-        """内部初始化逻辑。"""
+        """并发初始化所有已注册的工具提供者。"""
         logger.info(f"开始初始化 {len(self._providers)} 个工具提供者...")
         init_tasks = [provider.initialize() for provider in self._providers]
         await asyncio.gather(*init_tasks, return_exceptions=True)
         logger.info("所有工具提供者初始化完成。")
 
-    async def get_resolved_tools(
+    async def discover_tools(
         self,
         allowed_servers: list[str] | None = None,
         excluded_servers: list[str] | None = None,
-        namespaces: list[str] | None = None,
-    ) -> ToolCollection:
-        """
-        获取所有已发现和解析的工具。
-        此方法会触发懒加载初始化，并根据是否传入过滤器来决定是否使用全局缓存。
-        """
-        await self.initialize()
-
-        has_filters = (
-            allowed_servers is not None
-            or excluded_servers is not None
-            or namespaces is not None
-        )
-
-        if not has_filters and self._resolved_tools is not None:
-            logger.debug("使用全局工具缓存。")
-            return self._resolved_tools
-
-        if has_filters:
-            logger.info("检测到过滤器，执行临时工具发现 (不使用缓存)。")
-            logger.debug(
-                f"过滤器详情: allowed_servers={allowed_servers}, "
-                f"excluded_servers={excluded_servers}, "
-                f"namespaces={namespaces}"
-            )
-        else:
-            logger.info("未应用过滤器，开始全局工具发现...")
-
-        all_tools = ToolCollection()
-
+    ) -> dict[str, ToolExecutable]:
+        """向所有已初始化的 ToolProvider 并发执行工具发现。"""
         discover_tasks = []
         provider_indices = []
         for i, provider in enumerate(self._providers):
@@ -402,6 +372,7 @@ class ToolProviderManager:
 
         results = await asyncio.gather(*discover_tasks, return_exceptions=True)
 
+        provider_tools = {}
         for result_idx, provider_result in enumerate(results):
             provider = self._providers[provider_indices[result_idx]]
             provider_name = provider.__class__.__name__
@@ -411,101 +382,99 @@ class ToolProviderManager:
                     f"提供者 '{provider_name}' 发现了 {len(provider_result)} 个工具。"
                 )
                 for name, executable in provider_result.items():
-                    if not hasattr(executable, "name"):
-                        setattr(executable, "name", name)
-                    if all_tools.get(name):
+                    if provider_tools.get(name):
                         logger.warning(
                             f"发现重复的工具名称 '{name}'，后发现的将覆盖前者。"
                         )
-                    all_tools.append(executable)
+                    provider_tools[name] = executable
             elif isinstance(provider_result, Exception):
                 logger.error(
                     f"提供者 '{provider_name}' 在发现工具时出错: {provider_result}"
                 )
+        return provider_tools
+
+    async def _query_engine(
+        self,
+        names: list[str] | None = None,
+        allowed_servers: list[str] | None = None,
+        excluded_servers: list[str] | None = None,
+        include_providers: bool = True,
+    ) -> ToolCollection:
+        """统一查询引擎：收敛所有本地与云端的工具检索逻辑"""
+        await self.initialize()
+        resolved = ToolCollection()
 
         for ns_tools in self._namespaced_tools.values():
             for t in ns_tools:
-                all_tools.append(t)
+                if names and t.name not in names:
+                    continue
+                resolved.append(t)
 
-        if not has_filters:
-            self._resolved_tools = all_tools
-            logger.info(f"全局工具发现完成，共找到并缓存了 {len(all_tools)} 个工具。")
-        else:
-            logger.info(f"带过滤器的工具发现完成，共找到 {len(all_tools)} 个工具。")
-
-        return all_tools
-
-    async def resolve_specific_tools(self, tool_names: list[str]) -> ToolCollection:
-        """
-        仅解析指定名称的工具，避免触发全量工具发现。
-        优先从全局游离工具中查找，再回退到 Provider。
-        """
-        resolved = ToolCollection()
-        if not tool_names:
+        if not include_providers:
             return resolved
 
-        await self.initialize()
-
-        for name in tool_names:
-            found_in_global = False
-            for ns_tools in self._namespaced_tools.values():
-                if t := ns_tools.get(name):
-                    resolved.append(t)
-                    found_in_global = True
-                    break
-            if found_in_global:
-                continue
-
-            config: dict[str, Any] = {"name": name}
-            for provider in self._providers:
-                try:
-                    executable = await provider.get_tool_executable(name, config)
-                except Exception as exc:
-                    logger.error(
-                        f"provider '{provider.__class__.__name__}' 在解析工具 '{name}'"
-                        f"时出错: {exc}",
-                        e=exc,
-                    )
-                    continue
-
-                if executable:
-                    if not hasattr(executable, "name"):
-                        setattr(executable, "name", name)
-                    resolved.append(executable)
-                    break
-            else:
-                if not resolved.get(name):
-                    logger.warning(f"没有找到名为 '{name}' 的工具，已跳过。")
+        if names:
+            missing_names = [n for n in names if not resolved.get(n)]
+            for name in missing_names:
+                config = {"name": name}
+                for provider in self._providers:
+                    try:
+                        if executable := await provider.get_tool_executable(
+                            name, config
+                        ):
+                            resolved.append(executable)
+                            break
+                    except Exception as exc:
+                        logger.error(
+                            f"provider '{provider.__class__.__name__}'"
+                            f"解析工具 '{name}' 出错: {exc}"
+                        )
+        else:
+            provider_tools = await self.discover_tools(
+                allowed_servers, excluded_servers
+            )
+            for t in provider_tools.values():
+                resolved.append(t)
 
         return resolved
+
+    async def get_resolved_tools(
+        self,
+        allowed_servers: list[str] | None = None,
+        excluded_servers: list[str] | None = None,
+        namespaces: list[str] | None = None,
+    ) -> ToolCollection:
+        has_filters = (
+            allowed_servers is not None
+            or excluded_servers is not None
+            or namespaces is not None
+        )
+        if not has_filters and self._resolved_tools is not None:
+            return self._resolved_tools
+
+        tools = await self._query_engine(
+            allowed_servers=allowed_servers, excluded_servers=excluded_servers
+        )
+
+        if not has_filters:
+            self._resolved_tools = tools
+        return tools
+
+    async def resolve_specific_tools(self, tool_names: list[str]) -> ToolCollection:
+        return await self._query_engine(names=tool_names, include_providers=True)
 
     async def get_function_tools(
         self, names: list[str] | None = None
     ) -> ToolCollection:
-        """
-        仅从直接注册的游离工具中解析指定的工具。
-        """
-        all_tools_list = []
-        for ns_tools in self._namespaced_tools.values():
-            all_tools_list.extend(list(ns_tools))
-        all_function_tools = ToolCollection(all_tools_list)
-        if names is None:
-            return all_function_tools
-
-        resolved_tools = ToolCollection()
-        for name in names:
-            if t := all_function_tools.get(name):
-                resolved_tools.append(t)
-            else:
-                logger.warning(f"全局工具 '{name}' 未通过 @tool 注册，将被忽略。")
-        return resolved_tools
+        return await self._query_engine(names=names, include_providers=False)
 
     def _normalize_to_resolver(self, item: Any, default_ns: str) -> Any:
-        """将任意类型包装为含有 resolve() 方法的解析器对象"""
+        """将任意工具配置或定义包装为标准的多态解析器对象。"""
         if hasattr(item, "resolve"):
             return item
+
         if isinstance(item, Query):
-            return _QueryResolver(item, self)
+            return _QueryResolver(item, self, default_ns)
         if isinstance(item, str):
             return _StringResolver(item, self, default_ns)
         if type(item) in self._type_resolvers:
@@ -514,7 +483,13 @@ class ToolProviderManager:
             )
         if callable(item):
             return _CallableResolver(item, self)
-        return _LegacyExecutableResolver(item)
+
+        if not hasattr(item, "resolve"):
+            raise TypeError(
+                f"严格协议校验失败: 工具对象 {type(item)} 必须实现 ToolResolvable 协议 "
+                "(包含 resolve 方法)。如果你想注册普通函数，请使用 @tool 装饰器。"
+            )
+        return item
 
     async def resolve_tools(
         self,
@@ -578,15 +553,15 @@ class ToolProviderManager:
 tool_provider_manager = ToolProviderManager()
 
 
-from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
+from zhenxun.services.ai.core.exceptions import LLMException, ConfigurationException
 
 
 async def _dict_ad_hoc_resolver(config: dict):
+    """针对字典类型的 ad-hoc 工具配置的类型解析器。"""
     name = config.get("name")
     if not name:
-        raise LLMException(
+        raise ConfigurationException(
             "工具配置字典必须包含 'name' 字段。",
-            code=LLMErrorCode.CONFIGURATION_ERROR,
         )
 
     for provider in tool_provider_manager._providers:
@@ -594,9 +569,8 @@ async def _dict_ad_hoc_resolver(config: dict):
         if executable:
             return executable
 
-    raise LLMException(
+    raise ConfigurationException(
         f"没有为 ad-hoc 工具 '{name}' 找到合适的提供者。",
-        code=LLMErrorCode.CONFIGURATION_ERROR,
     )
 
 

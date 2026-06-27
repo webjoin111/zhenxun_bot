@@ -4,12 +4,12 @@ LLM 服务模块 - 公共 API 入口
 提供统一的 AI 服务调用接口、核心数据契约和配置工具。
 """
 
-from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
+from zhenxun.services.ai.core.exceptions import LLMException
 from zhenxun.services.ai.core.messages import (
     AudioResponse,
+    ChatResponse,
     LLMContentPart,
     LLMMessage,
-    LLMResponse,
 )
 from zhenxun.services.ai.core.options import (
     TTSConfig,
@@ -24,19 +24,18 @@ from .api import (
     generate_structured,
     rerank,
 )
-from .config import (
+from .builder import (
     IntentBuilder,
 )
 from .manager import get_default_model
 
 __all__ = [
     "AudioResponse",
+    "ChatResponse",
     "IntentBuilder",
     "LLMContentPart",
-    "LLMErrorCode",
     "LLMException",
     "LLMMessage",
-    "LLMResponse",
     "TTSConfig",
     "chat",
     "create_image",

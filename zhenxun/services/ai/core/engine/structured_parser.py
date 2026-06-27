@@ -11,8 +11,8 @@ from zhenxun.services.ai.core.exceptions import (
     SchemaParseError,
 )
 from zhenxun.services.ai.core.models import ToolDefinition
-from zhenxun.services.ai.core.protocols.tool import ToolExecutable
 from zhenxun.services.ai.run.models import OutputDataT
+from zhenxun.services.ai.tools.core.tool import BaseTool
 from zhenxun.services.ai.tools.models import ToolResult
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_json_schema, model_validate
@@ -37,15 +37,20 @@ class BaseOutputProcessor(Generic[OutputDataT]):
 
     def __init__(
         self,
-        response_model: type[Any],
+        response_model: type[Any] | None = None,
         error_template: str | None = None,
+        raw_schema: dict[str, Any] | None = None,
     ):
         self.original_model = response_model
         self.error_template = error_template or DEFAULT_IVR_TEMPLATE
+        self.raw_schema = raw_schema
+        self.target_model = None
+        self.is_union_wrapped = False
 
-        self.target_model, self.is_union_wrapped = self._create_union_wrapper(
-            response_model
-        )
+        if response_model is not None:
+            self.target_model, self.is_union_wrapped = self._create_union_wrapper(
+                response_model
+            )
 
     @staticmethod
     def _create_union_wrapper(union_type: Any) -> tuple[type[BaseModel], bool]:
@@ -70,6 +75,10 @@ class BaseOutputProcessor(Generic[OutputDataT]):
 
     def get_json_schema(self) -> dict[str, Any]:
         """提取目标模型的 JSON Schema"""
+        if self.raw_schema is not None:
+            return self.raw_schema
+        if self.target_model is None:
+            raise ValueError("未提供 response_model 或 raw_schema")
         try:
             return model_json_schema(self.target_model)
         except AttributeError:
@@ -77,6 +86,18 @@ class BaseOutputProcessor(Generic[OutputDataT]):
 
     def _parse_and_validate(self, text: str) -> Any:
         """[私有方法] 执行带有容错修复的 JSON 解析与模型验证"""
+        if self.raw_schema is not None:
+            import json
+
+            try:
+                return json.loads(text)
+            except Exception:
+                try:
+                    return json_repair.loads(text, skip_json_loads=True)
+                except Exception as repair_error:
+                    raise SchemaParseError(f"JSON格式损坏: {repair_error}")
+        if self.target_model is None:
+            raise SchemaParseError("未提供 response_model 或 raw_schema")
         try:
             return type_validate_json(self.target_model, text)
         except (ValidationError, ValueError) as e:
@@ -113,36 +134,35 @@ class BaseOutputProcessor(Generic[OutputDataT]):
             raise e
 
 
-class SubmitFinalResultExecutable(ToolExecutable):
+class SubmitFinalResultExecutable(BaseTool):
     """
     动态生成的提交最终结果工具。
     用于将大模型的结构化输出拦截并终止 AgentExecutor 的循环。
     """
-
-    _dynamic_def: Any = None
-    name: str = ""
 
     def __init__(
         self,
         output_processor: BaseOutputProcessor,
         guardrails: list[Any] | None = None,
     ):
-        self.output_processor = output_processor
-        self.guardrails = guardrails or []
-        self.tool_name = "submit_final_result"
-        self.name = self.tool_name
-
-    async def get_definition(self, context: Any | None = None) -> ToolDefinition | None:
-        if hasattr(self, "_dynamic_def") and self._dynamic_def is not None:
-            return self._dynamic_def
-        schema = self.output_processor.get_json_schema()
-        return ToolDefinition(
-            name=self.tool_name,
+        super().__init__(
+            name="submit_final_result",
             description=(
                 "当你完成所有必要的调查 and 思考后，"
                 "必须且只能调用此工具来提交最终的结构化结果。"
                 "提交后任务将立刻结束。"
             ),
+        )
+        self.output_processor = output_processor
+        self.guardrails = guardrails or []
+
+    async def get_definition(self, context: Any | None = None) -> ToolDefinition | None:
+        if getattr(self, "_dynamic_def", None) is not None:
+            return self._dynamic_def
+        schema = self.output_processor.get_json_schema()
+        return ToolDefinition(
+            name=self.name,
+            description=self.description,
             parameters=schema,
         )
 
@@ -176,8 +196,3 @@ class SubmitFinalResultExecutable(ToolExecutable):
         except Exception as e:
             error_msg = f"系统捕获到解析异常：\n{e}"
             raise SchemaParseError(error_msg)
-
-    async def should_confirm(
-        self, context: Any | None = None, **kwargs: Any
-    ) -> str | None:
-        return None

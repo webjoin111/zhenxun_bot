@@ -8,6 +8,7 @@ from zhenxun.services.ai.context.memory.models import MemoryConfig
 from zhenxun.services.ai.context.memory.types import SessionMetadata
 from zhenxun.services.ai.core.messages import LLMMessage
 from zhenxun.services.log import logger
+from zhenxun.utils.pydantic_compat import model_copy
 
 
 class MemoryReader:
@@ -33,19 +34,53 @@ class MemoryReader:
         ):
             return ""
 
+        policy = self.memory_config.long_term.auto_recall
+        should_recall = False
+
+        if isinstance(policy, bool):
+            should_recall = policy
+        elif callable(policy):
+            import inspect
+
+            try:
+                res = policy(user_input, self.session_meta)
+                if inspect.isawaitable(res):
+                    should_recall = await res
+                else:
+                    should_recall = bool(res)
+            except Exception as e:
+                logger.error(f"[MemoryReader] 自定义 auto_recall 函数执行失败: {e}")
+                should_recall = False
+
+        if not should_recall:
+            return ""
+
         ltm_scope = memory_manager.get_long_term_memory(
             self.memory_config,
-            namespace=self.session_meta.namespace or "global",
+            namespace=self.session_meta.selector.namespace or "global",
         )
         if not ltm_scope:
             return ""
 
         matches = await ltm_scope.recall(session=self.session_meta, query=user_input)
         if matches:
-            fact_str = "\n".join(
-                f"- {m.record.content} (相关性: {m.score:.2f})" for m in matches
+            logger.debug(f"🧠 [MemoryReader] 长期记忆召回详情 (Query: '{user_input}'):")
+            for i, m in enumerate(matches):
+                logger.debug(
+                    f"  [{i + 1}] 得分: {m.score:.4f} | 内容: {m.record.content}"
+                )
+
+            threshold = self.memory_config.long_term.recall_threshold
+            valid_matches = [m for m in matches if m.score >= threshold]
+            if not valid_matches:
+                logger.debug("🧠 [MemoryReader] 召回的记忆均未达到相关性阈值，已丢弃。")
+                return ""
+
+            fact_str = "\n".join(f"- {m.record.content}" for m in valid_matches)
+            logger.debug(
+                f"🧠 [MemoryReader]"
+                f"成功截取并注入 {len(valid_matches)} 条高价值长期记忆。"
             )
-            logger.debug(f"🧠 [MemoryReader] 成功召回 {len(matches)} 条长期记忆。")
             return f"[系统补充：有关用户的长期记忆设定]\n{fact_str}"
         return ""
 
@@ -57,7 +92,7 @@ class MemoryReader:
             return ""
         slot_ctx = memory_manager.get_slot_context(
             self.memory_config,
-            namespace=self.session_meta.namespace or "global",
+            namespace=self.session_meta.selector.namespace or "global",
         )
         if not slot_ctx:
             return ""
@@ -74,13 +109,29 @@ class MemoryReader:
         if not slots:
             return ""
 
+        show_scope = False
+        if (
+            self.memory_config
+            and self.memory_config.slots.scopes
+            and len(self.memory_config.slots.scopes) > 1
+        ):
+            show_scope = True
+
         xml_parts = ["<memory_slots>"]
         for slot in slots:
-            xml_parts.append(
-                f'  <slot name="{slot.label}" scope="{slot.scope.value}">\n'
-                f"    {slot.content}\n"
-                "  </slot>"
-            )
+            if show_scope:
+                semantic_name = self.session_meta.scope_name_mapping.get(
+                    slot.scope, "未知"
+                )
+                xml_parts.append(
+                    f'  <slot name="{slot.label}" scope="{semantic_name}">\n'
+                    f"    {slot.content}\n"
+                    "  </slot>"
+                )
+            else:
+                xml_parts.append(
+                    f'  <slot name="{slot.label}">\n    {slot.content}\n  </slot>'
+                )
         xml_parts.append("</memory_slots>")
         return "\n".join(xml_parts)
 
@@ -98,7 +149,7 @@ class MemoryReader:
 
         chat_context = memory_manager.get_chat_context(
             self.memory_config,
-            namespace=self.session_meta.namespace or "global",
+            namespace=self.session_meta.selector.namespace or "global",
         )
 
         if self.memory_config and self.memory_config.short_term.enable and chat_context:
@@ -152,8 +203,6 @@ class MemoryWriter:
         messages_to_save = new_messages
 
         if self.memory_config and self.memory_config.ingestion.middlewares:
-            from zhenxun.utils.pydantic_compat import model_copy
-
             messages_to_save = [model_copy(m, deep=True) for m in new_messages]
 
             for middleware in self.memory_config.ingestion.middlewares:
@@ -173,7 +222,7 @@ class MemoryWriter:
 
         chat_ctx = memory_manager.get_chat_context(
             self.memory_config,
-            namespace=self.session_meta.namespace or "global",
+            namespace=self.session_meta.selector.namespace or "global",
         )
         if chat_ctx and self.memory_config and self.memory_config.short_term.enable:
             await chat_ctx.add_messages(self.session_meta, messages_to_save)

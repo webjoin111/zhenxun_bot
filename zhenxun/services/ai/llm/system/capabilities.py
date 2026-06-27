@@ -55,7 +55,7 @@ CAP_GEMINI_2_5 = ModelCapabilities(
         "url_context",
     },
 )
-CAP_GEMINI_3 = ModelCapabilities(
+CAP_GEMINI_3_BASE = ModelCapabilities(
     input_modalities={
         ModelModality.TEXT,
         ModelModality.IMAGE,
@@ -77,6 +77,25 @@ CAP_GEMINI_3 = ModelCapabilities(
         "server_side_tool_invocations",
     },
 )
+
+CAP_GEMINI_3_PRO = model_copy(
+    CAP_GEMINI_3_BASE,
+    update={
+        "reasoning_effort_map": {
+            "max": "high",
+            "xhigh": "high",
+            "minimal": "low",
+            "none": "low",
+        }
+    },
+)
+
+CAP_GEMINI_3_FLASH = model_copy(
+    CAP_GEMINI_3_BASE,
+    update={
+        "reasoning_effort_map": {"max": "high", "xhigh": "high", "none": "minimal"}
+    },
+)
 CAP_OPENAI_REASONING = ModelCapabilities(
     input_modalities={ModelModality.TEXT, ModelModality.IMAGE},
     output_modalities={ModelModality.TEXT},
@@ -89,6 +108,7 @@ CAP_OPENAI_REASONING = ModelCapabilities(
         "computer_use",
         "file_search",
     },
+    reasoning_effort_map={"max": "xhigh", "minimal": "none"},
 )
 CAP_OPENAI_MULTIMODAL = ModelCapabilities(
     input_modalities={ModelModality.TEXT, ModelModality.IMAGE},
@@ -99,6 +119,7 @@ CAP_OPENAI_MULTIMODAL = ModelCapabilities(
         "computer_use",
         "file_search",
     },
+    reasoning_effort_map={"max": "xhigh", "minimal": "none"},
 )
 CAP_DEEPSEEK_V4 = ModelCapabilities(
     input_modalities={ModelModality.TEXT},
@@ -106,6 +127,7 @@ CAP_DEEPSEEK_V4 = ModelCapabilities(
     supports_tool_calling=True,
     reasoning_mode=ReasoningMode.EFFORT,
     reasoning_visibility="visible",
+    reasoning_effort_map={"minimal": "low"},
 )
 CAP_MINIMAX_REASONING = ModelCapabilities(
     input_modalities={ModelModality.TEXT},
@@ -137,6 +159,7 @@ CAP_MIMO_TEXT = ModelCapabilities(
     output_modalities={ModelModality.TEXT},
     supports_tool_calling=True,
     supported_native_tools={"web_search"},
+    reasoning_effort_map={"max": "high", "xhigh": "high", "minimal": "low"},
 )
 
 CAP_MIMO_MULTIMODAL = ModelCapabilities(
@@ -149,8 +172,15 @@ CAP_MIMO_MULTIMODAL = ModelCapabilities(
     output_modalities={ModelModality.TEXT, ModelModality.AUDIO},
     supports_tool_calling=True,
     supported_native_tools={"web_search"},
+    reasoning_effort_map={"max": "high", "xhigh": "high", "minimal": "low"},
 )
 
+
+CAP_TEXT_TO_AUDIO = ModelCapabilities(
+    input_modalities={ModelModality.TEXT},
+    output_modalities={ModelModality.AUDIO},
+    supports_tool_calling=False,
+)
 
 CAP_TEXT_EMBEDDING = ModelCapabilities(
     input_modalities={ModelModality.TEXT},
@@ -205,6 +235,7 @@ MODEL_ALIAS_MAPPING: dict[str, str] = {
 
 
 _ROUTING_TABLE: list[tuple[list[str], ModelCapabilities, int]] = [
+    (["*tts*"], CAP_TEXT_TO_AUDIO, CTX_8K),
     (["*gpt*image*"], CAP_OPENAI_IMAGE, CTX_128K),
     (["*gemini*image*", "*nano-banana*"], CAP_GEMINI_IMAGE, CTX_128K),
     (["glm-4.6v*"], CAP_GLM_MULTIMODAL, CTX_128K),
@@ -215,7 +246,8 @@ _ROUTING_TABLE: list[tuple[list[str], ModelCapabilities, int]] = [
     (["mimo-v2.5-pro*", "mimo-v2-pro*", "mimo-v2-flash*"], CAP_MIMO_TEXT, CTX_1M),
     (["mimo-v2.5", "mimo-v2-omni*"], CAP_MIMO_MULTIMODAL, CTX_1M),
     (["gpt-5.5*", "gpt-5.4*"], CAP_OPENAI_MULTIMODAL, CTX_1M),
-    (["gemini-3*"], CAP_GEMINI_3, CTX_1M),
+    (["gemini-3*pro*"], CAP_GEMINI_3_PRO, CTX_1M),
+    (["gemini-3*"], CAP_GEMINI_3_FLASH, CTX_1M),
     (
         ["gemini-2.5-pro*", "gemini-2.5-flash*"],
         CAP_GEMINI_2_5,
@@ -247,8 +279,12 @@ _ROUTING_TABLE: list[tuple[list[str], ModelCapabilities, int]] = [
         CAP_MULTIMODAL_EMBEDDING,
         CTX_8K,
     ),
-    (["jina-embeddings-*"], CAP_TEXT_EMBEDDING, CTX_8K),
-    (["*reranker*", "*rerank*", "bge-m3*", "jina-colbert-*"], CAP_RERANK_ONLY, CTX_8K),
+    (
+        ["*embedding*", "*Embedding*", "jina-embeddings-*", "bge-m3*", "*bge-large*"],
+        CAP_TEXT_EMBEDDING,
+        CTX_8K,
+    ),
+    (["*reranker*", "*rerank*", "jina-colbert-*"], CAP_RERANK_ONLY, CTX_8K),
 ]
 
 

@@ -4,8 +4,8 @@ Gemini API 适配器
 
 from __future__ import annotations
 
+from zhenxun.services.ai.core.models import ModelIdentity
 from zhenxun.services.ai.core.options import GenerationConfig
-from zhenxun.services.ai.core.protocols.llm import LLMModelBase
 
 from .base import BaseAdapter
 from .handlers.gemini_handlers import (
@@ -53,7 +53,7 @@ class GeminiAdapter(BaseAdapter):
         return headers
 
     def _get_gemini_endpoint(
-        self, model: LLMModelBase, config: GenerationConfig | None = None
+        self, identity: ModelIdentity, config: GenerationConfig | None = None
     ) -> str:
         """返回Gemini generateContent 端点"""
-        return f"/v1beta/models/{model.model_name}:generateContent"
+        return f"/v1beta/models/{identity.model_name}:generateContent"

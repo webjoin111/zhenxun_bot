@@ -1,11 +1,9 @@
 from abc import abstractmethod
+import asyncio
 import time
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
-
-from pydantic import BaseModel, Field
+from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
 from zhenxun.services.ai.context.rag.models import QueryRequest, SearchResult
-from zhenxun.services.ai.llm.api import generate_structured
 from zhenxun.services.log import logger
 
 if TYPE_CHECKING:
@@ -71,11 +69,16 @@ class VectorDBRetriever(BaseRetriever):
     """基于向量数据库的标准检索器"""
 
     def __init__(
-        self, storage: "StorageBackend", embedder: Any, scope_prefix: str | None = None
+        self,
+        storage: "StorageBackend",
+        embedder: Any,
+        scope_prefix: str | None = None,
+        score_threshold: float = 0.4,
     ):
         self.storage = storage
         self.embedder = embedder
         self.scope_prefix = scope_prefix
+        self.score_threshold = score_threshold
 
     async def retrieve(
         self, query: Any, limit: int = 10, **kwargs: Any
@@ -91,20 +94,29 @@ class VectorDBRetriever(BaseRetriever):
         req = QueryRequest(
             text=text_query,
             embedding=query_vec,
-            limit=limit,
+            limit=limit * 2,
             search_type="dense",
             metadata_filters=kwargs.get("metadata_filters"),
         )
-        effective_scope = kwargs.get("scope_prefix", self.scope_prefix)
-        return await self.storage.search(req, scope_prefix=effective_scope)
+        effective_scopes = kwargs.get(
+            "scopes", [self.scope_prefix] if self.scope_prefix else None
+        )
+        results = await self.storage.search(req, scopes=effective_scopes)
+        return [r for r in results if r.score >= self.score_threshold][:limit]
 
 
 class DatabaseSparseRetriever(BaseRetriever):
     """纯数据库下沉的稀疏检索器 (Keyword/FTS)"""
 
-    def __init__(self, storage: "StorageBackend", scope_prefix: str | None = None):
+    def __init__(
+        self,
+        storage: "StorageBackend",
+        scope_prefix: str | None = None,
+        score_threshold: float = 0.0,
+    ):
         self.storage = storage
         self.scope_prefix = scope_prefix
+        self.score_threshold = score_threshold
 
     async def retrieve(
         self, query: Any, limit: int = 10, **kwargs: Any
@@ -115,12 +127,15 @@ class DatabaseSparseRetriever(BaseRetriever):
 
         req = QueryRequest(
             text=text_query,
-            limit=limit,
+            limit=limit * 2,
             search_type="sparse",
             metadata_filters=kwargs.get("metadata_filters"),
         )
-        effective_scope = kwargs.get("scope_prefix", self.scope_prefix)
-        return await self.storage.search(req, scope_prefix=effective_scope)
+        effective_scopes = kwargs.get(
+            "scopes", [self.scope_prefix] if self.scope_prefix else None
+        )
+        results = await self.storage.search(req, scopes=effective_scopes)
+        return [r for r in results if r.score > self.score_threshold][:limit]
 
 
 class RerankRetriever(BaseRetriever):
@@ -131,15 +146,19 @@ class RerankRetriever(BaseRetriever):
         base_retriever: BaseRetriever,
         model_name: str | None = None,
         top_n: int = 5,
+        oversample_factor: int = 2,
+        min_oversample: int = 20,
     ):
         self.base_retriever = base_retriever
         self.model_name = model_name
         self.top_n = top_n
+        self.oversample_factor = oversample_factor
+        self.min_oversample = min_oversample
 
     async def retrieve(
         self, query: Any, limit: int = 10, **kwargs: Any
     ) -> list[SearchResult]:
-        oversample_limit = max(limit * 2, 20)
+        oversample_limit = max(limit * self.oversample_factor, self.min_oversample)
         initial_results = await self.base_retriever.retrieve(
             query, limit=oversample_limit, **kwargs
         )
@@ -173,65 +192,6 @@ class RerankRetriever(BaseRetriever):
             final_results.append(original_res)
 
         return final_results
-
-
-class QueryAnalysis(BaseModel):
-    """大模型结构化提取查询意图"""
-
-    keywords: list[str] = Field(
-        description="提取出1~3个极其简短的搜索短语或名词，严格去除所有客套话、修饰词和标点。"
-    )
-
-
-class LLMQueryRewritePreProcessor(PreProcessor):
-    """大模型查询词改写器 (Query Rewriter)"""
-
-    def __init__(self, model_name: str | None = None):
-        self.model_name = model_name
-
-    async def process(self, query: str) -> list[str]:
-        if len(query) < 4:
-            return [query]
-
-        try:
-            logger.debug(f"🤔 正在使用 LLM 重写口语化查询: '{query}'")
-            res = await generate_structured(
-                message=f"用户原始提问：{query}\n\n请提取核心搜索词用于向量检索数据库。",
-                response_model=QueryAnalysis,
-                model=self.model_name,
-                instruction="你是一个资深的数据检索架构师。",
-            )
-            if res.keywords:
-                logger.info(f"✨ 搜索词改写成功: '{query}' -> {res.keywords}")
-                return res.keywords
-
-            return [query]
-        except Exception as e:
-            logger.warning(f"Query 改写失败，降级使用原词: {e}")
-            return [query]
-
-
-class StaticSynonymPreProcessor(PreProcessor):
-    """零开销静态同义词扩展器"""
-
-    def __init__(self, synonyms: dict[str, list[str]]):
-        self.synonyms = synonyms
-
-    async def process(self, query: str) -> list[str]:
-        if not self.synonyms or not query.strip():
-            return [query]
-
-        queries = [query]
-        for key, value_list in self.synonyms.items():
-            if key in query:
-                for val in value_list:
-                    expanded_q = query.replace(key, val)
-                    if expanded_q not in queries:
-                        queries.append(expanded_q)
-                        logger.debug(
-                            f"🔄 [同义词扩展] '{query}' -> 扩展查询 '{expanded_q}'"
-                        )
-        return queries
 
 
 class PipelineRetriever(BaseRetriever):
@@ -325,3 +285,110 @@ class LifecyclePostProcessor(PostProcessor):
 
         results.sort(key=lambda x: x.score, reverse=True)
         return results
+
+
+class HybridRetriever(BaseRetriever):
+    """
+    双轨混合检索器 (Hybrid Search Engine)。
+    并发调用 Dense (VectorDB) 和 Sparse (BM25)，并使用倒数秩融合 (RRF) 算法合并结果。
+    """
+
+    def __init__(
+        self,
+        dense_retriever: BaseRetriever,
+        sparse_retriever: BaseRetriever,
+        dense_weight: float = 0.7,
+        sparse_weight: float = 0.3,
+        rrf_k: int = 60,
+        oversample_factor: int = 2,
+        min_oversample: int = 20,
+    ):
+        """
+        初始化双轨混合检索器。
+
+        参数:
+            dense_retriever: 稠密向量检索器，用于语义召回。
+            sparse_retriever: 稀疏文本检索器，用于关键词召回（如 BM25）。
+            dense_weight: 稠密向量检索的加权权重，默认 0.7。
+            sparse_weight: 稀疏文本检索的加权权重，默认 0.3。
+            rrf_k: 倒数秩融合(RRF)算法中的常数参数，默认 60。
+        """
+        self.dense_retriever = dense_retriever
+        self.sparse_retriever = sparse_retriever
+        self.dense_weight = dense_weight
+        self.sparse_weight = sparse_weight
+        self.rrf_k = rrf_k
+        self.oversample_factor = oversample_factor
+        self.min_oversample = min_oversample
+
+    async def retrieve(
+        self, query: Any, limit: int = 10, **kwargs: Any
+    ) -> list[SearchResult]:
+        oversample_limit = max(limit * self.oversample_factor, self.min_oversample)
+
+        results = await asyncio.gather(
+            self.dense_retriever.retrieve(query, limit=oversample_limit, **kwargs),
+            self.sparse_retriever.retrieve(query, limit=oversample_limit, **kwargs),
+            return_exceptions=True,
+        )
+
+        for res in results:
+            if isinstance(res, ImportError):
+                raise res
+
+        dense_res = (
+            cast(list[SearchResult], results[0])
+            if not isinstance(results[0], BaseException)
+            else []
+        )
+        sparse_res = (
+            cast(list[SearchResult], results[1])
+            if not isinstance(results[1], BaseException)
+            else []
+        )
+
+        if isinstance(results[0], BaseException):
+            logger.error(f"[HybridSearch] 向量检索异常: {results[0]}")
+        if isinstance(results[1], BaseException):
+            logger.error(f"[HybridSearch] BM25 检索异常: {results[1]}")
+
+        rrf_scores: dict[str, float] = {}
+        merged_records = {}
+
+        for rank, res in enumerate(dense_res):
+            record_id = res.record.id
+            merged_records[record_id] = res.record
+            rrf_score = 1.0 / (self.rrf_k + rank + 1)
+            rrf_scores[record_id] = rrf_scores.get(record_id, 0.0) + (
+                self.dense_weight * rrf_score
+            )
+
+        for rank, res in enumerate(sparse_res):
+            record_id = res.record.id
+            merged_records[record_id] = res.record
+            rrf_score = 1.0 / (self.rrf_k + rank + 1)
+            rrf_scores[record_id] = rrf_scores.get(record_id, 0.0) + (
+                self.sparse_weight * rrf_score
+            )
+
+        max_possible_score = (self.dense_weight * (1.0 / (self.rrf_k + 1))) + (
+            self.sparse_weight * (1.0 / (self.rrf_k + 1))
+        )
+
+        final_results = []
+        for record_id, score in sorted(
+            rrf_scores.items(), key=lambda x: x[1], reverse=True
+        ):
+            normalized_score = (
+                score / max_possible_score if max_possible_score > 0 else 0.0
+            )
+            final_results.append(
+                SearchResult(record=merged_records[record_id], score=normalized_score)
+            )
+
+        logger.debug(
+            f"⚖️ [HybridSearch] 融合完成: "
+            f"Dense({len(dense_res)}) + Sparse({len(sparse_res)}) "
+            f"-> Merged({len(final_results)}), 截取 Top {limit}"
+        )
+        return final_results[:limit]

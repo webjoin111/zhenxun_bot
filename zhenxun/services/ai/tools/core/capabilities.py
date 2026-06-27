@@ -1,9 +1,8 @@
+import asyncio
 from collections.abc import Callable
-import inspect
 from typing import Any
 
-from nonebot.permission import SUPERUSER
-from nonebot.utils import is_coroutine_callable
+from aiocache import SimpleMemoryCache
 
 from zhenxun.services.ai.capabilities import (
     AbstractCapability,
@@ -13,11 +12,11 @@ from zhenxun.services.ai.capabilities import (
 from zhenxun.services.ai.run import RunContext
 from zhenxun.services.ai.run.di import DependencyInjector
 from zhenxun.services.ai.tools.models import ToolResult
-from zhenxun.services.cache.cache_containers import CacheDict
-from zhenxun.services.cache.runtime_cache import LevelUserMemoryCache
+from zhenxun.services.ai.utils import PermissionUtils
 from zhenxun.services.log import logger
+from zhenxun.utils.pydantic_compat import model_dump, parse_as
 
-TOOL_RESULT_CACHE = CacheDict("TOOL_RESULT", expire=0)
+_TOOL_RESULT_CACHE = SimpleMemoryCache(namespace="zhenxun_tool_cache")
 
 
 class CacheCapability(AbstractCapability):
@@ -44,10 +43,8 @@ class CacheCapability(AbstractCapability):
             return await handler(arguments)
 
         cache_key = tool._generate_cache_key(arguments)
-        try:
-            cached_data = TOOL_RESULT_CACHE[cache_key]
-            from zhenxun.utils.pydantic_compat import parse_as
-
+        cached_data = await _TOOL_RESULT_CACHE.get(cache_key)
+        if cached_data is not None:
             cached_result = (
                 parse_as(ToolResult, cached_data)
                 if isinstance(cached_data, dict)
@@ -58,8 +55,6 @@ class CacheCapability(AbstractCapability):
                 f"熔断执行! Key: {cache_key}"
             )
             return cached_result
-        except KeyError:
-            pass
 
         result = await handler(arguments)
 
@@ -72,9 +67,9 @@ class CacheCapability(AbstractCapability):
                     logger.warning(f"Cache function 执行失败: {ce}")
                     should_cache = False
             if should_cache:
-                from zhenxun.utils.pydantic_compat import model_dump
-
-                TOOL_RESULT_CACHE.set(cache_key, model_dump(result), expire=self.ttl)
+                await _TOOL_RESULT_CACHE.set(
+                    cache_key, model_dump(result), ttl=self.ttl
+                )
 
         return result
 
@@ -96,26 +91,24 @@ class ApprovalCapability(AbstractCapability):
         if tool is None:
             return await handler(arguments)
 
-        if hasattr(tool, "should_confirm"):
-            confirm_msg = await tool.should_confirm(context=context, **arguments)
-            if confirm_msg:
-                import asyncio
+        import json
 
-                if "global" not in context.run.hitl_locks:
-                    context.run.hitl_locks["global"] = asyncio.Lock()
-                hitl_lock = context.run.hitl_locks["global"]
+        args_str = json.dumps(arguments, ensure_ascii=False, indent=2)
+        confirm_msg = f"即将在本地执行高危工具 [{tool_name}]\n参数：\n{args_str}"
 
-                await hitl_lock.acquire()
-                try:
-                    from zhenxun.services.ai.run.hitl import HITLController
+        if "global" not in context.run.hitl_locks:
+            context.run.hitl_locks["global"] = asyncio.Lock()
+        hitl_lock = context.run.hitl_locks["global"]
 
-                    hitl = HITLController(context)
-                    await hitl.ask_confirm(
-                        f"⚠️ **安全交互审批**\n\n{confirm_msg}", timeout=60.0
-                    )
-                    logger.info(f"🛡️ [HITL] 工具 {tool_name} 审批通过。")
-                finally:
-                    hitl_lock.release()
+        await hitl_lock.acquire()
+        try:
+            from zhenxun.services.ai.run.hitl import HITLController
+
+            hitl = HITLController(context)
+            await hitl.ask_confirm(f"⚠️ **安全交互审批**\n\n{confirm_msg}", timeout=60.0)
+            logger.info(f"🛡️ [HITL] 工具 {tool_name} 审批通过。")
+        finally:
+            hitl_lock.release()
 
         return await handler(arguments)
 
@@ -145,14 +138,9 @@ class LifecycleCapability(AbstractCapability):
             return tool_defs
         new_defs = []
         for tdef in tool_defs:
-            sig = inspect.signature(self.prepare_tool_hook)
-            kwargs = await DependencyInjector.resolve_all(
-                sig, {"tool_def": tdef}, context
+            res = await DependencyInjector.invoke(
+                self.prepare_tool_hook, {"tool_def": tdef}, context
             )
-            if is_coroutine_callable(self.prepare_tool_hook):
-                res = await self.prepare_tool_hook(**kwargs)
-            else:
-                res = self.prepare_tool_hook(**kwargs)
             if res is not None:
                 new_defs.append(res)
         return new_defs
@@ -166,21 +154,11 @@ class LifecycleCapability(AbstractCapability):
     ) -> dict[str, Any]:
         if not self.validate_args_hook or not isinstance(args, dict):
             return await handler(args)
-        sig = inspect.signature(self.validate_args_hook)
         call_kwargs = dict(args)
         call_kwargs["args"] = args
         call_kwargs["tool_args"] = args
         call_kwargs["tool_name"] = tool_name
-        resolved_kwargs = await DependencyInjector.resolve_all(
-            sig, call_kwargs, context
-        )
-        filtered_kwargs = {
-            k: v for k, v in resolved_kwargs.items() if k in sig.parameters
-        }
-        if is_coroutine_callable(self.validate_args_hook):
-            await self.validate_args_hook(**filtered_kwargs)
-        else:
-            self.validate_args_hook(**filtered_kwargs)
+        await DependencyInjector.invoke(self.validate_args_hook, call_kwargs, context)
         return await handler(args)
 
     async def wrap_tool_execute(
@@ -193,43 +171,28 @@ class LifecycleCapability(AbstractCapability):
         if not self.before_execute_hook:
             pass
         else:
-            sig = inspect.signature(self.before_execute_hook)
             call_kwargs = dict(arguments)
             call_kwargs["args"] = arguments
             call_kwargs["tool_args"] = arguments
             call_kwargs["tool_name"] = tool_name
-            resolved_kwargs = await DependencyInjector.resolve_all(
-                sig, call_kwargs, context
+            await DependencyInjector.invoke(
+                self.before_execute_hook, call_kwargs, context
             )
-            filtered_kwargs = {
-                k: v for k, v in resolved_kwargs.items() if k in sig.parameters
-            }
-            if is_coroutine_callable(self.before_execute_hook):
-                await self.before_execute_hook(**filtered_kwargs)
-            else:
-                self.before_execute_hook(**filtered_kwargs)
 
         result = await handler(arguments)
 
         if not self.after_execute_hook:
             return result
-        sig = inspect.signature(self.after_execute_hook)
         call_kwargs = dict(arguments)
         call_kwargs["args"] = arguments
         call_kwargs["tool_args"] = arguments
         call_kwargs["tool_name"] = tool_name
         call_kwargs["result"] = result
         call_kwargs["tool_result"] = result
-        resolved_kwargs = await DependencyInjector.resolve_all(
-            sig, call_kwargs, context
+
+        res = await DependencyInjector.invoke(
+            self.after_execute_hook, call_kwargs, context
         )
-        filtered_kwargs = {
-            k: v for k, v in resolved_kwargs.items() if k in sig.parameters
-        }
-        if is_coroutine_callable(self.after_execute_hook):
-            res = await self.after_execute_hook(**filtered_kwargs)
-        else:
-            res = self.after_execute_hook(**filtered_kwargs)
         return res if res is not None else result
 
 
@@ -239,11 +202,7 @@ class SuperuserCapability(AbstractCapability):
     async def prepare_tools(
         self, context: RunContext, tool_defs: list[Any]
     ) -> list[Any]:
-        bot = context.get_bot()
-        event = context.get_event()
-        if not bot or not event:
-            return []
-        if await SUPERUSER(bot, event):
+        if await PermissionUtils.check_superuser(context):
             return tool_defs
         return []
 
@@ -257,24 +216,7 @@ class AdminLevelCapability(AbstractCapability):
     async def prepare_tools(
         self, context: RunContext, tool_defs: list[Any]
     ) -> list[Any]:
-        user_id = context.get_user_id()
-        group_id = context.get_group_id()
-        bot = context.get_bot()
-        event = context.get_event()
-
-        if bot and event and await SUPERUSER(bot, event):
-            return tool_defs
-
-        if not user_id or not group_id:
-            return []
-        global_user, group_users = await LevelUserMemoryCache.get_levels(
-            user_id, group_id
-        )
-        user_level = global_user.user_level if global_user else 0
-        if group_users:
-            user_level = max(user_level, group_users.user_level)
-
-        if user_level >= self.min_level:
+        if await PermissionUtils.check_admin_level(context, self.min_level):
             return tool_defs
         return []
 

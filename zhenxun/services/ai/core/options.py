@@ -10,12 +10,20 @@ from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .messages import ResponseFormat
+from zhenxun.utils.pydantic_compat import model_copy, model_dump, model_validate
 
 if TYPE_CHECKING:
-    from zhenxun.services.ai.llm.config.generation import IntentBuilder
+    from zhenxun.services.ai.llm.builder import IntentBuilder
 
 T = TypeVar("T")
+
+
+class ResponseFormat(Enum):
+    """响应格式枚举"""
+
+    TEXT = "text"
+    JSON = "json"
+    MULTIMODAL = "multimodal"
 
 
 class StructuredOutputStrategy(str, Enum):
@@ -80,6 +88,8 @@ class ToolOutput(BaseOutputDefinition[T]):
 class ReasoningEffort(str, Enum):
     """推理努力程度枚举"""
 
+    NONE = "NONE"
+    """不开启推理思考"""
     MINIMAL = "MINIMAL"
     """极低推理努力，追求最快响应"""
     LOW = "LOW"
@@ -87,7 +97,11 @@ class ReasoningEffort(str, Enum):
     MEDIUM = "MEDIUM"
     """中等推理努力（通常是默认值）"""
     HIGH = "HIGH"
-    """高推理努力，消耗更多 Token 和时间以获取更高质量答案"""
+    """高推理努力"""
+    XHIGH = "XHIGH"
+    """极高推理努力"""
+    MAX = "MAX"
+    """最大推理努力 (如 GLM / DeepSeek)"""
 
 
 class ImageAspectRatio(str, Enum):
@@ -139,6 +153,9 @@ class CommonLLMConfig(BaseModel):
     """重复惩罚系数 (部分非 OpenAI 兼容模型独有)。"""
     stop: list[str] | str | None = Field(default=None)
     """API 停止生成后续 Token 的停止词序列。"""
+    reasoning_effort: ReasoningEffort | str | None = Field(default=None)
+    """跨厂商统一的思考/推理等级意图（如 'low', 'high', 'max'）。
+    具体映射由底层的 Adapter 执行。"""
 
 
 class OutputFormatConfig(BaseModel):
@@ -172,14 +189,12 @@ class ToolCallConfig(BaseModel):
 class BaseProviderOption(BaseModel):
     """厂商配置逃生舱基类"""
 
-    model_config = ConfigDict(arbitrary_types_allowed=True, extra="allow")
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="allow")  # type: ignore
 
 
 class OpenAIOptions(BaseProviderOption):
     """OpenAI 专属特权参数 (适配 Responses API)"""
 
-    reasoning_effort: ReasoningEffort | str | None = Field(default=None)
-    """O1/O3 系列模型的推理等级"""
     store: bool | None = Field(default=None)
     """是否允许服务端留存本次请求的选项记录"""
     metadata: dict[str, str] | None = Field(default=None)
@@ -189,37 +204,12 @@ class OpenAIOptions(BaseProviderOption):
 class GeminiOptions(BaseProviderOption):
     """Gemini 专属特权参数"""
 
-    thinking_level: Literal["minimal", "low", "medium", "high"] | None = Field(
-        default=None
-    )
-    """Gemini 3 系列推理等级"""
-    thinking_budget: int | None = Field(default=None)
-    """Gemini 2.5 系列思考 Token 预算"""
     include_thoughts: bool | None = Field(default=None)
     """是否在最终响应中包含模型的内部思考过程 (Thoughts)"""
     safety_settings: dict[str, str] | None = Field(default=None)
     """Gemini 专有的各个维度的安全过滤阈值配置"""
     retrieval_config: dict[str, Any] | None = Field(default=None)
     """检索定位配置，如 LBS 经纬度信息，配合 Google Maps 工具使用"""
-
-
-class ClaudeOptions(BaseProviderOption):
-    """Claude 专属特权参数"""
-
-    thinking_type: Literal["adaptive", "enabled", "disabled"] | None = Field(
-        default=None
-    )
-    """思考模式配置"""
-    thinking_budget_tokens: int | None = Field(default=None)
-    """分配给思考过程的 Token 预算"""
-    thinking_display: Literal["summarized", "omitted"] | None = Field(default=None)
-    """思考流数据的展示模式"""
-    effort: Literal["low", "medium", "high", "xhigh", "max"] | None = Field(
-        default=None
-    )
-    """Claude 3.7 及以后支持的推理努力程度"""
-    beta_headers: list[str] | None = Field(default=None)
-    """请求时需要附加的 Anthropic 专有 Beta 标志位头"""
 
 
 class DeepSeekOptions(BaseProviderOption):
@@ -299,6 +289,9 @@ class TTSConfig(BaseModel):
     gemini_options: GeminiTTSOptions = Field(default_factory=GeminiTTSOptions)
     minimax_options: MiniMaxTTSOptions = Field(default_factory=MiniMaxTTSOptions)
 
+    custom_kwargs: dict[str, Any] = Field(default_factory=dict)
+    """兜底逃生舱，包含的键值对将直接透传至顶层请求体中 (可用于缓存 TTL)"""
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
@@ -315,7 +308,6 @@ class GenerationConfig(BaseModel):
 
     openai_options: OpenAIOptions = Field(default_factory=OpenAIOptions)
     gemini_options: GeminiOptions = Field(default_factory=GeminiOptions)
-    claude_options: ClaudeOptions = Field(default_factory=ClaudeOptions)
     deepseek_options: DeepSeekOptions = Field(default_factory=DeepSeekOptions)
 
     enable_caching: bool | None = Field(default=None)
@@ -331,23 +323,17 @@ class GenerationConfig(BaseModel):
 
     @classmethod
     def builder(cls) -> "IntentBuilder":
-        from zhenxun.services.ai.llm.config.generation import IntentBuilder
+        from zhenxun.services.ai.llm.builder import IntentBuilder
 
         return IntentBuilder()
 
     def to_dict(self) -> dict[str, Any]:
-        from zhenxun.utils.pydantic_compat import model_dump
-
         return model_dump(self, exclude_none=True)
 
     def merge_with(self, other: "GenerationConfig | None") -> "GenerationConfig":
         """深度合并两个配置，实现配置的无损叠加"""
         if not other:
-            from zhenxun.utils.pydantic_compat import model_copy
-
             return model_copy(self, deep=True)
-
-        from zhenxun.utils.pydantic_compat import model_dump, model_validate
 
         base_dump = model_dump(self, exclude_none=True)
         other_dump = model_dump(other, exclude_none=True)
@@ -379,13 +365,14 @@ class LLMEmbeddingConfig(BaseModel):
     multimodal: bool | list[str] = Field(default=False)
     """是否允许多模态向量化。False 表示纯文本(极速安全)；True 表示全部放行；
     也可传入 ['image', 'text'] 细粒度控制。"""
+    custom_kwargs: dict[str, Any] = Field(default_factory=dict)
+    """兜底逃生舱，包含的键值对将直接透传至顶层请求体中 (可用于缓存 TTL)"""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 __all__ = [
     "BaseProviderOption",
-    "ClaudeOptions",
     "CommonLLMConfig",
     "EmbeddingTaskType",
     "GeminiOptions",
@@ -398,6 +385,7 @@ __all__ = [
     "OpenAITTSOptions",
     "OutputFormatConfig",
     "ReasoningEffort",
+    "ResponseFormat",
     "StructuredOutputStrategy",
     "TTSConfig",
     "ToolCallConfig",

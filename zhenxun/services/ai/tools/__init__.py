@@ -3,7 +3,6 @@ import nonebot
 from .bridges.matcher_bridge import MatcherTool, bind_matcher
 from .core.decorators import Rules, tool
 from .core.toolkit import BaseToolkit
-from .engine.global_capabilities import register_global_capability
 from .engine.registry import tool_provider_manager
 from .models import (
     ToolOptions,
@@ -29,6 +28,5 @@ __all__ = [
     "ToolOptions",
     "ToolResult",
     "bind_matcher",
-    "register_global_capability",
     "tool",
 ]

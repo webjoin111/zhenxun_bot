@@ -147,7 +147,7 @@ class LLMRouter(BaseRouter):
     ) -> RouteDecision | None:
         from zhenxun.services.ai.core.templates import PromptTemplate
         from zhenxun.services.ai.flow.agent.agent import Agent
-        from zhenxun.services.ai.flow.agent.models import AgentSettings
+        from zhenxun.services.ai.flow.agent.models import AgentConfig
         from zhenxun.services.ai.flow.team.capabilities import TeamRoutingCapability
 
         default_system_prompt = """## 角色与目标
@@ -172,7 +172,7 @@ class LLMRouter(BaseRouter):
             team_name=self.team_name, members=self.members, state_flow=self.state_flow
         )
 
-        leader_config = AgentSettings(
+        leader_config = AgentConfig(
             stateless=self.runtime_config.stateless if self.runtime_config else True,
             enable_hitl=getattr(self.runtime_config, "leader_enable_hitl", False),
         )
@@ -191,7 +191,7 @@ class LLMRouter(BaseRouter):
             instruction=route_prompt,
             model=target_model,
             tools=self.leader_tools,
-            settings=leader_config,
+            config=leader_config,
         )
 
         sub_context = context.clone_for_member(router_agent.name)
@@ -199,12 +199,11 @@ class LLMRouter(BaseRouter):
         sub_context.capabilities.append(routing_cap)
 
         logger.debug("🤖 [LLMRouter] 启动 LLM 思考路由决策...")
-        from zhenxun.services.ai.flow.agent.models import AgentRunProfile
 
         res = await router_agent.run(
             prompt=prompt,
             context=sub_context,
-            profile=AgentRunProfile(message_history=history),
+            config=AgentConfig(message_history=history),
         )
         if res.handoff:
             logger.debug(f"🤖 [LLMRouter] 决策完毕: 移交给 -> {res.handoff.target}")

@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -6,6 +7,7 @@ from typing_extensions import Self
 from pydantic import BaseModel
 
 from zhenxun.services.ai.capabilities import AbstractCapability, DynamicCapability
+from zhenxun.services.ai.core.events import EventStreamer
 from zhenxun.services.ai.core.messages import PromptInput
 from zhenxun.services.ai.flow.base import BaseRunnable
 from zhenxun.services.ai.flow.team.models import TeamRuntimeConfig
@@ -286,8 +288,6 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
     ):
         self._ensure_strategy()
 
-        import asyncio
-
         if context is None:
             context = RunContext()
 
@@ -314,7 +314,6 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
                 elif callable(cap):
                     context.capabilities.append(DynamicCapability(cap))
 
-        from zhenxun.services.ai.core.stream_events import EventStreamer
         from zhenxun.services.ai.flow.team.runner import TeamRunner
         from zhenxun.services.ai.run import StreamedRunResult
 
@@ -333,7 +332,8 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
                 else ConcurrencyPolicy.QUEUE
             )
 
-        from zhenxun.services.ai.utils.runtime_utils import ContextUtils
+        from zhenxun.services.ai.utils import ContextUtils
+
         lock_id = ContextUtils.extract_concurrency_lock_id(
             context,
             getattr(self.runtime_config, "concurrency_scope", None),
@@ -341,7 +341,7 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         )
 
         async def _execution_task():
-            from zhenxun.services.ai.run.models import CancellationToken
+            from zhenxun.services.ai.core.models import CancellationToken
             from zhenxun.services.ai.run.session import session_manager
 
             cancel_token = context.run.cancellation_token or CancellationToken()

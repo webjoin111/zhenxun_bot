@@ -11,7 +11,7 @@ from zhenxun.services.ai.core.exceptions import (
     GuardrailFatalException,
     GuardrailViolationError,
 )
-from zhenxun.services.ai.core.messages import LLMMessage, LLMResponse, TextPart
+from zhenxun.services.ai.core.messages import ChatResponse, LLMMessage, TextPart
 from zhenxun.services.ai.run.context import RunContext
 
 
@@ -82,7 +82,7 @@ class BaseGuardrail(ABC):
 
     async def validate_output(
         self,
-        response: LLMResponse | str,
+        response: ChatResponse | str,
         parsed_obj: Any,
         context: RunContext | None = None,
     ) -> GuardrailResult:
@@ -108,7 +108,7 @@ class FunctionalGuardrail(BaseGuardrail):
                 anno_str = str(param.annotation)
                 if "LLMMessage" in anno_str:
                     is_input = True
-                if "LLMResponse" in anno_str:
+                if "ChatResponse" in anno_str:
                     is_output = True
 
             if is_input and not is_output:
@@ -117,8 +117,8 @@ class FunctionalGuardrail(BaseGuardrail):
                 self.guardrail_type = "output"
             else:
                 raise ValueError(
-                    f"无法自动推断护栏函数 '{func.__name__}' 的作用阶段。\n"
-                    "请使用明确的类型注解 (如 list[LLMMessage] 或 LLMResponse)，\n"
+                    "无法自动推断护栏函数 '{func.__name__}' 的作用阶段。\n"
+                    "请使用明确的类型注解 (如 list[LLMMessage] 或 ChatResponse)，\n"
                     "或使用 @input_guardrail / @output_guardrail 装饰器明确声明。"
                 )
 
@@ -201,7 +201,7 @@ class FunctionalGuardrail(BaseGuardrail):
 
     async def validate_output(
         self,
-        response: LLMResponse | str,
+        response: ChatResponse | str,
         parsed_obj: Any,
         context: RunContext | None = None,
     ) -> GuardrailResult:
@@ -268,7 +268,7 @@ class LLMGuardrail(BaseGuardrail):
 
     async def validate_output(
         self,
-        response: LLMResponse | str,
+        response: ChatResponse | str,
         parsed_obj: Any,
         context: RunContext | None = None,
     ) -> GuardrailResult:
@@ -383,10 +383,10 @@ class GuardrailPipeline:
 
     async def run_output_pipeline(
         self,
-        response: LLMResponse | str,
+        response: ChatResponse | str,
         parsed_obj: Any,
         context: RunContext | None = None,
-    ) -> tuple[LLMResponse | str, Any]:
+    ) -> tuple[ChatResponse | str, Any]:
         """执行 Output 护栏拦截、反思和变异"""
         feedbacks = []
         current_response = response

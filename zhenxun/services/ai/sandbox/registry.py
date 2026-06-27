@@ -16,7 +16,7 @@ class SandboxRegistry:
         if name in cls._clients:
             logger.warning(f"[SandboxRegistry] 覆盖已存在的沙箱客户端: {name}")
         cls._clients[name] = client_cls
-        logger.info(f"[SandboxRegistry] 成功注册沙箱客户端: {name}")
+        logger.debug(f"[SandboxRegistry] 成功注册沙箱客户端: {name}")
 
     @classmethod
     def get_client_cls(cls, name: str) -> type["BaseSandboxClient"]:

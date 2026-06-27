@@ -84,42 +84,11 @@ class DelegateTool(BaseTool):
 
         try:
             streamer = context.run.streamer
-            response = None
-
             async with self.runnable.run_stream(
                 prompt=task,
                 context=sub_context,
             ) as stream_result:
-                async for event in stream_result.stream_events():
-                    from zhenxun.services.ai.core.stream_events import (
-                        ToolCallStart,
-                        ToolStreamChunk,
-                    )
-                    from zhenxun.services.ai.run.models import AgentRunEnd
-
-                    if isinstance(event, AgentRunEnd):
-                        response = event.result
-                    elif streamer:
-                        if isinstance(event, ToolStreamChunk):
-                            await streamer.send(
-                                ToolStreamChunk(
-                                    tool_name=f"{self.name} -> {event.tool_name}",
-                                    content=event.content,
-                                    metadata=event.metadata,
-                                )
-                            )
-                        elif isinstance(event, ToolCallStart):
-                            await streamer.send(
-                                ToolStreamChunk(
-                                    tool_name=self.name,
-                                    content=f"🔁 正在调用工具: {event.tool_name}..."
-                                    + (
-                                        f" (意图: {event.intent})"
-                                        if getattr(event, "intent", None)
-                                        else ""
-                                    ),
-                                )
-                            )
+                response = await stream_result.forward_to(streamer, self.name)
 
             if response is None:
                 raise RuntimeError(f"Sub-agent {self.name} did not return a response.")

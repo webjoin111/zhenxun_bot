@@ -1,3 +1,4 @@
+from .exceptions import LLMException
 from .messages import (
     LLMMessage,
 )
@@ -10,6 +11,7 @@ from .templates import (
 
 __all__ = [
     "GenerationConfig",
+    "LLMException",
     "LLMMessage",
     "PromptTemplate",
 ]

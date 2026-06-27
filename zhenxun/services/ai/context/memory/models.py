@@ -2,21 +2,25 @@
 记忆域类型定义
 """
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field
 
-from zhenxun.services.ai.context.memory.interfaces import (
+from zhenxun.services.ai.context.memory.storage.interfaces import (
     BaseChatContext,
     BaseMemoryIngestionMiddleware,
     BaseMemoryReducer,
     BaseSlotContext,
 )
 from zhenxun.services.ai.context.memory.types import (
-    MemoryIsolationLevel,
+    AutoRecallPolicy,
+    Isolation,
     MemorySlot,
     SessionMetadata,
 )
 from zhenxun.services.ai.context.rag.backends import Embedder, StorageBackend
-from zhenxun.services.ai.context.rag.consolidation import Consolidator
+from zhenxun.services.ai.context.rag.engine import ScopedRAGClient
+from zhenxun.services.ai.utils.scope import ScopeBuilder
 
 
 class SlotMemoryConfig(BaseModel):
@@ -26,6 +30,8 @@ class SlotMemoryConfig(BaseModel):
 
     enable: bool = Field(default=False)
     """是否启用中期记忆槽"""
+    scopes: dict[str, ScopeBuilder] | None = Field(default=None)
+    """语义化作用域映射字典，供大模型作为 Literal 选择。如果只有一个，则自动隐藏参数"""
     default_slots: list[MemorySlot] = Field(default_factory=list)
     """首次初始化时自动写入的默认槽位列表"""
     backend: str | BaseSlotContext | None = Field(default=None)
@@ -33,6 +39,10 @@ class SlotMemoryConfig(BaseModel):
     指定底层槽位记忆数据库注册名称，或直接传入 BaseSlotContext 实例。
     为空则使用全局默认
     """
+    instructions: str | None = Field(default=None)
+    """覆写内置槽位管理工具箱的系统提示词"""
+    toolkit_kwargs: dict[str, Any] = Field(default_factory=dict)
+    """透传给底层 MemorySlotToolkit 的高级参数 (如 prefix, exclude, shared_options)"""
 
 
 class MemoryScoringConfig(BaseModel):
@@ -46,14 +56,9 @@ class MemoryScoringConfig(BaseModel):
     """重要性权重"""
     recency_half_life_days: int = Field(default=30)
     """时间衰减的半衰期(天)"""
-    consolidation_threshold: float = Field(default=0.85)
-    """触发记忆整合的相似度阈值 (高于此阈值的旧记忆将参与合并判断)"""
+
     reinforcement_weight: float = Field(default=0.2)
     """访问强化的加权权重 (被检索越多得分越高)"""
-    capacity_limit: int = Field(default=500)
-    """单用户/群组长期记忆容量软上限，超载后触发惰性清理"""
-    evict_ratio: float = Field(default=0.2)
-    """触发容量上限后，淘汰冷数据的比例"""
 
 
 class ShortTermConfig(BaseModel):
@@ -68,10 +73,8 @@ class ShortTermConfig(BaseModel):
     指定底层短期记忆数据库注册名称，或直接传入 BaseChatContext 实例。
     为空则使用全局默认
     """
-    isolation_level: MemoryIsolationLevel = Field(
-        default=MemoryIsolationLevel.AGENT_USER
-    )
-    """记忆隔离级别"""
+    isolation: ScopeBuilder = Field(default_factory=Isolation.AGENT_USER)
+    """单一的记忆隔离级别 (ScopeBuilder)，决定短期记忆存储边界"""
 
 
 class LongTermConfig(BaseModel):
@@ -81,27 +84,35 @@ class LongTermConfig(BaseModel):
 
     enable: bool = Field(default=False)
     """是否启用长期记忆（开启后自动赋予 Agent 存取记忆的工具，并附加 RAG 召回能力）"""
+    engine: ScopedRAGClient | None = Field(default=None)
+    """
+    [推荐] 指定底层的高级 RAG 检索引擎实例。若传入此项，将覆盖默认的 backend
+    和 embedder 配置。
+    """
     backend: str | StorageBackend | None = Field(default=None)
     """
     指定底层长期向量数据库 (Storage) 注册名称，或直接传入 StorageBackend 实例。
     为空则使用全局默认
     """
-    scope: str | None = Field(default=None)
-    """长期记忆的独立作用域前缀，为 None 则不启用长期向量记忆"""
+    scopes: dict[str, ScopeBuilder] | None = Field(default=None)
+    """语义化作用域映射字典，决定长期记忆存储边界。如果只有一个，则自动隐藏参数"""
     embedder: str | Embedder | None = Field(default=None)
     """
     指定底层向量化引擎 (Embedder) 实例，若为字符串则视为 API 模型名称。
     为空则使用全局默认
     """
-    async_write: bool = Field(default=True)
-    """是否开启长期记忆后台异步写入队列防阻塞"""
-    auto_consolidate: bool = Field(default=True)
-    """是否开启大模型记忆反思与融合"""
-    consolidator: str | Consolidator | None = Field(default=None)
-    """
-    指定底层记忆融合器 (Consolidator) 注册名称，或直接传入 Consolidator 实例。
-    为空则使用全局默认（不融合，仅追加）
-    """
+
+    agentic: bool = Field(default=True)
+    """是否赋予大模型主动管理记忆的能力 (Agentic Memory)"""
+    auto_recall: AutoRecallPolicy = Field(default=False)
+    """长期记忆的自动召回策略，默认 False (从不自动召回)，由大模型自主
+    决定调用搜索工具"""
+    recall_threshold: float = Field(default=0.5)
+    """长期记忆召回的最低余弦相似度要求"""
+    instructions: str | None = Field(default=None)
+    """覆写内置长期记忆管理工具箱的系统提示词"""
+    toolkit_kwargs: dict[str, Any] = Field(default_factory=dict)
+    """透传给底层 MemoryManagementToolkit 的高级参数"""
 
 
 class ContextCompressionConfig(BaseModel):
@@ -129,9 +140,11 @@ class IngestionConfig(BaseModel):
 
 
 class MemoryConfig(BaseModel):
-    """统一的记忆配置项声明 (Declarative Memory Config)"""
+    """统一的记忆配置项声明"""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+    base_isolation: ScopeBuilder = Field(default_factory=Isolation.AGENT_USER)
+    """顶层基准隔离级别，短期/中期/长期记忆将默认继承此级别"""
     short_term: ShortTermConfig = Field(default_factory=ShortTermConfig)
     """短期对话记忆配置"""
     slots: SlotMemoryConfig = Field(default_factory=SlotMemoryConfig)
@@ -147,12 +160,13 @@ class MemoryConfig(BaseModel):
 
 
 __all__ = [
+    "AutoRecallPolicy",
     "BaseMemoryIngestionMiddleware",
     "ContextCompressionConfig",
     "IngestionConfig",
+    "Isolation",
     "LongTermConfig",
     "MemoryConfig",
-    "MemoryIsolationLevel",
     "MemoryScoringConfig",
     "SessionMetadata",
     "ShortTermConfig",

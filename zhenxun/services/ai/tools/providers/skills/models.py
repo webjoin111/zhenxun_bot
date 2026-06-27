@@ -1,9 +1,10 @@
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from zhenxun.services.ai.sandbox.models import SandboxBlueprint
+from zhenxun.utils.pydantic_compat import model_validator
 
 DisclosureLevel = Annotated[
     Literal[1, 2, 3], "Progressive disclosure levels for skill loading."
@@ -20,7 +21,7 @@ class SkillEnvConfig(BaseModel):
 
 
 class SkillFrontmatter(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True)  # type: ignore
 
     name: str = Field(...)
     """技能名称"""

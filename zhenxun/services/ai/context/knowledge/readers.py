@@ -1,3 +1,4 @@
+import asyncio
 import csv
 from pathlib import Path
 
@@ -56,8 +57,6 @@ class CSVReader(BaseReader):
                         )
                         for row in reader
                     ]
-
-            import asyncio
 
             lines = await asyncio.to_thread(_read_csv)
             content = "\n".join(lines)

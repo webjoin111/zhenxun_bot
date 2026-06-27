@@ -12,8 +12,8 @@ from zhenxun.services.ai.capabilities import (
     WrapToolExecuteHandler,
     WrapToolValidateHandler,
 )
-from zhenxun.services.ai.core.messages import LLMResponse
-from zhenxun.services.ai.core.protocols.middleware import LLMContext
+from zhenxun.services.ai.core.messages import ChatRequest, ChatResponse
+from zhenxun.services.ai.core.models import LLMContext
 
 from .context import RunContext
 from .models import AgentRunResult
@@ -72,8 +72,14 @@ class OnRunErrorHookFunc(Protocol):
 
 class BeforeModelRequestHookFunc(Protocol):
     def __call__(
-        self, ctx: RunContext[Any], request_context: LLMContext, /
-    ) -> LLMContext | Awaitable[LLMContext]: ...
+        self,
+        ctx: RunContext[Any],
+        request_context: LLMContext[ChatRequest, ChatResponse],
+        /,
+    ) -> (
+        LLMContext[ChatRequest, ChatResponse]
+        | Awaitable[LLMContext[ChatRequest, ChatResponse]]
+    ): ...
 
 
 class AfterModelRequestHookFunc(Protocol):
@@ -82,9 +88,9 @@ class AfterModelRequestHookFunc(Protocol):
         ctx: RunContext[Any],
         /,
         *,
-        request_context: LLMContext,
-        response: LLMResponse,
-    ) -> LLMResponse | Awaitable[LLMResponse]: ...
+        request_context: LLMContext[ChatRequest, ChatResponse],
+        response: ChatResponse,
+    ) -> ChatResponse | Awaitable[ChatResponse]: ...
 
 
 class WrapModelRequestHookFunc(Protocol):
@@ -93,15 +99,20 @@ class WrapModelRequestHookFunc(Protocol):
         ctx: RunContext[Any],
         /,
         *,
-        request_context: LLMContext,
+        request_context: LLMContext[ChatRequest, ChatResponse],
         handler: WrapModelRequestHandler,
-    ) -> LLMResponse | Awaitable[LLMResponse]: ...
+    ) -> ChatResponse | Awaitable[ChatResponse]: ...
 
 
 class OnModelRequestErrorHookFunc(Protocol):
     def __call__(
-        self, ctx: RunContext[Any], /, *, request_context: LLMContext, error: Exception
-    ) -> LLMResponse | Awaitable[LLMResponse]: ...
+        self,
+        ctx: RunContext[Any],
+        /,
+        *,
+        request_context: LLMContext[ChatRequest, ChatResponse],
+        error: Exception,
+    ) -> ChatResponse | Awaitable[ChatResponse]: ...
 
 
 class PrepareToolsHookFunc(Protocol):
@@ -534,9 +545,9 @@ class Hooks(AbstractCapability):
     async def wrap_model_request(
         self,
         context: RunContext,
-        llm_context: LLMContext,
+        llm_context: LLMContext[ChatRequest, ChatResponse],
         handler: WrapModelRequestHandler,
-    ) -> LLMResponse:
+    ) -> ChatResponse:
         """派发：洋葱模型接管网络请求及前后生命周期"""
         for entry in self._registry.get("before_model_request", []):
             llm_context = await _call_entry(
@@ -548,17 +559,19 @@ class Hooks(AbstractCapability):
         if entries:
             for entry in reversed(entries):
 
-                def _wrap(
+                def _make_chain(
                     e: _HookEntry[Any], h: Callable[..., Any]
                 ) -> Callable[..., Any]:
-                    async def _wrapped(ctx_inner: LLMContext) -> Any:
+                    async def _wrapped(
+                        ctx_inner: LLMContext[ChatRequest, ChatResponse],
+                    ) -> Any:
                         return await _call_entry(
                             e, "wrap_model_request", context, ctx_inner, h
                         )
 
                     return _wrapped
 
-                chain = _wrap(entry, chain)
+                chain = _make_chain(entry, chain)
 
         try:
             response = await chain(llm_context)

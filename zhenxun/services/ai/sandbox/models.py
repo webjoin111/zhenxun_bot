@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from zhenxun.services.log import logger
+from zhenxun.utils.pydantic_compat import model_dump
 
 if TYPE_CHECKING:
     from zhenxun.services.ai.sandbox.drivers.base import BaseSandboxSession
@@ -387,15 +388,15 @@ class SandboxBlueprint(BaseModel):
     def calculate_hash(self) -> str:
         """计算当前环境配置的 MD5 指纹，用于缓存命中"""
         entries_dict = {
-            k: self.entries[k].model_dump() for k in sorted(self.entries.keys())
+            k: model_dump(self.entries[k]) for k in sorted(self.entries.keys())
         }
 
         data_to_hash = {
             "image": self.image,
             "container_name": self.container_name,
-            "steps": [s.model_dump() for s in self.setup_steps],
+            "steps": [model_dump(s) for s in self.setup_steps],
             "entries": entries_dict,
-            "bind_mounts": [m.model_dump() for m in self.bind_mounts],
+            "bind_mounts": [model_dump(m) for m in self.bind_mounts],
         }
         json_str = json.dumps(data_to_hash, separators=(",", ":"))
         return hashlib.md5(json_str.encode("utf-8")).hexdigest()

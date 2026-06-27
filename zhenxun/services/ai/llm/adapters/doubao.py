@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from zhenxun.services.ai.core.protocols.llm import LLMModelBase
+from zhenxun.services.ai.core.models import ModelIdentity
 
 from .handlers.openai_handlers import (
     OpenAITextHandler,
@@ -26,8 +26,6 @@ class DoubaoAdapter(OpenAICompatAdapter):
         """当前适配器支持的 API 类型列表。"""
         return ["doubao"]
 
-    def get_chat_endpoint(self, model: LLMModelBase) -> str:
+    def get_chat_endpoint(self, identity: ModelIdentity) -> str:
         """返回对话端点，优先使用模型级自定义端点。"""
-        if model.model_detail.endpoint:
-            return model.model_detail.endpoint
         return "/v3/chat/completions"

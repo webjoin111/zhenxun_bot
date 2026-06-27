@@ -2,31 +2,7 @@
 自定义异常与错误码定义
 """
 
-from enum import Enum
 from typing import Any
-
-
-class LLMErrorCode(Enum):
-    """LLM 服务相关的错误代码枚举"""
-
-    MODEL_INIT_FAILED = 2000
-    MODEL_NOT_FOUND = 2001
-    API_REQUEST_FAILED = 2002
-    API_RESPONSE_INVALID = 2003
-    API_KEY_INVALID = 2004
-    API_QUOTA_EXCEEDED = 2005
-    API_TIMEOUT = 2006
-    API_RATE_LIMITED = 2007
-    NO_AVAILABLE_KEYS = 2008
-    UNKNOWN_API_TYPE = 2009
-    CONFIGURATION_ERROR = 2010
-    RESPONSE_PARSE_ERROR = 2011
-    CONTEXT_LENGTH_EXCEEDED = 2012
-    CONTENT_FILTERED = 2013
-    USER_LOCATION_NOT_SUPPORTED = 2014
-    INVALID_PARAMETER = 2017
-    GENERATION_FAILED = 2015
-    EMBEDDING_FAILED = 2016
 
 
 class ModelRetry(Exception):
@@ -38,14 +14,14 @@ class ModelRetry(Exception):
 
 
 class SchemaParseError(ModelRetry):
-    """格式解析异常 (Tier 1)。当大模型返回的 JSON 损坏或不符合 Schema 时抛出。"""
+    """格式解析异常。当大模型返回的 JSON 损坏或不符合 Schema 时抛出。"""
 
     def __init__(self, message: str):
         super().__init__(message)
 
 
 class GuardrailViolationError(ModelRetry):
-    """护栏违规异常 (Tier 2)。当大模型返回的数据格式正确，但违反业务规则时抛出。"""
+    """护栏违规异常。当大模型返回的数据格式正确，但违反业务规则时抛出。"""
 
     def __init__(self, message: str):
         super().__init__(message)
@@ -129,9 +105,6 @@ class ConcurrencyInterruptException(ControlFlowExit):
         super().__init__(message)
 
 
-
-
-
 class NeedsInputException(Exception):
     """
     当工具配置了 interactive=True 且缺少必要参数（或参数验证失败）时抛出此异常，
@@ -187,66 +160,159 @@ class WorkspaceIOError(Exception):
 
 class SandboxFatalError(Exception):
     """沙箱底层容器发生致命崩溃（如 OOM, 被宿主机强杀等）"""
+
     pass
 
 
 class LLMException(Exception):
-    """LLM 服务相关的基础异常类"""
+    """LLM 服务相关的基础异常类 (多态基类)"""
 
     def __init__(
         self,
         message: str,
-        code: LLMErrorCode = LLMErrorCode.API_REQUEST_FAILED,
         details: dict[str, Any] | None = None,
-        recoverable: bool = True,
         cause: Exception | None = None,
     ):
         self.message = message
-        self.code = code
         self.details = details or {}
-        self.recoverable = recoverable
         self.cause = cause
         super().__init__(message)
+
+    @property
+    def is_retryable(self) -> bool:
+        """是否允许在当前节点进行退避重试（如偶发网络抖动）"""
+        return False
+
+    @property
+    def should_failover(self) -> bool:
+        """是否允许触发节点故障转移（切换到下一个备用模型）"""
+        return False
+
+    @property
+    def should_rotate_key(self) -> bool:
+        """是否应该标记当前 Key 失效并轮换 API Key"""
+        return False
+
+    @property
+    def user_friendly_message(self) -> str:
+        """返回适合向用户展示的错误消息"""
+        return "AI服务暂时不可用，请稍后再试。"
 
     def __str__(self) -> str:
         if self.details:
             safe_details = {k: v for k, v in self.details.items() if k != "api_key"}
             if safe_details:
-                return (
-                    f"{self.message} (错误码: {self.code.name}, 详情: {safe_details})"
-                )
-        return f"{self.message} (错误码: {self.code.name})"
+                return f"{self.message} (详情: {safe_details})"
+        return self.message
+
+
+class InvalidRequestException(LLMException):
+    @property
+    def user_friendly_message(self) -> str:
+        return "请求参数错误或API类型不支持，请检查输入内容。"
+
+
+class ContextLengthExceededException(LLMException):
+    @property
+    def user_friendly_message(self) -> str:
+        return "输入内容过长，请缩短后重试。"
+
+
+class ContentFilteredException(LLMException):
+    @property
+    def user_friendly_message(self) -> str:
+        return "内容被安全过滤，请修改后重试。"
+
+
+class ConfigurationException(LLMException):
+    @property
+    def user_friendly_message(self) -> str:
+        return "AI模型配置错误或未找到，请联系管理员检查配置。"
+
+
+class AuthenticationException(LLMException):
+    @property
+    def should_rotate_key(self) -> bool:
+        return True
 
     @property
     def user_friendly_message(self) -> str:
-        """返回适合向用户展示的错误消息"""
-        error_messages = {
-            LLMErrorCode.MODEL_NOT_FOUND: "AI模型未找到，请检查配置或联系管理员。",
-            LLMErrorCode.API_KEY_INVALID: "API密钥无效，请联系管理员更新配置。",
-            LLMErrorCode.API_QUOTA_EXCEEDED: (
-                "API使用配额已用尽，请稍后再试或联系管理员。"
-            ),
-            LLMErrorCode.API_TIMEOUT: "AI服务响应超时，请稍后再试。",
-            LLMErrorCode.API_RATE_LIMITED: "请求过于频繁，已被AI服务限流，请稍后再试。",
-            LLMErrorCode.MODEL_INIT_FAILED: "AI模型初始化失败，请联系管理员检查配置。",
-            LLMErrorCode.NO_AVAILABLE_KEYS: (
-                "当前所有API密钥均不可用，请稍后再试或联系管理员。"
-            ),
-            LLMErrorCode.USER_LOCATION_NOT_SUPPORTED: (
-                "当前网络环境不支持此 AI 模型 (如 Gemini/OpenAI)。\n"
-                "原因: 代理节点所在地区（如香港/国内/非支持区）被服务商屏蔽。\n"
-                "建议: 请尝试更换代理节点至支持的地区（如美国/日本/新加坡）。"
-            ),
-            LLMErrorCode.API_REQUEST_FAILED: "AI服务请求失败，请稍后再试。",
-            LLMErrorCode.API_RESPONSE_INVALID: "AI服务响应异常，请稍后再试。",
-            LLMErrorCode.INVALID_PARAMETER: "请求参数错误，请检查输入内容。",
-            LLMErrorCode.CONFIGURATION_ERROR: "AI服务配置错误，请联系管理员。",
-            LLMErrorCode.CONTEXT_LENGTH_EXCEEDED: "输入内容过长，请缩短后重试。",
-            LLMErrorCode.CONTENT_FILTERED: "内容被安全过滤，请修改后重试。",
-            LLMErrorCode.RESPONSE_PARSE_ERROR: "AI服务响应解析失败，请稍后再试。",
-            LLMErrorCode.UNKNOWN_API_TYPE: "不支持的AI服务类型，请联系管理员。",
-        }
-        return error_messages.get(self.code, "AI服务暂时不可用，请稍后再试。")
+        return "API密钥无效或权限不足，请联系管理员更新配置。"
+
+
+class QuotaExceededException(LLMException):
+    @property
+    def should_rotate_key(self) -> bool:
+        return True
+
+    @property
+    def user_friendly_message(self) -> str:
+        return "API使用配额已用尽，请稍后再试或联系管理员。"
+
+
+class LocationNotSupportedException(LLMException):
+    @property
+    def should_failover(self) -> bool:
+        return True
+
+    @property
+    def user_friendly_message(self) -> str:
+        return (
+            "当前网络环境不支持此 AI 模型。\n"
+            "建议: 请尝试更换代理节点至支持的地区或切换备用模型。"
+        )
+
+
+class RateLimitException(LLMException):
+    @property
+    def is_retryable(self) -> bool:
+        return True
+
+    @property
+    def should_rotate_key(self) -> bool:
+        return True
+
+    @property
+    def user_friendly_message(self) -> str:
+        return "请求过于频繁，已被AI服务限流，请稍后再试。"
+
+
+class UpstreamServerException(LLMException):
+    @property
+    def is_retryable(self) -> bool:
+        return True
+
+    @property
+    def should_failover(self) -> bool:
+        return True
+
+    @property
+    def user_friendly_message(self) -> str:
+        return "AI服务响应异常或端点宕机，请稍后再试。"
+
+
+class NetworkTimeoutException(LLMException):
+    @property
+    def is_retryable(self) -> bool:
+        return True
+
+    @property
+    def should_failover(self) -> bool:
+        return True
+
+    @property
+    def user_friendly_message(self) -> str:
+        return "AI服务请求超时，请稍后再试。"
+
+
+class ResponseParseException(LLMException):
+    @property
+    def is_retryable(self) -> bool:
+        return True
+
+    @property
+    def user_friendly_message(self) -> str:
+        return "AI服务响应解析失败，请稍后再试。"
 
 
 def get_user_friendly_error_message(error: Exception) -> str:
@@ -264,11 +330,5 @@ def get_user_friendly_error_message(error: Exception) -> str:
         return "代理连接失败，请检查代理服务器是否正常运行。"
     if "ssl" in error_str or "certificate" in error_str:
         return "SSL 证书验证失败，请检查网络环境。"
-    if "permission" in error_str or "forbidden" in error_str:
-        return "权限不足，可能是 API Key 权限受限。"
-    if "not found" in error_str:
-        return "请求的资源未找到 (404)，请检查模型名称或端点配置。"
-    if "invalid" in error_str or "无效" in error_str:
-        return "请求参数无效，请检查输入。"
 
     return f"服务暂时不可用 ({type(error).__name__})，请稍后再试。"

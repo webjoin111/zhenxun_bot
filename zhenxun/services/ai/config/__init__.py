@@ -3,7 +3,6 @@ from .manager import (
     get_gemini_safety_threshold,
     get_llm_config,
     register_llm_configs,
-    set_default_model,
 )
 from .models import DebugLogOptions, DefaultModelsConfig, LLMConfig, ProviderConfig
 
@@ -17,5 +16,4 @@ __all__ = [
     "get_gemini_safety_threshold",
     "get_llm_config",
     "register_llm_configs",
-    "set_default_model",
 ]

@@ -1,6 +1,7 @@
 import asyncio
 from typing import Any, Protocol
 
+from zhenxun.services.ai.core.events import ToolStreamChunk
 from zhenxun.services.ai.run import Inject, RunContext
 from zhenxun.services.ai.sandbox.models import (
     SandboxBlueprint,
@@ -49,6 +50,14 @@ class SandboxToolkit(BaseToolkit):
         sandbox_session_id: str | None = None,
         **kwargs: Any,
     ):
+        """
+        初始化沙箱工作区工具箱。
+
+        参数：
+            blueprint: 沙箱蓝图配置对象，包含沙箱运行时的各种参数定义（例如是否需要状态、端口映射等）。
+            sandbox_session_id: 显式指定的沙箱会话 ID。如果不指定，则自动与当前执行上下文绑定。
+            kwargs: 其他透传给 BaseToolkit 的参数。
+        """  # noqa: E501
         super().__init__(**kwargs)
         self.blueprint = blueprint or SandboxBlueprint()
 
@@ -65,31 +74,6 @@ class SandboxToolkit(BaseToolkit):
         """从上下文获取虚拟终端"""
         session_id = self.sandbox_session_id or context.session_id or "default"
         return context.session.shared_state.get(f"pty_{session_id}")
-
-    async def enter_session(self, session_id: str, context: RunContext) -> None:
-        target_session = self.sandbox_session_id or session_id
-
-        logger.info(f"[SandboxToolkit] 预热沙箱环境 (Session: {target_session})")
-        sandbox: Any = Inject._providers["sandbox"]["global"](context)
-        await sandbox.get_or_create_session(target_session, self.blueprint)
-
-    async def exit_session(self, session_id: str) -> None:
-        target_session = self.sandbox_session_id or session_id
-
-        logger.debug(
-            f"[SandboxToolkit] 当前 Agent 交互轮次结束，"
-            f"沙箱及代码执行器继续驻留内存以保障状态穿透 (Session: {target_session})"
-        )
-        from zhenxun.services.ai.run import get_current_run_context
-
-        context = get_current_run_context()
-        if context:
-            session = context.session.shared_state.pop(f"pty_{target_session}", None)
-            if session:
-                try:
-                    await session.close()
-                except Exception:
-                    pass
 
     @tool(
         name="execute_code",
@@ -166,10 +150,6 @@ class SandboxToolkit(BaseToolkit):
                 line_buffer = lines[-1]
                 for line in lines[:-1]:
                     if line.strip():
-                        from zhenxun.services.ai.core.stream_events import (
-                            ToolStreamChunk,
-                        )
-
                         await ui._streamer.send(
                             ToolStreamChunk(
                                 tool_name="Console", content=f"💻 {line.strip()}"

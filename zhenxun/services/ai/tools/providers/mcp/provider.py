@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any, Literal, cast
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from zhenxun.configs.path_config import DATA_PATH
 from zhenxun.services.ai.core.protocols.tool import (
@@ -18,7 +18,7 @@ from zhenxun.services.ai.sandbox.models import SandboxBlueprint
 from zhenxun.services.ai.tools.models import ResolvedToolPayload
 from zhenxun.services.ai.tools.providers.mcp.toolkit import MCPToolkit
 from zhenxun.services.log import logger
-from zhenxun.utils.pydantic_compat import model_dump, model_validate
+from zhenxun.utils.pydantic_compat import model_dump, model_validate, model_validator
 
 MCP_PATH = DATA_PATH / "ai" / "mcp.json"
 
@@ -259,8 +259,6 @@ class GlobalMCPProvider(ToolProvider):
                     tasks.append(tk.get_tools())
 
             if tasks:
-                import asyncio
-
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 for res in results:
                     if isinstance(res, dict):
@@ -326,12 +324,9 @@ class MCPSource(BaseModel):
                 excluded_servers=self.exclude_servers
             )
             for t in server_tools_dict.values():
-                if hasattr(t, "resolve"):
-                    p = await cast(ToolResolvable, t).resolve(context)
-                    if p:
-                        tools.extend(p.tools)
-                else:
-                    tools.append(t)
+                p = await cast(ToolResolvable, t).resolve(context)
+                if p:
+                    tools.extend(p.tools)
             return ResolvedToolPayload(tools=tools)
 
         elif self.config:
@@ -359,12 +354,9 @@ class MCPSource(BaseModel):
             assert self.server_name is not None
             server_tools = await mcp_provider.get_tools_for_server(self.server_name)
             for t in server_tools.values():
-                if hasattr(t, "resolve"):
-                    p = await cast(ToolResolvable, t).resolve(context)
-                    if p:
-                        tools.extend(p.tools)
-                else:
-                    tools.append(t)
+                p = await cast(ToolResolvable, t).resolve(context)
+                if p:
+                    tools.extend(p.tools)
 
             return ResolvedToolPayload(tools=tools)
 

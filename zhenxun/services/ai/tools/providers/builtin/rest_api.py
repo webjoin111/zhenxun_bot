@@ -33,6 +33,16 @@ class RestApiToolkit(BaseToolkit):
         timeout: int = 30,
         **kwargs: Any,
     ):
+        """
+        初始化通用 REST API 工具箱。
+
+        参数：
+            base_url: 接口基础 URL，默认发起请求时将与其拼接。
+            default_headers: 发起请求时携带的默认 Headers 请求头。
+            default_params: 发起请求时携带的默认 URL 查询参数。
+            timeout: 请求超时时间，单位为秒。
+            kwargs: 其他透传给 BaseToolkit 的参数。
+        """
         super().__init__(**kwargs)
         self.base_url = base_url.rstrip("/") if base_url else ""
         self.default_headers = default_headers or {}

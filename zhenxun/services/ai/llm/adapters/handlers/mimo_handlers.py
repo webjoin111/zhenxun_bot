@@ -9,13 +9,17 @@ from zhenxun.services.ai.core.messages import (
     AudioResponse,
     ImagePart,
     LLMMessage,
+    SpeechRequest,
     TextPart,
     UsageInfo,
     VideoPart,
 )
-from zhenxun.services.ai.core.models import ModelCapabilities, ModelDetail
+from zhenxun.services.ai.core.models import (
+    ModelCapabilities,
+    ModelDetail,
+    ModelIdentity,
+)
 from zhenxun.services.ai.core.options import GenerationConfig, TTSConfig
-from zhenxun.services.ai.core.protocols.llm import LLMModelBase
 from zhenxun.services.ai.llm.adapters.base import BaseAdapter, RequestData
 from zhenxun.services.ai.llm.adapters.handlers.base import BaseAudioHandler
 from zhenxun.services.ai.llm.adapters.handlers.openai_handlers import (
@@ -60,12 +64,20 @@ class MiMoConfigMapper(OpenAIConfigMapper):
     ) -> dict[str, Any]:
         params = super().map_config(config, model_detail, capabilities)
 
-        params.pop("reasoning_effort", None)
-
-        if config.openai_options.reasoning_effort or config.deepseek_options.thinking:
-            params["thinking"] = {"type": "enabled"}
-        elif config.deepseek_options.thinking is False:
-            params["thinking"] = {"type": "disabled"}
+        if config.common.reasoning_effort:
+            effort = str(config.common.reasoning_effort).lower()
+            if effort == "none":
+                params["thinking"] = {"type": "disabled"}
+            else:
+                params["thinking"] = {"type": "enabled"}
+        elif (
+            hasattr(config, "deepseek_options")
+            and config.deepseek_options.thinking is not None
+        ):
+            if config.deepseek_options.thinking is True:
+                params["thinking"] = {"type": "enabled"}
+            elif config.deepseek_options.thinking is False:
+                params["thinking"] = {"type": "disabled"}
 
         return params
 
@@ -138,17 +150,18 @@ class MiMoAudioHandler(BaseAudioHandler):
     def prepare_speech_request(
         self,
         adapter: BaseAdapter,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         api_key: str,
-        input_text: str,
-        voice: str,
-        config: TTSConfig,
+        request: SpeechRequest,
     ) -> RequestData:
-        url = adapter.get_api_url(model, "/v1/chat/completions")
+        input_text = request.input_text
+        voice = request.voice
+        config = request.config or TTSConfig()
+        url = adapter.get_api_url(identity, "/v1/chat/completions")
         headers = adapter.get_base_headers(api_key)
 
         body = {
-            "model": model.model_name,
+            "model": identity.model_name,
             "messages": [{"role": "assistant", "content": input_text}],
             "audio": {
                 "format": config.response_format
@@ -160,7 +173,10 @@ class MiMoAudioHandler(BaseAudioHandler):
         return RequestData(url=url, headers=headers, body=body)
 
     async def parse_speech_response(
-        self, adapter: BaseAdapter, model: LLMModelBase, raw_response: httpx.Response
+        self,
+        adapter: BaseAdapter,
+        identity: ModelIdentity,
+        raw_response: httpx.Response,
     ) -> AudioResponse:
         data = json.loads(await raw_response.aread())
         adapter.validate_response(data)
@@ -169,5 +185,5 @@ class MiMoAudioHandler(BaseAudioHandler):
             audio_bytes=base64.b64decode(audio_b64),
             audio_format="wav",
             usage=UsageInfo(),
-            model_name=model.model_name,
+            model_name=identity.model_name,
         )

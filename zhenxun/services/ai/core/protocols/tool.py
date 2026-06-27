@@ -19,8 +19,10 @@ if TYPE_CHECKING:
 class ToolExecutable(Protocol):
     """
     一个协议，定义了所有可被LLM调用的工具必须实现的行为。
-    It 将工具的"定义"（给LLM看）和"执行"（由框架调用）封装在一起。
     """
+
+    name: str
+    """工具的名称标识"""
 
     async def get_definition(
         self, context: "RunContext | None" = None
@@ -38,14 +40,7 @@ class ToolExecutable(Protocol):
         """
         ...
 
-    async def should_confirm(
-        self, context: "RunContext | None" = None, **kwargs: Any
-    ) -> str | None:
-        """
-        [可选] 异步判定工具执行前是否需要用户交互确认。
-        如果需要确认，返回一段提示文本；否则返回 None。
-        """
-        ...
+
 
 
 @runtime_checkable

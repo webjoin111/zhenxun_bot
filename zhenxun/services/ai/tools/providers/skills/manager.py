@@ -21,6 +21,7 @@ from zhenxun.services.ai.tools.providers.skills.models import (
     SkillFrontmatter,
 )
 from zhenxun.services.log import logger
+from zhenxun.utils.pydantic_compat import model_dump, model_validate
 from zhenxun.utils.utils import infer_plugin_namespace
 
 
@@ -36,7 +37,7 @@ class SkillConfigManager:
         if self.config_path.exists():
             try:
                 with open(self.config_path, encoding="utf-8") as f:
-                    self.config = SkillEnvConfig.model_validate(json.load(f))
+                    self.config = model_validate(SkillEnvConfig, json.load(f))
             except Exception as e:
                 logger.error(f"加载 skill_envs.json 失败: {e}")
 
@@ -45,7 +46,7 @@ class SkillConfigManager:
             self.config_path.parent.mkdir(parents=True, exist_ok=True)
             async with aiofiles.open(self.config_path, "w", encoding="utf-8") as f:
                 content = json.dumps(
-                    self.config.model_dump(), ensure_ascii=False, indent=4
+                    model_dump(self.config), ensure_ascii=False, indent=4
                 )
                 await f.write(content)
         except Exception as e:

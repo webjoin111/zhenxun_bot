@@ -6,19 +6,15 @@ from .knowledge import FileSystemKnowledge, VectorKnowledge
 from .memory import (
     AgentSessionFacade,
     MemoryBuilder,
-    MemoryIsolationLevel,
-    MemoryPolicy,
-    SessionMetadata,
-    generate_session_meta,
+    memory_manager,
 )
+from .rag import RAGBuilder
 
 __all__ = [
     "AgentSessionFacade",
     "FileSystemKnowledge",
     "MemoryBuilder",
-    "MemoryIsolationLevel",
-    "MemoryPolicy",
-    "SessionMetadata",
+    "RAGBuilder",
     "VectorKnowledge",
-    "generate_session_meta",
+    "memory_manager",
 ]

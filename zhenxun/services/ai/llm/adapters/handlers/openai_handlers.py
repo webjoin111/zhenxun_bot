@@ -7,16 +7,28 @@ from typing import Any
 import httpx
 import json_repair
 
-from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
+from zhenxun.services.ai.core.exceptions import (
+    AuthenticationException,
+    ConfigurationException,
+    ContentFilteredException,
+    ContextLengthExceededException,
+    InvalidRequestException,
+    QuotaExceededException,
+    RateLimitException,
+    ResponseParseException,
+)
 from zhenxun.services.ai.core.messages import (
     AssistantMessage,
     AudioResponse,
-    EmbedBatch,
+    ChatRequest,
+    EmbeddingRequest,
     ImagePart,
+    ImageRequest,
     LLMMessage,
     RerankDocument,
+    RerankRequest,
     RerankResult,
-    ResponseFormat,
+    SpeechRequest,
     SystemMessage,
     TextPart,
     ThoughtPart,
@@ -27,16 +39,14 @@ from zhenxun.services.ai.core.messages import (
 from zhenxun.services.ai.core.models import (
     ModelCapabilities,
     ModelDetail,
-    ToolChoice,
+    ModelIdentity,
 )
 from zhenxun.services.ai.core.options import (
     GenerationConfig,
     LLMEmbeddingConfig,
-    ReasoningEffort,
+    ResponseFormat,
     StructuredOutputStrategy,
-    TTSConfig,
 )
-from zhenxun.services.ai.core.protocols.llm import LLMModelBase
 from zhenxun.services.ai.llm.adapters.base import (
     BaseAdapter,
     RequestData,
@@ -98,14 +108,14 @@ class OpenAIConfigMapper(ConfigMapper):
                 else:
                     params["repetition_penalty"] = config.common.repetition_penalty
 
-        if config.openai_options.reasoning_effort:
-            effort = config.openai_options.reasoning_effort
+        if config.common.reasoning_effort:
+            effort = str(config.common.reasoning_effort).lower()
 
-            params["reasoning_effort"] = (
-                effort.value.lower()
-                if isinstance(effort, ReasoningEffort)
-                else str(effort).lower()
-            )
+            if capabilities and capabilities.reasoning_effort_map:
+                effort = capabilities.reasoning_effort_map.get(effort, effort)
+
+            if effort != "none":
+                params["reasoning_effort"] = effort
 
         if isinstance(config.output.response_format, dict):
             params["response_format"] = config.output.response_format
@@ -129,6 +139,7 @@ class OpenAIConfigMapper(ConfigMapper):
 
         if config.custom_kwargs:
             mapped_custom = config.custom_kwargs.copy()
+            mapped_custom.pop("__cache_ttl__", None)
             if "repetition_penalty" in mapped_custom and self.api_type == "openai":
                 mapped_custom.pop("repetition_penalty")
 
@@ -244,7 +255,7 @@ class OpenAIToolSerializer(ToolSerializer):
         self.api_type = api_type
 
     def sanitize_schema(self, schema: dict[str, Any]) -> dict[str, Any]:
-        from zhenxun.services.ai.llm.schema_transformer import (
+        from zhenxun.services.ai.llm.engine.schema_transformer import (
             OpenAIUnionFlattenTransformer,
             RefComplianceTransformer,
             RemoveUnsupportedKeysTransformer,
@@ -307,36 +318,45 @@ class OpenAIResponseParser(ResponseParser):
     def validate_response(self, response_json: dict[str, Any]) -> None:
         if response_json.get("error"):
             error_info = response_json["error"]
+            error_message = str(error_info)
             if isinstance(error_info, dict):
-                error_message = error_info.get("message", "未知错误")
+                error_message = error_info.get("message", error_message)
                 error_code = error_info.get("code", "unknown")
 
-                error_code_mapping = {
-                    "invalid_api_key": LLMErrorCode.API_KEY_INVALID,
-                    "authentication_failed": LLMErrorCode.API_KEY_INVALID,
-                    "insufficient_quota": LLMErrorCode.API_QUOTA_EXCEEDED,
-                    "rate_limit_exceeded": LLMErrorCode.API_RATE_LIMITED,
-                    "quota_exceeded": LLMErrorCode.API_RATE_LIMITED,
-                    "model_not_found": LLMErrorCode.MODEL_NOT_FOUND,
-                    "invalid_model": LLMErrorCode.MODEL_NOT_FOUND,
-                    "context_length_exceeded": LLMErrorCode.CONTEXT_LENGTH_EXCEEDED,
-                    "max_tokens_exceeded": LLMErrorCode.CONTEXT_LENGTH_EXCEEDED,
-                    "invalid_request_error": LLMErrorCode.INVALID_PARAMETER,
-                    "invalid_parameter": LLMErrorCode.INVALID_PARAMETER,
-                }
+                if (
+                    error_code in ("invalid_api_key", "authentication_failed")
+                    or "permission" in error_message.lower()
+                ):
+                    raise AuthenticationException(
+                        f"鉴权失败: {error_message}", details={"api_error": error_info}
+                    )
+                elif error_code in ("insufficient_quota", "quota_exceeded"):
+                    raise QuotaExceededException(
+                        f"配额耗尽: {error_message}", details={"api_error": error_info}
+                    )
+                elif error_code == "rate_limit_exceeded":
+                    raise RateLimitException(
+                        f"请求限流: {error_message}", details={"api_error": error_info}
+                    )
+                elif error_code in ("model_not_found", "invalid_model"):
+                    raise ConfigurationException(
+                        f"模型配置错误: {error_message}",
+                        details={"api_error": error_info},
+                    )
+                elif error_code in ("context_length_exceeded", "max_tokens_exceeded"):
+                    raise ContextLengthExceededException(
+                        f"上下文超限: {error_message}",
+                        details={"api_error": error_info},
+                    )
+                elif error_code in ("invalid_request_error", "invalid_parameter"):
+                    raise InvalidRequestException(
+                        f"请求参数错误: {error_message}",
+                        details={"api_error": error_info},
+                    )
 
-                llm_error_code = error_code_mapping.get(
-                    error_code, LLMErrorCode.API_RESPONSE_INVALID
-                )
-            else:
-                error_message = str(error_info)
-                error_code = "unknown"
-                llm_error_code = LLMErrorCode.API_RESPONSE_INVALID
-
-            raise LLMException(
+            raise ResponseParseException(
                 f"API请求失败: {error_message}",
-                code=llm_error_code,
-                details={"api_error": error_info, "error_code": error_code},
+                details={"api_error": error_info},
             )
 
     def parse(self, response_json: dict[str, Any]) -> ResponseData:
@@ -354,11 +374,9 @@ class OpenAIResponseParser(ResponseParser):
         refusal = message.get("refusal")
 
         if refusal:
-            raise LLMException(
+            raise ContentFilteredException(
                 f"模型拒绝生成请求: {refusal}",
-                code=LLMErrorCode.CONTENT_FILTERED,
                 details={"refusal": refusal},
-                recoverable=False,
             )
 
         if content:
@@ -417,7 +435,7 @@ class OpenAIResponseParser(ResponseParser):
                 content_parts.append(
                     ThoughtPart(
                         thought_text=combined_thought_text,
-                        metadata={"raw_reasoning_details": reasoning_details}
+                        metadata={"raw_reasoning_details": reasoning_details},
                     )
                 )
         elif reasoning_content:
@@ -471,7 +489,9 @@ class ResponsesConfigMapper(OpenAIConfigMapper):
 
         if "reasoning_effort" in params:
             effort_val = params.pop("reasoning_effort")
-            params["reasoning"] = {"effort": effort_val}
+            params["reasoning"] = {"effort": effort_val, "summary": "auto"}
+        else:
+            params["reasoning"] = {"summary": "auto"}
 
         if "response_format" in params:
             fmt = params.pop("response_format")
@@ -614,6 +634,7 @@ class ResponsesResponseParser(OpenAIResponseParser):
     def parse(self, response_json: dict[str, Any]) -> ResponseData:
         content_parts: list[Any] = []
         text_content = ""
+        thought_content = ""
 
         for item in response_json.get("output", []):
             if item.get("type") == "message" and item.get("role") == "assistant":
@@ -621,10 +642,8 @@ class ResponsesResponseParser(OpenAIResponseParser):
                     if content_item.get("type") == "output_text":
                         text_content += content_item.get("text", "")
                     elif content_item.get("type") == "refusal":
-                        raise LLMException(
+                        raise ContentFilteredException(
                             f"模型拒绝生成: {content_item.get('refusal')}",
-                            code=LLMErrorCode.CONTENT_FILTERED,
-                            recoverable=False,
                         )
             elif item.get("type") == "function_call":
                 content_parts.append(
@@ -634,9 +653,15 @@ class ResponsesResponseParser(OpenAIResponseParser):
                         args=item.get("arguments", "{}"),
                     )
                 )
+            elif item.get("type") == "reasoning":
+                for summary_item in item.get("summary", []):
+                    if summary_item.get("type") == "summary_text":
+                        thought_content += summary_item.get("text", "")
 
         if text_content:
             content_parts.insert(0, TextPart(text=text_content))
+        if thought_content:
+            content_parts.insert(0, ThoughtPart(thought_text=thought_content))
 
         return ResponseData(
             content_parts=content_parts,
@@ -656,29 +681,29 @@ class OpenAITextHandler(BaseTextHandler):
         self.parser = OpenAIResponseParser()
 
     def _build_base_body(
-        self, model: LLMModelBase, messages: list[Any]
+        self, identity: ModelIdentity, messages: list[Any]
     ) -> dict[str, Any]:
         return {
-            "model": model.model_name,
+            "model": identity.model_name,
             "messages": messages,
         }
 
     async def prepare_text_request(
         self,
         adapter: BaseAdapter,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         api_key: str,
-        messages: list[LLMMessage],
-        config: GenerationConfig | None = None,
-        tools: list[Any] | None = None,
-        tool_choice: ToolChoice | str | dict[str, Any] | None = None,
+        request: ChatRequest,
     ) -> RequestData:
-        endpoint = getattr(adapter, "get_chat_endpoint")(model)
-        url = adapter.get_api_url(model, endpoint)
+        endpoint = getattr(adapter, "get_chat_endpoint")(identity)
+        url = adapter.get_api_url(identity, endpoint)
         headers = adapter.get_base_headers(api_key)
-        effective_config = (
-            config if config is not None else getattr(model, "_generation_config", None)
-        )
+
+        messages = request.messages
+        tools = request.tools
+        tool_choice = request.tool_choice
+        config = request.config
+        effective_config = config if config is not None else identity.generation_config
         structured_strategy = (
             effective_config.output.structured_output_strategy
             if effective_config and effective_config.output
@@ -687,7 +712,8 @@ class OpenAITextHandler(BaseTextHandler):
         if structured_strategy is None:
             structured_strategy = (
                 StructuredOutputStrategy.TOOL_CALL
-                if model.api_type == "deepseek" and model.model_name == "deepseek-chat"
+                if identity.api_type == "deepseek"
+                and identity.model_name == "deepseek-chat"
                 else StructuredOutputStrategy.NATIVE
             )
 
@@ -761,7 +787,7 @@ class OpenAITextHandler(BaseTextHandler):
             openai_tools.append(structured_tool)
 
         converted_messages = await self.converter.convert_messages_async(messages)
-        body = self._build_base_body(model, converted_messages)
+        body = self._build_base_body(identity, converted_messages)
 
         if openai_tools:
             body["tools"] = openai_tools
@@ -771,7 +797,7 @@ class OpenAITextHandler(BaseTextHandler):
         config_params = {}
         if effective_config:
             config_params = self.mapper.map_config(
-                effective_config, model.model_detail, model.capabilities
+                effective_config, None, identity.capabilities
             )
         body.update(config_params)
 
@@ -779,7 +805,7 @@ class OpenAITextHandler(BaseTextHandler):
             if openai_tools is None:
                 openai_tools = []
             server_payloads = self.serializer.serialize_server_tools(
-                server_tools, model.capabilities
+                server_tools, identity.capabilities
             )
             if server_payloads:
                 openai_tools.extend(server_payloads)
@@ -794,7 +820,7 @@ class OpenAITextHandler(BaseTextHandler):
     def parse_text_response(
         self,
         adapter: BaseAdapter,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         response_json: dict[str, Any],
         is_advanced: bool = False,
     ) -> ResponseData:
@@ -841,10 +867,10 @@ class OpenAIResponsesTextHandler(OpenAITextHandler):
         self.parser = ResponsesResponseParser()
 
     def _build_base_body(
-        self, model: LLMModelBase, messages: list[Any]
+        self, identity: ModelIdentity, messages: list[Any]
     ) -> dict[str, Any]:
         return {
-            "model": model.model_name,
+            "model": identity.model_name,
             "input": messages,
         }
 
@@ -855,19 +881,20 @@ class OpenAIEmbeddingHandler(BaseEmbeddingHandler):
     async def prepare_embedding_request(
         self,
         adapter: BaseAdapter,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         api_key: str,
-        batch: EmbedBatch,
-        config: LLMEmbeddingConfig,
+        request: EmbeddingRequest,
     ) -> RequestData:
-        texts = batch.to_text_only(f"{model.model_name} (API: {adapter.api_type})")
+        batch = request.batch
+        config = request.config or LLMEmbeddingConfig()
+        texts = batch.to_text_only(f"{identity.model_name} (API: {adapter.api_type})")
 
-        endpoint = getattr(adapter, "get_embedding_endpoint")(model)
-        url = adapter.get_api_url(model, endpoint)
+        endpoint = getattr(adapter, "get_embedding_endpoint")(identity)
+        url = adapter.get_api_url(identity, endpoint)
         headers = adapter.get_base_headers(api_key)
 
         body = {
-            "model": model.model_name,
+            "model": identity.model_name,
             "input": texts,
         }
 
@@ -887,9 +914,8 @@ class OpenAIEmbeddingHandler(BaseEmbeddingHandler):
         try:
             data = response_json.get("data", [])
             if not data:
-                raise LLMException(
+                raise ResponseParseException(
                     "嵌入响应中没有数据",
-                    code=LLMErrorCode.EMBEDDING_FAILED,
                     details=response_json,
                 )
             embeddings = []
@@ -897,17 +923,15 @@ class OpenAIEmbeddingHandler(BaseEmbeddingHandler):
                 if "embedding" in item:
                     embeddings.append(item["embedding"])
                 else:
-                    raise LLMException(
+                    raise ResponseParseException(
                         "嵌入响应格式错误：缺少embedding字段",
-                        code=LLMErrorCode.EMBEDDING_FAILED,
                         details=item,
                     )
             return embeddings
         except Exception as e:
             logger.error(f"解析嵌入响应失败: {e}", e=e)
-            raise LLMException(
+            raise ResponseParseException(
                 f"解析嵌入响应失败: {e}",
-                code=LLMErrorCode.EMBEDDING_FAILED,
                 cause=e,
             )
 
@@ -918,16 +942,17 @@ class OpenAIImageHandler(BaseImageHandler):
     def prepare_image_request(
         self,
         adapter: BaseAdapter,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         api_key: str,
-        prompt: str,
-        images: list[Any] | None = None,
-        config: GenerationConfig | None = None,
+        request: ImageRequest,
     ) -> RequestData:
         headers = adapter.get_base_headers(api_key)
+        prompt = request.prompt
+        images = request.images
+        config = request.config
 
         body: dict[str, Any] = {
-            "model": model.model_name,
+            "model": identity.model_name,
             "prompt": prompt,
             "response_format": "b64_json",
         }
@@ -970,11 +995,11 @@ class OpenAIImageHandler(BaseImageHandler):
 
         if not images:
             endpoint = "/v1/images/generations"
-            url = adapter.get_api_url(model, endpoint)
+            url = adapter.get_api_url(identity, endpoint)
             return RequestData(url=url, headers=headers, body=body)
         else:
             endpoint = "/v1/images/edits"
-            url = adapter.get_api_url(model, endpoint)
+            url = adapter.get_api_url(identity, endpoint)
             files = []
             file_key = "image[]" if len(images) > 1 else "image"
 
@@ -990,10 +1015,8 @@ class OpenAIImageHandler(BaseImageHandler):
                     b64_data = img_source.split(",", 1)[1]
                     img_bytes = base64.b64decode(b64_data)
                 else:
-                    raise LLMException(
+                    raise InvalidRequestException(
                         "OpenAI 图像编辑仅支持 bytes/Path/base64 URI",
-                        code=LLMErrorCode.INVALID_PARAMETER,
-                        recoverable=False,
                     )
 
                 files.append((file_key, (f"image_{i}.png", img_bytes, "image/png")))
@@ -1034,7 +1057,7 @@ class OpenAIImageHandler(BaseImageHandler):
                 content_parts.append(ImagePart(path=img))
 
         if not content_parts:
-            raise LLMException("OpenAI 图像生成响应中未找到有效的图片数据")
+            raise ResponseParseException("OpenAI 图像生成响应中未找到有效的图片数据")
 
         return ResponseData(
             content_parts=content_parts,
@@ -1048,28 +1071,26 @@ class OpenAIRerankHandler(BaseRerankHandler):
     def prepare_rerank_request(
         self,
         adapter: BaseAdapter,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         api_key: str,
-        query: str,
-        documents: list[str | dict[str, str]],
-        top_n: int,
+        request: RerankRequest,
     ) -> RequestData:
         endpoint = "/v1/rerank"
-        url = adapter.get_api_url(model, endpoint)
+        url = adapter.get_api_url(identity, endpoint)
         headers = adapter.get_base_headers(api_key)
 
         safe_documents = []
-        for doc in documents:
+        for doc in request.documents:
             if isinstance(doc, dict):
                 safe_documents.append(doc.get("text", str(doc)))
             else:
                 safe_documents.append(str(doc))
 
         body = {
-            "model": model.model_name,
-            "query": query,
+            "model": identity.model_name,
+            "query": request.query,
             "documents": safe_documents,
-            "top_n": top_n,
+            "top_n": request.top_n,
         }
         return RequestData(url=url, headers=headers, body=body)
 
@@ -1101,26 +1122,29 @@ class OpenAIAudioHandler(BaseAudioHandler):
     def prepare_speech_request(
         self,
         adapter: BaseAdapter,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         api_key: str,
-        input_text: str,
-        voice: str,
-        config: TTSConfig,
+        request: SpeechRequest,
     ) -> RequestData:
         endpoint = "/v1/audio/speech"
-        url = adapter.get_api_url(model, endpoint)
+        url = adapter.get_api_url(identity, endpoint)
         headers = adapter.get_base_headers(api_key)
         body = {
-            "model": model.model_name,
-            "input": input_text,
-            "voice": voice,
-            "response_format": config.response_format,
-            "speed": config.speed,
+            "model": identity.model_name,
+            "input": request.input_text,
+            "voice": request.voice,
+            "response_format": request.config.response_format
+            if request.config
+            else "mp3",
+            "speed": request.config.speed if request.config else 1.0,
         }
         return RequestData(url=url, headers=headers, body=body)
 
     async def parse_speech_response(
-        self, adapter: BaseAdapter, model: LLMModelBase, raw_response: httpx.Response
+        self,
+        adapter: BaseAdapter,
+        identity: ModelIdentity,
+        raw_response: httpx.Response,
     ) -> AudioResponse:
         from zhenxun.services.ai.core.messages import AudioResponse, UsageInfo
 
@@ -1129,7 +1153,7 @@ class OpenAIAudioHandler(BaseAudioHandler):
             audio_bytes=audio_bytes,
             audio_format="mp3",
             usage=UsageInfo(),
-            model_name=model.model_name,
+            model_name=identity.model_name,
         )
 
 
@@ -1146,8 +1170,8 @@ class CompositeOpenAITextHandler(BaseTextHandler):
             api_type="openai_responses"
         )
 
-    def _get_active_handler(self, model: LLMModelBase) -> BaseTextHandler:
-        current_api_type = model._get_effective_api_type()
+    def _get_active_handler(self, identity: ModelIdentity) -> BaseTextHandler:
+        current_api_type = identity.api_type
         if current_api_type == "openai_responses":
             return self._responses_handler
         return self._standard_handler
@@ -1155,24 +1179,21 @@ class CompositeOpenAITextHandler(BaseTextHandler):
     async def prepare_text_request(
         self,
         adapter: BaseAdapter,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         api_key: str,
-        messages: list[LLMMessage],
-        config: GenerationConfig | None = None,
-        tools: list[Any] | None = None,
-        tool_choice: ToolChoice | str | dict[str, Any] | None = None,
+        request: ChatRequest,
     ) -> RequestData:
-        handler = self._get_active_handler(model)
-        return await handler.prepare_text_request(
-            adapter, model, api_key, messages, config, tools, tool_choice
-        )
+        handler = self._get_active_handler(identity)
+        return await handler.prepare_text_request(adapter, identity, api_key, request)
 
     def parse_text_response(
         self,
         adapter: BaseAdapter,
-        model: LLMModelBase,
+        identity: ModelIdentity,
         response_json: dict[str, Any],
         is_advanced: bool = False,
     ) -> ResponseData:
-        handler = self._get_active_handler(model)
-        return handler.parse_text_response(adapter, model, response_json, is_advanced)
+        handler = self._get_active_handler(identity)
+        return handler.parse_text_response(
+            adapter, identity, response_json, is_advanced
+        )

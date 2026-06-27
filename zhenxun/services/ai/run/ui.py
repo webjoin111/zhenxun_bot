@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING, Any
 
 from nonebot_plugin_alconna import UniMessage
 
-from zhenxun.services.ai.core.stream_events import ToolStreamChunk
+from zhenxun.services.ai.core.events import ToolStreamChunk
 
 if TYPE_CHECKING:
     from zhenxun.services.ai.run.context import RunContext
@@ -78,3 +78,37 @@ class UIController:
                     metadata={"display": display},
                 )
             )
+
+    @staticmethod
+    async def handle_control_flow_exit_display(
+        e: BaseException, context: "RunContext | None", reply_to: bool = False
+    ) -> None:
+        """统一处理 ControlFlowExit 异常带来的 UI 反馈逻辑"""
+        from zhenxun.services.ai.core.exceptions import ControlFlowExit
+
+        if not isinstance(e, ControlFlowExit):
+            return
+
+        display_msg = getattr(e, "display", None) or getattr(e, "display_content", None)
+        if not display_msg:
+            return
+
+        try:
+            from nonebot_plugin_alconna import UniMessage
+
+            bot = context.get_bot() if context else None
+            event = context.get_event() if context else None
+
+            if bot and event:
+                if isinstance(display_msg, UniMessage):
+                    await display_msg.send(event, bot=bot, reply_to=reply_to)
+                else:
+                    await bot.send(event, str(display_msg))
+            else:
+                from zhenxun.utils.message import MessageUtils
+
+                await MessageUtils.build_message(str(display_msg)).send(
+                    reply_to=reply_to
+                )
+        except Exception:
+            pass

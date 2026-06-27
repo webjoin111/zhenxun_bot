@@ -1,73 +1,76 @@
-from __future__ import annotations
-
-from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import Protocol, runtime_checkable
 
 from zhenxun.services.ai.core.messages import (
     AudioResponse,
-    EmbedBatch,
+    ChatRequest,
+    ChatResponse,
+    EmbeddingRequest,
     EmbeddingResponse,
-    LLMMessage,
-    LLMResponse,
+    ImageRequest,
+    ImageResponse,
+    RerankRequest,
+    RerankResponse,
+    SpeechRequest,
 )
-from zhenxun.services.ai.core.models import ModelCapabilities, ModelDetail, ToolChoice
-from zhenxun.services.ai.core.options import (
-    GenerationConfig,
-    LLMEmbeddingConfig,
-    TTSConfig,
-)
-
-if TYPE_CHECKING:
-    from zhenxun.services.ai.run.models import CancellationToken
+from zhenxun.services.ai.core.models import CancellationToken
 
 
-class LLMModelBase(ABC):
-    """底层 LLM 模型抽象基类"""
+@runtime_checkable
+class SupportsChat(Protocol):
+    """支持文本/多模态对话生成的协议"""
 
-    provider_name: str
-    model_name: str
-    api_type: str
-    api_base: str | None
-    path_prefix: str | None
-    model_detail: ModelDetail
-    capabilities: ModelCapabilities
-    health_manager: Any
-    engine: Any
-    _generation_config: GenerationConfig | None
-
-    @abstractmethod
-    def _get_effective_api_type(self) -> str:
-        pass
-
-    @abstractmethod
     async def generate_response(
         self,
-        messages: list[LLMMessage],
-        config: GenerationConfig | None = None,
-        tools: list[Any] | None = None,
-        tool_choice: str | dict[str, Any] | ToolChoice | None = None,
-        timeout: float | None = None,
-        extra: dict[str, Any] | None = None,
-        cancellation_token: "CancellationToken | None" = None,
-    ) -> LLMResponse:
-        """生成高级响应"""
-        pass
+        request: ChatRequest,
+        cancellation_token: CancellationToken | None = None,
+    ) -> ChatResponse:
+        """生成文本或多模态对话的回复。"""
+        ...
 
-    @abstractmethod
-    async def generate_speech(
-        self,
-        input_text: str,
-        voice: str,
-        config: TTSConfig | None = None,
-    ) -> AudioResponse:
-        """生成语音"""
-        pass
 
-    @abstractmethod
+@runtime_checkable
+class SupportsTextEmbedding(Protocol):
+    """支持文本/多模态向量嵌入的协议"""
+
     async def generate_embeddings(
         self,
-        batch: EmbedBatch,
-        config: LLMEmbeddingConfig | None = None,
+        request: EmbeddingRequest,
     ) -> EmbeddingResponse:
-        """生成文本或多模态嵌入向量"""
-        pass
+        """生成文本或多模态向量嵌入。"""
+        ...
+
+
+@runtime_checkable
+class SupportsSpeechSynthesis(Protocol):
+    """支持文本转语音(TTS)的协议"""
+
+    async def generate_speech(
+        self,
+        request: SpeechRequest,
+    ) -> AudioResponse:
+        """将文本转换为语音（TTS）。"""
+        ...
+
+
+@runtime_checkable
+class SupportsReranking(Protocol):
+    """支持文档交叉注意力重排的协议"""
+
+    async def rerank(
+        self,
+        request: RerankRequest,
+    ) -> RerankResponse:
+        """对候选文档进行交叉注意力重排。"""
+        ...
+
+
+@runtime_checkable
+class SupportsImageGeneration(Protocol):
+    """支持图像生成与编辑的协议"""
+
+    async def generate_image(
+        self,
+        request: ImageRequest,
+    ) -> ImageResponse:
+        """根据请求生成或编辑图像。"""
+        ...

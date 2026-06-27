@@ -174,8 +174,6 @@ driver = nonebot.get_driver()
 async def _startup_sandboxes():
     clients = SandboxRegistry.get_all_clients()
     if "docker" in clients:
-        import asyncio
-
         from .drivers.docker import DockerSandboxClient
 
         async def _delayed_silent_cleanup():

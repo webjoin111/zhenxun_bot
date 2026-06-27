@@ -1,11 +1,13 @@
-from contextlib import AsyncExitStack, asynccontextmanager
+from collections.abc import Callable
 import copy
 import inspect
-from typing import Any
+from typing import Any, cast
 
 from nonebot.utils import is_coroutine_callable
 
 from zhenxun.services.ai.capabilities import CombinedCapability
+from zhenxun.services.ai.context.memory.models import MemoryConfig
+from zhenxun.services.ai.core.options import GenerationConfig
 from zhenxun.services.ai.core.templates import PromptTemplate
 from zhenxun.services.ai.flow.agent.models import Persona
 from zhenxun.services.ai.run import RunContext
@@ -15,6 +17,106 @@ from zhenxun.services.ai.tools.engine.registry import (
     tool_provider_manager,
 )
 from zhenxun.services.ai.tools.models import GlobalToolFilter, ResolvedToolPayload
+from zhenxun.utils.pydantic_compat import model_copy
+
+
+class AgentProfileResolver:
+    """Agent 配置解析器：负责提取与合并 Agent 的运行时 Profile"""
+
+    @staticmethod
+    def resolve_memory(
+        agent_memory_config: MemoryConfig, override_memory: Any | None
+    ) -> MemoryConfig:
+        from zhenxun.services.ai.context.memory.builder import MemoryBuilder
+
+        if override_memory is not None:
+            return MemoryBuilder.resolve(override_memory)
+        return model_copy(agent_memory_config, deep=True)
+
+    @staticmethod
+    def resolve_generation_config(
+        base_config: GenerationConfig,
+        cap_config: GenerationConfig | None,
+        profile_config: GenerationConfig | None,
+    ) -> GenerationConfig:
+
+        final_gen_config = model_copy(base_config, deep=True)
+        if cap_config:
+            final_gen_config = final_gen_config.merge_with(cap_config)
+        if profile_config:
+            final_gen_config = final_gen_config.merge_with(profile_config)
+        return final_gen_config
+
+
+class CapabilityBuilder:
+    """拦截器能力组装器：负责合并 Agent, Task, Profile 和全局的中间件"""
+
+    @staticmethod
+    async def build_for_run(
+        agent_name: str,
+        namespace: str,
+        output_type: Any | None,
+        raw_schema: dict | None,
+        agent_guardrails: list,
+        task_guardrails: list,
+        task_obj: Any | None,
+        agent_capabilities: list,
+        profile_capabilities: list | None,
+        context: RunContext,
+    ) -> CombinedCapability:
+
+        from zhenxun.services.ai.capabilities import (
+            AbstractCapability,
+            DynamicCapability,
+        )
+        from zhenxun.services.ai.flow.agent.capabilities import (
+            OutputValidationCapability,
+            TaskTrackingCapability,
+        )
+
+        dynamic_caps = []
+        combined_guardrails = agent_guardrails + task_guardrails
+
+        if output_type is not None and output_type is not str:
+            dynamic_caps.append(
+                OutputValidationCapability(output_type, combined_guardrails)
+            )
+        elif raw_schema is not None:
+            dynamic_caps.append(
+                OutputValidationCapability(
+                    None, combined_guardrails, raw_schema=raw_schema
+                )
+            )
+        elif combined_guardrails:
+            dynamic_caps.append(OutputValidationCapability(None, combined_guardrails))
+
+        if task_obj:
+            dynamic_caps.append(TaskTrackingCapability(task_obj, agent_name))
+
+        run_level_caps = []
+        if profile_capabilities:
+            for cap in profile_capabilities:
+                if isinstance(cap, AbstractCapability):
+                    run_level_caps.append(cap)
+                elif callable(cap):
+                    run_level_caps.append(DynamicCapability(cap))
+
+        from zhenxun.services.ai.run import (
+            GLOBAL_CAPABILITIES,
+        )
+
+        base_caps = GLOBAL_CAPABILITIES.get("global", []).copy()
+        if namespace != "global" and namespace in GLOBAL_CAPABILITIES:
+            base_caps.extend(GLOBAL_CAPABILITIES[namespace])
+
+        combined_cap = CombinedCapability(
+            base_caps
+            + getattr(context, "capabilities", [])
+            + agent_capabilities
+            + run_level_caps
+            + dynamic_caps
+        )
+        return cast(CombinedCapability, await combined_cap.for_run(context))
 
 
 class ContextBuilder:
@@ -27,11 +129,12 @@ class ContextBuilder:
         run_context: RunContext,
         run_scoped_cap: CombinedCapability,
         persona: Persona | None = None,
-    ) -> tuple[str, str]:
-        """解析提示词，返回 (静态系统提示词, 动态状态提示词) 元组"""
+    ) -> tuple[str, list[Any]]:
+        """解析提示词，返回 (静态系统提示词文本, 动态独立消息列表) 元组"""
+        from zhenxun.services.ai.core.messages import LLMMessage
+
         static_instructions = []
-        dynamic_instructions = []
-        sp_results = []
+        dynamic_messages = []
 
         for sp_func in system_prompts:
             sig = inspect.signature(sp_func)
@@ -49,7 +152,19 @@ class ContextBuilder:
             else:
                 res = (await sp_func()) if is_coroutine_callable(sp_func) else sp_func()
             if res:
-                sp_results.append(str(res))
+                if isinstance(res, LLMMessage):
+                    dynamic_messages.append(res)
+                elif isinstance(res, list) and all(
+                    isinstance(m, LLMMessage) for m in res
+                ):
+                    dynamic_messages.extend(res)
+                else:
+                    if isinstance(res, list):
+                        for item in res:
+                            if item:
+                                dynamic_messages.append(LLMMessage.system(str(item)))
+                    else:
+                        dynamic_messages.append(LLMMessage.system(str(res)))
 
         if persona:
             persona_parts = [
@@ -69,8 +184,6 @@ class ContextBuilder:
             else:
                 static_instructions.append(str(instruction))
 
-        dynamic_instructions.extend(sp_results)
-
         caps = (
             run_scoped_cap.capabilities
             if run_scoped_cap
@@ -78,10 +191,11 @@ class ContextBuilder:
         )
         for cap in caps:
             cap_prompts = await cap.get_system_prompts(run_context)
-            dynamic_instructions.extend(cap_prompts)
+            for prompt_text in cap_prompts:
+                if prompt_text and prompt_text.strip():
+                    dynamic_messages.append(LLMMessage.system(prompt_text))
 
         static_text = "\n\n".join(static_instructions)
-        dynamic_text = "\n\n".join(dynamic_instructions)
 
         render_context = {
             "deps": run_context.deps,
@@ -92,9 +206,38 @@ class ContextBuilder:
         if run_context.state:
             render_context.update(run_context.state)
 
+        rendered_dynamic_messages = []
+        from zhenxun.services.ai.core.messages import TextPart
+
+        for msg in dynamic_messages:
+            if msg.role == "system":
+                new_content = []
+                changed = False
+                for part in msg.content:
+                    if isinstance(part, TextPart) and part.text:
+                        try:
+                            rendered_text = PromptTemplate(part.text).render(
+                                **render_context
+                            )
+                            new_content.append(TextPart(text=rendered_text))
+                            if rendered_text != part.text:
+                                changed = True
+                        except Exception:
+                            new_content.append(part)
+                    else:
+                        new_content.append(part)
+                if changed:
+                    new_msg = msg.model_copy(deep=True)
+                    new_msg.content = new_content
+                    rendered_dynamic_messages.append(new_msg)
+                else:
+                    rendered_dynamic_messages.append(msg)
+            else:
+                rendered_dynamic_messages.append(msg)
+
         return (
             PromptTemplate(static_text).render(**render_context),
-            PromptTemplate(dynamic_text).render(**render_context),
+            rendered_dynamic_messages,
         )
 
 
@@ -157,21 +300,10 @@ class ToolBuilder:
         return payload
 
     @staticmethod
-    @asynccontextmanager
-    async def mount_toolkits(toolkits: list[Any], session_id: str, context: RunContext):
-        """安全挂载工具箱的生命周期，保障资源被正确回收"""
-        async with AsyncExitStack() as stack:
-            for tk in toolkits:
-                if hasattr(tk, "enter_session"):
-                    await tk.enter_session(session_id, context)
-                    stack.push_async_callback(tk.exit_session, session_id)
-            yield
-
-    @staticmethod
     async def prepare_effective_tools(
         effective_tools: list[Any],
         context: RunContext,
-        agent_prepare_tools: Any,
+        tool_filters: list[Callable],
         run_scoped_cap: CombinedCapability,
     ) -> ToolCollection:
         """处理生命周期：在工具发往执行器前，进行最终的 Schema 拦截和清洗"""
@@ -182,14 +314,23 @@ class ToolBuilder:
                 if t_def:
                     current_tool_defs.append(t_def)
 
-        if agent_prepare_tools:
-            _res = (
-                await agent_prepare_tools(context, current_tool_defs)
-                if is_coroutine_callable(agent_prepare_tools)
-                else agent_prepare_tools(context, current_tool_defs)
-            )
-            if _res is not None:
-                current_tool_defs = list(_res)
+        if tool_filters:
+            for filter_func in tool_filters:
+                sig = inspect.signature(filter_func)
+                call_kwargs = {"tool_defs": current_tool_defs}
+                resolved_kwargs = await DependencyInjector.resolve_all(
+                    sig, call_kwargs, context
+                )
+                filtered_kwargs = {
+                    k: v for k, v in resolved_kwargs.items() if k in sig.parameters
+                }
+                _res = (
+                    await filter_func(**filtered_kwargs)
+                    if is_coroutine_callable(filter_func)
+                    else filter_func(**filtered_kwargs)
+                )
+                if _res is not None:
+                    current_tool_defs = list(_res)
 
         _cap_res = await run_scoped_cap.prepare_tools(context, current_tool_defs)
         if _cap_res is not None:
@@ -204,3 +345,92 @@ class ToolBuilder:
                 cloned_tool._dynamic_def = final_defs_map[t_name.lower()]
                 final_effective_tools.append(cloned_tool)
         return final_effective_tools
+
+
+class SessionBuilder:
+    """会话与记忆域构建器：负责隔离前缀计算和读写门面装配"""
+
+    @staticmethod
+    def build_session_and_memory(
+        context: RunContext,
+        namespace: str,
+        agent_name: str,
+        effective_memory: MemoryConfig,
+    ) -> tuple[Any, Any, Any]:
+        from zhenxun.services.ai.context.memory.engine import MemoryReader, MemoryWriter
+        from zhenxun.services.ai.context.memory.types import SessionMetadata
+        from zhenxun.services.ai.utils.scope import ScopeSelector
+
+        bot_id = None
+        bot_inst = context.get_bot()
+        if bot_inst and hasattr(bot_inst, "self_id"):
+            bot_id = str(bot_inst.self_id)
+
+        selector = ScopeSelector(
+            user_id=context.get_user_id(),
+            group_id=context.get_group_id(),
+            platform=context.get_platform(),
+            bot_id=bot_id,
+            namespace=namespace,
+            agent_name=agent_name,
+        )
+
+        all_scopes = {"/"}
+        scope_name_mapping = {}
+
+        if effective_memory.short_term and effective_memory.short_term.isolation:
+            sel = effective_memory.short_term.isolation.resolve(
+                deps=context.deps,
+                prefix="",
+                default_namespace=namespace,
+                default_agent=agent_name,
+            )
+            all_scopes.add(sel.scope_prefix)
+
+        for config_part in [effective_memory.slots, effective_memory.long_term]:
+            if config_part and hasattr(config_part, "scopes") and config_part.scopes:
+                for name, builder in config_part.scopes.items():
+                    sel = builder.resolve(
+                        deps=context.deps,
+                        prefix="",
+                        default_namespace=namespace,
+                        default_agent=agent_name,
+                    )
+                    all_scopes.add(sel.scope_prefix)
+                    scope_name_mapping[sel.scope_prefix] = name
+
+        parts = selector.get_scope_parts()
+        for i in range(len(parts)):
+            all_scopes.add("/" + "/".join(parts[: i + 1]))
+
+        accessible_scopes = sorted(all_scopes, key=lambda x: len(x.split("/")))
+
+        short_term_builder = (
+            effective_memory.short_term.isolation
+            if effective_memory.short_term
+            else effective_memory.base_isolation
+        )
+        short_term_selector = short_term_builder.resolve(
+            deps=context.deps,
+            prefix="",
+            default_namespace=namespace,
+            default_agent=agent_name,
+        )
+
+        session_metadata = SessionMetadata(
+            session_id=short_term_selector.scope_prefix,
+            selector=selector,
+            scope_prefix=selector.scope_prefix,
+            accessible_scopes=accessible_scopes,
+            scope_name_mapping=scope_name_mapping,
+        )
+        reader = MemoryReader(
+            session_meta=session_metadata, memory_config=effective_memory
+        )
+        writer = MemoryWriter(
+            session_meta=session_metadata,
+            memory_config=effective_memory,
+            context=context,
+        )
+
+        return session_metadata, reader, writer

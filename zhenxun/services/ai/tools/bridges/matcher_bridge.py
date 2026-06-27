@@ -25,6 +25,7 @@ from zhenxun.services.ai.tools.core.schema import build_schema_hint
 from zhenxun.services.ai.tools.core.tool import BaseTool
 from zhenxun.services.ai.tools.models import ToolOptions, ToolResult
 from zhenxun.services.log import logger
+from zhenxun.utils.pydantic_compat import model_validate
 
 
 class MatcherAdapter(ABC):
@@ -185,7 +186,7 @@ class AlconnaAdapter(MatcherAdapter):
         if self.command_formatter:
             try:
                 if self.args_schema:
-                    model_inst = self.args_schema.model_validate(kwargs)
+                    model_inst = model_validate(self.args_schema, kwargs)
                     argv = self.command_formatter(model_inst)
                 else:
                     argv = self.command_formatter(kwargs)
@@ -258,7 +259,7 @@ class NativeCommandAdapter(MatcherAdapter):
         if self.command_formatter:
             try:
                 if self.args_schema:
-                    model_inst = self.args_schema.model_validate(kwargs)
+                    model_inst = model_validate(self.args_schema, kwargs)
                     arg_str = self.command_formatter(model_inst)
                 else:
                     arg_str = self.command_formatter(kwargs)

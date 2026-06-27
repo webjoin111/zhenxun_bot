@@ -5,13 +5,13 @@ LLM 生成配置相关类和函数
 from typing import Any, Literal
 from typing_extensions import Self
 
-from zhenxun.services.ai.core.exceptions import LLMErrorCode, LLMException
-from zhenxun.services.ai.core.messages import ResponseFormat
+from zhenxun.services.ai.core.exceptions import ConfigurationException
 from zhenxun.services.ai.core.options import (
     GenerationConfig,
+    ResponseFormat,
 )
 from zhenxun.services.log import logger
-from zhenxun.utils.pydantic_compat import model_validate
+from zhenxun.utils.pydantic_compat import model_json_schema, model_validate
 
 
 class GeminiIntentNamespace:
@@ -40,18 +40,6 @@ class OpenAIIntentNamespace:
     def enable_server_storage(self, store: bool = True) -> "IntentBuilder":
         """设置是否在 OpenAI 服务端留存请求记录"""
         self._builder._config.openai_options.store = store
-        return self._builder
-
-
-class ClaudeIntentNamespace:
-    """Claude 专属高级参数构建域"""
-
-    def __init__(self, builder: "IntentBuilder"):
-        self._builder = builder
-
-    def set_beta_headers(self, headers: list[str]) -> "IntentBuilder":
-        """设置 Claude API 的特定 Beta 实验性 Header"""
-        self._builder._config.claude_options.beta_headers = headers
         return self._builder
 
 
@@ -85,38 +73,30 @@ class IntentBuilder:
         return OpenAIIntentNamespace(self)
 
     @property
-    def claude(self) -> ClaudeIntentNamespace:
-        return ClaudeIntentNamespace(self)
-
-    @property
     def deepseek(self) -> DeepSeekIntentNamespace:
         return DeepSeekIntentNamespace(self)
 
-    def with_reasoning(
-        self, level: str | None = None, budget: int | None = None
-    ) -> Self:
+    def with_reasoning(self, level: str | None = None) -> Self:
         """
-        跨厂商的思考/推理意图声明。
-        自动翻译为 OpenAI (reasoning_effort), Gemini (thinking_level, thinking_budget)
-        , Claude (effort, budget)
+        跨厂商统一的思考/推理等级意图声明。
+        自动向下转换为底层合法参数，并阻止不兼容模型的非法调用。
         """
         if level:
-            from typing import Literal, cast
+            self._config.common.reasoning_effort = level
+            if level.lower() != "none":
+                self._config.gemini_options.include_thoughts = True
+                self._config.deepseek_options.thinking = True
+            else:
+                self._config.deepseek_options.thinking = False
+        return self
 
-            self._config.openai_options.reasoning_effort = level
-            self._config.gemini_options.thinking_level = cast(
-                Literal["minimal", "low", "medium", "high"], level
-            )
-            self._config.claude_options.effort = cast(
-                Literal["low", "medium", "high", "xhigh", "max"], level
-            )
-        if budget is not None:
-            self._config.gemini_options.thinking_budget = budget
-            self._config.claude_options.thinking_budget_tokens = budget
-            self._config.claude_options.thinking_type = "adaptive"
-        if level or budget is not None:
-            self._config.gemini_options.include_thoughts = True
-            self._config.deepseek_options.thinking = True
+    def with_local_cache(self, ttl: int = 3600) -> Self:
+        """
+        显式开启本次 LLM 网络请求的极速本地缓存。
+        对于相同模型、相同参数、相同 Prompt 的请求，将直接返回本地记忆，免去网络开销。
+        适用于 Embedding、确定性的结构化抽取或工作流节点。
+        """
+        self._config.custom_kwargs["__cache_ttl__"] = ttl
         return self
 
     def with_json_output(self) -> Self:
@@ -138,7 +118,6 @@ class IntentBuilder:
         from pydantic import BaseModel
 
         from zhenxun.services.ai.core.options import StructuredOutputStrategy
-        from zhenxun.utils.pydantic_compat import model_json_schema
 
         self._config.output.response_format = ResponseFormat.JSON
         self._config.output.response_mime_type = "application/json"
@@ -215,9 +194,6 @@ class IntentBuilder:
         elif provider_name == "gemini":
             for k, v in kwargs.items():
                 setattr(self._config.gemini_options, k, v)
-        elif provider_name == "claude":
-            for k, v in kwargs.items():
-                setattr(self._config.claude_options, k, v)
         else:
             self._config.custom_kwargs.update(kwargs)
         return self
@@ -242,13 +218,11 @@ def validate_override_params(
             return model_validate(GenerationConfig, override_config)
         except Exception as e:
             logger.warning(f"覆盖配置参数验证失败: {e}")
-            raise LLMException(
+            raise ConfigurationException(
                 f"无效的覆盖配置参数: {e}",
-                code=LLMErrorCode.CONFIGURATION_ERROR,
                 cause=e,
             )
 
-    raise LLMException(
+    raise ConfigurationException(
         f"不支持的配置类型: {type(override_config)}",
-        code=LLMErrorCode.CONFIGURATION_ERROR,
     )

@@ -7,26 +7,29 @@ from __future__ import annotations
 import base64
 from collections.abc import Sequence
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 import time
 from typing import Annotated, Any, Generic, Literal, Union, cast
 from typing_extensions import Self, TypeVar
 
 from nonebot_plugin_alconna import UniMessage
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
-from zhenxun.utils.pydantic_compat import model_copy, model_dump
+from zhenxun.utils.pydantic_compat import (
+    model_copy,
+    model_dump,
+    model_validator,
+    parse_as,
+)
 
 T = TypeVar("T", bound=BaseModel)
 
-
-class ResponseFormat(Enum):
-    """响应格式枚举"""
-
-    TEXT = "text"
-    JSON = "json"
-    MULTIMODAL = "multimodal"
+from zhenxun.services.ai.core.models import ToolChoice
+from zhenxun.services.ai.core.options import (
+    GenerationConfig,
+    LLMEmbeddingConfig,
+    TTSConfig,
+)
 
 
 class BaseContentPart(BaseModel):
@@ -333,7 +336,16 @@ SystemContentUnion = TextPart
 UserContentUnion = TextPart | ImagePart | AudioPart | VideoPart | FilePart
 """用户消息允许的多模态内容片段联合类型"""
 
-AssistantContentUnion = TextPart | ThoughtPart | ToolCallPart | ToolReturnPart
+AssistantContentUnion = (
+    TextPart
+    | ThoughtPart
+    | ToolCallPart
+    | ToolReturnPart
+    | ImagePart
+    | AudioPart
+    | VideoPart
+    | FilePart
+)
 """助手回复允许的内容片段联合类型"""
 
 ToolContentUnion = ToolReturnPart | ImagePart | AudioPart | VideoPart | FilePart
@@ -723,9 +735,9 @@ class RerankResult(BaseModel):
     """实际被命中的文档数据"""
 
 
-class LLMResponse(BaseModel):
+class ChatResponse(BaseModel):
     """
-    LLM 响应对象，确立 SSOT (单一数据源) 架构。
+    文本/多模态对话响应对象，确立 SSOT (单一数据源) 架构。
     """
 
     content_parts: list[LLMContentPart] = Field(default_factory=list)
@@ -736,8 +748,6 @@ class LLMResponse(BaseModel):
     """完整的 API 层级原生响应字典 (未经框架清洗)"""
     grounding_metadata: Any | None = None
     """联网搜索、位置等基底事实归因元数据"""
-    cache_info: Any | None = None
-    """命中上下文缓存情况及信息"""
     parsed_obj: Any | None = Field(default=None)
     """在结构化输出模式下，由中间件反序列化得出的强类型 Pydantic 对象实例"""
 
@@ -755,7 +765,6 @@ class LLMResponse(BaseModel):
             return None
         if isinstance(self.parsed_obj, model_class):
             return self.parsed_obj
-        from zhenxun.utils.pydantic_compat import parse_as
 
         try:
             return parse_as(model_class, self.parsed_obj)
@@ -935,26 +944,162 @@ class AudioResponse(BaseModel):
     """实际执行任务的模型名称"""
 
 
+class ImageResponse(BaseModel):
+    """图像生成响应对象"""
+
+    content_parts: list[LLMContentPart] = Field(default_factory=list)
+    raw_response: dict[str, Any] | None = None
+
+    @property
+    def images(self) -> list[bytes | Path | str]:
+        """动态视图：提取响应中包含的所有图片数据"""
+        imgs = []
+        for p in self.content_parts:
+            if isinstance(p, ImagePart):
+                if p.url:
+                    imgs.append(p.url)
+                elif p.raw:
+                    imgs.append(p.raw)
+                elif p.path:
+                    imgs.append(p.path)
+        return imgs
+
+    @property
+    def text(self) -> str:
+        """动态视图：提取并拼接所有 TextPart 文本内容"""
+        return "".join(
+            p.text for p in self.content_parts if isinstance(p, TextPart)
+        ).strip()
+
+
+class RerankResponse(BaseModel):
+    """文本重排响应对象"""
+
+    results: list[RerankResult]
+
+
+class BaseRequest(BaseModel):
+    """基础请求 DTO"""
+
+    timeout: float | None = Field(default=None)
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    def get_cache_hash_payload(self) -> dict[str, Any]:
+        """获取用于计算缓存 Hash 的安全载荷，排除所有运行时动态变量"""
+        request_dict = model_dump(self, exclude_none=True)
+
+        if "config" in request_dict and isinstance(request_dict["config"], dict):
+            custom_kwargs = request_dict["config"].get("custom_kwargs", {})
+            if "__cache_ttl__" in custom_kwargs:
+                custom_kwargs.pop("__cache_ttl__")
+
+        if "extra" in request_dict:
+            request_dict["extra"] = {
+                k: v
+                for k, v in request_dict["extra"].items()
+                if not k.startswith("_")
+                and k not in ("run_context", "output_processor", "guardrails")
+            }
+        return request_dict
+
+
+class ChatRequest(BaseRequest):
+    """对话生成请求 DTO"""
+
+    messages: list[LLMMessage]
+    config: GenerationConfig | None = None
+    tools: list[Any] | None = None
+    tool_choice: str | dict[str, Any] | ToolChoice | None = None
+
+    def get_cache_hash_payload(self) -> dict[str, Any]:
+        payload = super().get_cache_hash_payload()
+        for msg in payload.get("messages", []):
+            msg.pop("created_at", None)
+            msg.pop("token_cost", None)
+            msg.pop("metadata", None)
+
+        if "tools" in payload and isinstance(payload["tools"], list):
+            safe_tools = []
+            for t in payload["tools"]:
+                if isinstance(t, dict | str):
+                    safe_tools.append(t)
+                else:
+                    safe_tools.append(getattr(t, "name", type(t).__name__))
+            payload["tools"] = safe_tools
+        return payload
+
+
+class EmbeddingRequest(BaseRequest):
+    """向量嵌入请求 DTO"""
+
+    batch: EmbedBatch
+    """向量嵌入的批次载体"""
+    config: LLMEmbeddingConfig | None = None
+    """向量嵌入配置"""
+
+
+class ImageRequest(BaseRequest):
+    """图像生成请求 DTO"""
+
+    prompt: str
+    """图像生成提示词"""
+    images: list[Any] | None = None
+    """输入参考图像列表"""
+    config: GenerationConfig | None = None
+    """图像生成配置"""
+
+
+class SpeechRequest(BaseRequest):
+    """语音合成请求 DTO"""
+
+    input_text: str
+    """待合成的文本内容"""
+    voice: str
+    """发音人/音色标识"""
+    config: TTSConfig | None = None
+    """语音合成配置"""
+
+
+class RerankRequest(BaseRequest):
+    """文本重排请求 DTO"""
+
+    query: str
+    """检索查询词"""
+    documents: list[str | dict[str, str]]
+    """待排序的候选文档列表"""
+    top_n: int = 3
+    """返回的最相关文档数量"""
+
+
 __all__ = [
     "AnyLLMMessage",
     "AssistantMessage",
     "AudioPart",
     "AudioResponse",
+    "BaseRequest",
+    "ChatRequest",
+    "ChatResponse",
     "EmbedBatch",
     "EmbedPayload",
+    "EmbeddingRequest",
     "EmbeddingResponse",
     "FilePart",
     "ImagePart",
+    "ImageRequest",
+    "ImageResponse",
     "LLMCodeExecution",
     "LLMContentPart",
     "LLMGroundingAttribution",
     "LLMGroundingMetadata",
     "LLMMessage",
-    "LLMResponse",
     "PromptInput",
     "RerankDocument",
+    "RerankRequest",
+    "RerankResponse",
     "RerankResult",
-    "ResponseFormat",
+    "SpeechRequest",
     "SystemMessage",
     "TextPart",
     "ThoughtPart",

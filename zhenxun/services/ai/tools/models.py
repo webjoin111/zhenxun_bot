@@ -3,7 +3,6 @@
 """
 
 from dataclasses import dataclass, field
-from enum import Enum, auto
 import sys
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -22,59 +21,6 @@ from zhenxun.services.ai.run.context import RunContext
 
 if TYPE_CHECKING:
     from zhenxun.services.ai.tools.core.tool import BaseTool
-
-
-class ToolCategory(Enum):
-    """工具分类枚举"""
-
-    FILE_SYSTEM = auto()
-    NETWORK = auto()
-    SYSTEM_INFO = auto()
-    CALCULATION = auto()
-    DATA_PROCESSING = auto()
-    CUSTOM = auto()
-
-
-class ToolErrorType(StrEnum):
-    """结构化工具错误的类型枚举。"""
-
-    TOOL_NOT_FOUND = "ToolNotFound"
-    INVALID_ARGUMENTS = "InvalidArguments"
-    EXECUTION_ERROR = "ExecutionError"
-    USER_CANCELLATION = "UserCancellation"
-
-
-class ToolErrorResult(BaseModel):
-    """一个结构化的工具执行错误模型。"""
-
-    error_type: ToolErrorType = Field(...)
-    """错误的类型。"""
-    message: str = Field(...)
-    """对错误的详细描述。"""
-    is_retryable: bool = Field(False)
-    """指示这个错误是否可能通过重试解决。"""
-
-
-class CodeExecutionOutcome(StrEnum):
-    """代码执行结果状态枚举"""
-
-    OUTCOME_OK = "OUTCOME_OK"
-    OUTCOME_FAILED = "OUTCOME_FAILED"
-    OUTCOME_DEADLINE_EXCEEDED = "OUTCOME_DEADLINE_EXCEEDED"
-    OUTCOME_COMPILATION_ERROR = "OUTCOME_COMPILATION_ERROR"
-    OUTCOME_RUNTIME_ERROR = "OUTCOME_RUNTIME_ERROR"
-    OUTCOME_UNKNOWN = "OUTCOME_UNKNOWN"
-
-
-class TaskType(Enum):
-    """任务类型枚举"""
-
-    CHAT = "chat"
-    CODE = "code"
-    SEARCH = "search"
-    ANALYSIS = "analysis"
-    GENERATION = "generation"
-    MULTIMODAL = "multimodal"
 
 
 class ToolDirective(StrEnum):
@@ -104,8 +50,8 @@ class ToolResult(BaseModel):
     """是否发生了业务级别的错误"""
     is_retryable: bool = Field(default=True)
     """标记该错误是否允许大模型进行自愈反思重试"""
-    directive: ToolDirective = Field(default=ToolDirective.CONTINUE)
-    """工具控制流指示，框架将根据此状态机决定后续走向。"""
+    directive: ToolDirective | str = Field(default=ToolDirective.CONTINUE)
+    """工具控制流指示，框架将根据此状态机决定后续走向。支持系统内置枚举或自定义指令名。"""
 
     def show_to_user(self, display: Any) -> "ToolResult":
         """链式方法：将此结果或特定富文本推送到群聊前端渲染"""
@@ -213,25 +159,13 @@ class ToolResultChunk(BaseModel):
     """携带的附加数据 (如进度比例、图片等)"""
 
 
-@dataclass
-class ToolMetadata:
-    """工具元数据"""
-
-    name: str
-    description: str
-    category: ToolCategory
-    read_only: bool = True
-    destructive: bool = False
-    open_world: bool = False
-    parameters: dict[str, Any] = field(default_factory=dict)
-    required_params: list[str] = field(default_factory=list)
-
-
 class ToolOptions(BaseModel):
     """工具的高阶配置选项"""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    silent: bool = Field(default=False)
+    """是否静默执行，工具执行过程与结果不会作为界面流渲染给用户。"""
     strict: bool = Field(default=False)
     """是否开启严格的 JSON Schema 验证模式，开启后大模型的参数将不接受额外属性。"""
     max_usage_count: int | None = Field(default=None)
@@ -288,10 +222,8 @@ class ToolkitConfig(BaseModel):
     """允许注册的工具名白名单"""
     exclude: list[str] | None = Field(default=None)
     """排除注册的工具名黑名单"""
-    global_capabilities: list[Any] = Field(default_factory=list)
-    """全局拦截器"""
-    global_tags: list[str] = Field(default_factory=list)
-    """全局标签，该标签将被自动下发并注入到工具箱内的所有子工具中"""
+    shared_options: ToolOptions | None = Field(default=None)
+    """所有子工具默认继承的高阶配置项"""
 
 
 class ToolOverride(BaseModel):
@@ -371,17 +303,13 @@ class Query(BaseModel):
     用于在 Agent 中精确或批量筛选加载特定命名空间、特定标签的工具。
     """
 
-    name: str | None = Field(default=None, description="工具名称精确匹配")
+    name: str | None = Field(default=None)
     """如果提供，则必须与工具的名称完全一致。"""
-    tags: list[str] | None = Field(default=None, description="工具标签交集匹配 (AND)")
+    tags: list[str] | None = Field(default=None)
     """如果提供，则工具必须包含这里列出的所有标签 (交集/AND匹配)。"""
-    namespace: str | None = Field(
-        default=None, description="搜索的命名空间，'global' 代表所有"
-    )
+    namespace: str | None = Field(default=None)
     """必填(由系统补充或显式声明)。限制搜索的插件命名空间，'global' 将跨全插件搜索。"""
-    metadata_filter: dict[str, Any] | None = Field(
-        default=None, description="工具元数据精确匹配 (字典子集匹配)"
-    )
+    metadata_filter: dict[str, Any] | None = Field(default=None)
     """如果提供，则工具的 metadata 必须包含这里列出的所有键值对。"""
 
     def match(self, tool: "BaseTool") -> bool:
@@ -392,8 +320,12 @@ class Query(BaseModel):
                 return False
         if self.tags:
             tool_config = getattr(tool, "config", None)
-            if tool_config and hasattr(tool_config, "global_tags"):
-                tool_tags = tool_config.global_tags
+            if (
+                tool_config
+                and hasattr(tool_config, "shared_options")
+                and tool_config.shared_options
+            ):
+                tool_tags = tool_config.shared_options.tags
             else:
                 tool_settings = getattr(tool, "settings", None)
                 tool_tags = getattr(tool_settings, "tags", []) if tool_settings else []
@@ -423,14 +355,9 @@ class ResolvedToolPayload:
 
 
 __all__ = [
-    "CodeExecutionOutcome",
     "GlobalToolFilter",
     "Query",
     "ResolvedToolPayload",
-    "TaskType",
-    "ToolCategory",
-    "ToolErrorType",
-    "ToolMetadata",
     "ToolOptions",
     "ToolOverride",
     "ToolResult",

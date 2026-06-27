@@ -8,6 +8,7 @@
 
 import sys
 from types import ModuleType
+from typing import Any
 
 from zhenxun.services import logger
 
@@ -16,21 +17,22 @@ logger.warning(
     "为了更好的性能和兼容性，请及时更新您的插件导入路径。"
 )
 
+from pydantic import BaseModel, ConfigDict
+
 import zhenxun.services.ai.core
 import zhenxun.services.ai.core.exceptions
 import zhenxun.services.ai.core.messages
+from zhenxun.services.ai.core.messages import LLMContentPart, ToolCallPart
 import zhenxun.services.ai.core.models
+from zhenxun.services.ai.core.models import ToolDefinition
 import zhenxun.services.ai.core.options
 import zhenxun.services.ai.core.protocols
+from zhenxun.services.ai.core.protocols.tool import ToolExecutable
 import zhenxun.services.ai.llm
-import zhenxun.services.ai.llm.capabilities
-import zhenxun.services.ai.llm.config
-import zhenxun.services.ai.llm.config.generation
+import zhenxun.services.ai.llm.system.capabilities
+from zhenxun.services.ai.run import RunContext
 import zhenxun.services.ai.tools
-
-zhenxun.services.ai.llm.config.LLMGenerationConfig = (  # type: ignore
-    zhenxun.services.ai.core.options.GenerationConfig
-)
+from zhenxun.services.ai.tools.models import ToolResult
 
 _legacy_types_module = ModuleType("zhenxun.services.llm.types")
 for _mod in (
@@ -50,7 +52,7 @@ sys.modules["zhenxun.services.llm.types.exceptions"] = (
     zhenxun.services.ai.core.exceptions
 )
 sys.modules["zhenxun.services.llm.types.capabilities"] = (
-    zhenxun.services.ai.llm.capabilities
+    zhenxun.services.ai.llm.system.capabilities
 )
 
 prefix_old = "zhenxun.services.llm"
@@ -65,12 +67,100 @@ for module_name, module_obj in list(sys.modules.items()):
 sys.modules["zhenxun.services.llm.tools"] = zhenxun.services.ai.tools
 
 
+class LLMToolFunction(BaseModel):
+    name: str
+    arguments: str
+
+
+class LLMToolCall(BaseModel):
+    id: str
+    function: LLMToolFunction
+    thought_signature: str | None = None
+    type: str = "function"
+
+
+class _FakeFunction:
+    def __init__(self, name, args):
+        self.name = name
+        self.arguments = (
+            args
+            if isinstance(args, str)
+            else __import__("json").dumps(args, ensure_ascii=False)
+        )
+
+
+@property
+def _legacy_function(self) -> _FakeFunction:
+    return _FakeFunction(self.tool_name, self.args)
+
+
+setattr(ToolCallPart, "function", _legacy_function)  # type: ignore
+
+from zhenxun.services.ai.core.messages import LLMMessage
+
+_original_assistant_tool_calls = LLMMessage.assistant_tool_calls
+
+
+@classmethod
+def _shim_assistant_tool_calls(
+    cls, tool_calls: Any, content: Any = "", scope: Any = None
+) -> Any:
+    converted = []
+    for tc in tool_calls:
+        if hasattr(tc, "function") and not isinstance(tc, ToolCallPart):
+            converted.append(
+                ToolCallPart(
+                    id=tc.id, tool_name=tc.function.name, args=tc.function.arguments
+                )
+            )
+        else:
+            converted.append(tc)
+    return _original_assistant_tool_calls(converted, content, scope)  # type: ignore
+
+
+setattr(LLMMessage, "assistant_tool_calls", _shim_assistant_tool_calls)  # type: ignore
+
+from zhenxun.services.ai.core.options import GenerationConfig, ReasoningEffort
+
+mod_config_gen = ModuleType("zhenxun.services.llm.config.generation")
+sys.modules["zhenxun.services.llm.config"] = ModuleType("zhenxun.services.llm.config")
+sys.modules["zhenxun.services.llm.config.generation"] = mod_config_gen
+
+
+class ReasoningConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class ToolConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+setattr(mod_config_gen, "LLMGenerationConfig", GenerationConfig)  # type: ignore
+setattr(mod_config_gen, "ReasoningConfig", ReasoningConfig)  # type: ignore
+setattr(mod_config_gen, "ToolConfig", ToolConfig)  # type: ignore
+setattr(mod_config_gen, "ReasoningEffort", ReasoningEffort)  # type: ignore
+
+_target_models_mod = sys.modules["zhenxun.services.llm.types.models"]
+setattr(_target_models_mod, "ToolResult", ToolResult)  # type: ignore
+setattr(_target_models_mod, "LLMToolCall", LLMToolCall)  # type: ignore
+setattr(_target_models_mod, "LLMToolFunction", LLMToolFunction)  # type: ignore
+setattr(_target_models_mod, "LLMContentPart", LLMContentPart)  # type: ignore
+setattr(_target_models_mod, "ToolDefinition", ToolDefinition)  # type: ignore
+setattr(_target_models_mod, "LLMMessage", LLMMessage)  # type: ignore
+setattr(sys.modules["zhenxun.services.llm.tools"], "RunContext", RunContext)  # type: ignore
+setattr(
+    sys.modules["zhenxun.services.llm.types.protocols"],
+    "ToolExecutable",
+    ToolExecutable,
+)  # type: ignore
+
+
 class CommonOverrides:
     """向下兼容垫片：由于该类已被废弃，此处提供空实现以防止旧插件导入报错。"""
 
     @staticmethod
     def _fallback(*args, **kwargs):
-        from zhenxun.services.ai.llm.config.generation import IntentBuilder
+        from zhenxun.services.ai.llm.builder import IntentBuilder
 
         return IntentBuilder().build()
 
@@ -94,38 +184,101 @@ class OutputConfig(OutputFormatConfig):
 
 AIConfig = GenerationConfig
 LLMGenerationConfig = GenerationConfig
-zhenxun.services.ai.llm.config.generation.OutputConfig = OutputConfig  # type: ignore
 from zhenxun.services.ai.llm import *  # noqa: F403
 from zhenxun.services.ai.llm.manager import (
     get_default_model,
     get_model_instance,
     list_available_models,
     list_embedding_models,
-    set_global_default_model_name,
 )
 from zhenxun.services.ai.message_builder import MessageBuilder
 
 message_to_unimessage = MessageBuilder.message_to_unimessage
 unimsg_to_llm_parts = MessageBuilder.unimsg_to_llm_parts
 from zhenxun.services.ai.core.exceptions import LLMException
-from zhenxun.services.ai.core.messages import LLMMessage, LLMResponse
+from zhenxun.services.ai.core.messages import ChatRequest
+from zhenxun.services.ai.core.messages import ChatResponse as LLMResponse
+from zhenxun.services.ai.llm.api import generate_structured as _new_generate_structured
+from zhenxun.services.ai.llm.engine.router import LLMOrchestrator
 from zhenxun.services.ai.tools import tool as function_tool
 
+
+class AI:
+    """向下兼容垫片：代替被彻底删除的旧版 AI 类"""
+
+    def __init__(self, session_id=None, **kwargs):
+        self.session_id = session_id
+
+    async def generate_internal(
+        self,
+        messages,
+        model=None,
+        config=None,
+        tools=None,
+        tool_choice=None,
+        timeout=None,
+    ):
+        req = ChatRequest(
+            messages=messages,
+            config=config,
+            tools=tools,
+            tool_choice=tool_choice,
+            timeout=timeout,
+        )
+        if self.session_id:
+            req.extra["session_id"] = self.session_id
+        return await LLMOrchestrator.invoke(req, model_name=model, task="chat")
+
+    async def generate_structured(
+        self,
+        message,
+        response_model,
+        model=None,
+        tools=None,
+        tool_choice=None,
+        instruction=None,
+        timeout=None,
+        template_vars=None,
+        config=None,
+        max_validation_retries=None,
+        validation_callback=None,
+        error_prompt_template=None,
+        auto_thinking=False,
+    ):
+        return await _new_generate_structured(
+            message=message,
+            response_model=response_model,
+            model=model,
+            instruction=instruction,
+            timeout=timeout,
+            config=config,
+            max_retries=max_validation_retries,
+            error_prompt_template=error_prompt_template,
+        )
+
+
 __all__ = [
+    "AI",
     "AIConfig",
     "CommonOverrides",
     "GenerationConfig",
+    "LLMContentPart",
     "LLMException",
     "LLMGenerationConfig",
     "LLMMessage",
     "LLMResponse",
+    "LLMToolCall",
+    "LLMToolFunction",
     "OutputConfig",
+    "RunContext",
+    "ToolDefinition",
+    "ToolExecutable",
+    "ToolResult",
     "function_tool",
     "get_default_model",
     "get_model_instance",
     "list_available_models",
     "list_embedding_models",
     "message_to_unimessage",
-    "set_global_default_model_name",
     "unimsg_to_llm_parts",
 ]
