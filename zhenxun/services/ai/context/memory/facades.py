@@ -1,10 +1,11 @@
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal
 
 from zhenxun.services.ai.context.memory.types import (
     MemorySlot,
     SessionMetadata,
 )
-from zhenxun.services.ai.core.messages import LLMMessage
+from zhenxun.services.ai.core.messages import AgentMessage, LLMMessage
 
 if TYPE_CHECKING:
     from zhenxun.services.ai.context.memory.manager import GlobalMemoryManager
@@ -34,12 +35,15 @@ class ChatHistoryFacade:
         msgs = await self._backend.get_messages(self.session_meta)
         return msgs[-limit:] if limit else msgs
 
-    async def add(self, messages: list[LLMMessage] | LLMMessage) -> None:
+    async def add(self, messages: Sequence[AgentMessage] | AgentMessage) -> None:
         """向当前会话追加一条或多条历史消息"""
         if not self._backend:
             return
-        msgs = messages if isinstance(messages, list) else [messages]
-        await self._backend.add_messages(self.session_meta, msgs)
+        from zhenxun.services.ai.core.engine.context_renderer import ContextConverter
+        msgs = messages if isinstance(messages, Sequence) else [messages]
+        flattened = ContextConverter.flatten_to_llm_messages(msgs)
+        if flattened:
+            await self._backend.add_messages(self.session_meta, flattened)
 
     async def clear(self) -> None:
         """清空当前会话的短期对话历史"""

@@ -1,10 +1,11 @@
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 
 from zhenxun.services.ai.context.memory.types import (
     MemorySlot,
     SessionMetadata,
 )
-from zhenxun.services.ai.core.messages import LLMMessage
+from zhenxun.services.ai.core.messages import AgentMessage, LLMMessage
 from zhenxun.services.ai.run.context import RunContext
 from zhenxun.services.ai.utils.scope import ScopeSelector
 
@@ -105,5 +106,5 @@ class BaseMemoryIngestionMiddleware(ABC):
 
     @abstractmethod
     async def process(
-        self, messages: list[LLMMessage], context: RunContext
-    ) -> list[LLMMessage]: ...
+        self, messages: Sequence[AgentMessage], context: RunContext
+    ) -> list[AgentMessage]: ...

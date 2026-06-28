@@ -3,7 +3,9 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from zhenxun.services.ai.core.exceptions import (
+    AbortException,
     ControlFlowExit,
+    LLMException,
 )
 from zhenxun.services.ai.core.messages import UsageInfo
 from zhenxun.services.ai.flow.team.capabilities import TeamRoutingCapability
@@ -93,8 +95,6 @@ class TeamRunner:
                     else:
                         await queue.put(("yield_event", event))
         except ControlFlowExit as cfe:
-            from zhenxun.services.ai.core.exceptions import AbortException
-
             if isinstance(cfe, AbortException):
                 await queue.put(("control_flow_error", cfe))
                 return
@@ -105,8 +105,6 @@ class TeamRunner:
                 )
                 agent_res = AgentRunResult(output=str(cfe), usage=UsageInfo())
         except Exception as e:
-            from zhenxun.services.ai.core.exceptions import AbortException, LLMException
-
             logger.error(f"Agent {target_agent.name} 执行崩溃: {e}")
 
             if isinstance(e, LLMException):
@@ -126,12 +124,10 @@ class TeamRunner:
         if agent_res and agent_res.handoff:
             target_name = agent_res.handoff.target
             reason = agent_res.handoff.reason
-            ctx_data = agent_res.handoff.context_data
 
             logger.info(
                 f"🛣️ **路由决策**: 委派给专员 👨💼`{target_name}` (理由: {reason})"
             )
-            agent_res.output = f"__HANDOFF__:{target_name}|{reason}|{ctx_data}"
 
         if not agent_res:
             agent_res = AgentRunResult(

@@ -19,6 +19,7 @@ from nonebot_plugin_alconna.uniseg import (
 from PIL.Image import Image as PILImageType
 
 from zhenxun.services.ai.core.messages import (
+    AgentEvent,
     AudioPart,
     BaseContentPart,
     EmbedBatch,
@@ -343,6 +344,12 @@ class MessageBuilder:
                 converted_msgs = cast(list[LLMMessage], list(message))
             elif isinstance(message, str):
                 converted_msgs = [LLMMessage.user(message)]
+            elif isinstance(message, AgentEvent):
+                from zhenxun.services.ai.core.engine.context_renderer import (
+                    ContextConverter,
+                )
+
+                converted_msgs = ContextConverter.flatten_to_llm_messages([message])
             elif isinstance(message, list):
                 parts = []
                 for item in message:

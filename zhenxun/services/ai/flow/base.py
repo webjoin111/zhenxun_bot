@@ -45,6 +45,17 @@ class ConcurrencyScope(str, Enum):
     """会话互斥：跟随记忆 SessionID 进行物理锁隔离"""
 
 
+class InterventionPolicy(str, Enum):
+    """运行时消息干预策略枚举"""
+
+    IGNORE = "ignore"
+    """忽略干预：丢弃在任务执行期间收到的额外消息（默认）"""
+    STEER = "steer"
+    """动态转向：将额外消息立即注入到下一轮大模型推理历史中，影响其思考方向"""
+    FOLLOW_UP = "follow_up"
+    """追加执行：将额外消息放入队列，在当前大模型意图（所有工具等）执行完毕后追加推理"""
+
+
 class BaseRuntimeConfig(BaseModel):
     """所有可执行实体（Agent/Team/Workflow）的通用基础运行时配置"""
 
@@ -54,6 +65,8 @@ class BaseRuntimeConfig(BaseModel):
     """并发执行策略。如果未显式指定，无状态(stateless=True)默认为ALLOW，有状态(stateless=False)默认为QUEUE。"""
     concurrency_scope: ConcurrencyScope | None = Field(default=None)
     """并发作用域，决定锁的粒度。如果未显式指定，默认为 GROUP 级排队。"""
+    intervention_policy: InterventionPolicy | None = Field(default=None)
+    """运行时干预策略，决定在大模型执行期间接收到新消息时该如何处理数据流合并。"""
 
 
 class BaseRunnable(ABC, Generic[T_RunResult]):

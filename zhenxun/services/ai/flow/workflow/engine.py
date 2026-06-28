@@ -8,8 +8,9 @@ if TYPE_CHECKING:
     from zhenxun.services.ai.run import StreamedRunResult
 
 
-from zhenxun.services.ai.core.messages import PromptInput
-from zhenxun.services.ai.core.events import EventStreamer
+from zhenxun.services.ai.core.exceptions import ControlFlowExit, ToolRetryError
+from zhenxun.services.ai.core.messages import PromptInput, UsageInfo
+from zhenxun.services.ai.core.stream_events import EventStreamer
 from zhenxun.services.ai.flow.base import BaseRunnable, BaseRuntimeConfig
 from zhenxun.services.ai.flow.workflow.nodes import Steps
 from zhenxun.services.ai.flow.workflow.types import (
@@ -178,8 +179,6 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
             return self._build_result(initial_input, safe_context, final_output)
 
         except BaseException as e:
-            from zhenxun.services.ai.core.exceptions import ControlFlowExit
-
             if isinstance(e, ControlFlowExit):
                 logger.debug(f"⏭️ 工作流执行被业务控制流安全中止: {e}")
                 dummy_output = StepOutput(content=str(e), success=False)
@@ -252,7 +251,6 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
             if final_output:
                 logger.debug(f"🏭 **工作流 [{self.name}] 运行结束**")
 
-                from zhenxun.services.ai.core.messages import UsageInfo
                 from zhenxun.services.ai.run import AgentRunResult
                 from zhenxun.services.ai.run.models import AgentRunEnd
 
@@ -311,7 +309,6 @@ class Workflow(BaseRunnable[WorkflowRunResult]):
                 return (
                     f"工作流 [{self.name}] 执行完毕。最终流水线产出:\n{output.content}"
                 )
-            from zhenxun.services.ai.core.exceptions import ToolRetryError
 
             raise ToolRetryError(
                 f"工作流执行失败: {output.error if output else 'unknown'}，"

@@ -47,6 +47,9 @@ class BaseNode(ABC):
         """
         解析执行异常并应用容错策略
         """
+        if isinstance(e, asyncio.CancelledError):
+            raise e
+
         if isinstance(e, ControlFlowExit):
             logger.info(
                 f"⏭️ [控制流拦截] Node '{self.name}' 触发中断信号: "

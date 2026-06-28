@@ -7,6 +7,8 @@ import re
 from typing import Any
 
 from zhenxun.services.ai.core.messages import (
+    AgentEvent,
+    AgentMessage,
     AudioPart,
     FilePart,
     ImagePart,
@@ -100,14 +102,30 @@ class TokenCounter:
 
     @classmethod
     def count_context(
-        cls, messages: list[LLMMessage], model_name: str, base_overhead: int = 0
+        cls, messages: list[AgentMessage], model_name: str, base_overhead: int = 0
     ) -> int:
         """计算整个对话历史上下文的 Token 总和。"""
         if not messages:
             return base_overhead
-        return base_overhead + sum(
-            cls.count_message(msg, model_name) for msg in messages
-        )
+
+        total = base_overhead
+        for msg in messages:
+            if isinstance(msg, AgentEvent):
+                try:
+                    res = msg.to_llm_message(None)
+                    if res is None:
+                        continue
+                    if isinstance(res, str):
+                        total += cls.count_message(LLMMessage.system(res), model_name)
+                    elif isinstance(res, list):
+                        total += sum(cls.count_message(m, model_name) for m in res)
+                    elif isinstance(res, LLMMessage):
+                        total += cls.count_message(res, model_name)
+                except Exception:
+                    pass
+            else:
+                total += cls.count_message(msg, model_name)
+        return total
 
 
 token_counter = TokenCounter

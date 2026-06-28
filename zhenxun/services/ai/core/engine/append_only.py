@@ -158,16 +158,16 @@ class AppendOnlyContextManager:
 
     def _compute_digest(self, messages: list[Any]) -> int:
         """核心：计算消息列表 of 指纹，用于识别内容篡改。包含 role 与 content。"""
+        from zhenxun.services.ai.core.engine.context_renderer import ContextConverter
+
         payloads = []
-        for msg in messages:
-            if hasattr(msg, "model_dump"):
-                try:
-                    d = model_dump(msg, include={"role", "content"})
-                    payloads.append(d)
-                    continue
-                except Exception:
-                    pass
-            payloads.append(str(msg))
+        flattened = ContextConverter.flatten_to_llm_messages(messages)
+        for msg in flattened:
+            try:
+                d = model_dump(msg, include={"role", "content"})
+                payloads.append(d)
+            except Exception:
+                payloads.append(str(msg))
 
         def _default(obj):
             if isinstance(obj, bytes):

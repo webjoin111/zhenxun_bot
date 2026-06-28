@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from zhenxun.services.ai.context.memory.types import SessionMetadata
 from zhenxun.services.ai.core.messages import (
+    AgentMessage,
     ChatResponse,
     LLMMessage,
     ToolCallPart,
@@ -55,7 +56,7 @@ class AgentConfig(BaseRuntimeConfig):
     若为 None 则跟随全局设置。
     """
 
-    message_history: list[LLMMessage] | None = Field(default=None)
+    message_history: list[AgentMessage] | None = Field(default=None)
     """初始化的底层对话历史记录。"""
     tool_filter: GlobalToolFilter | None = Field(default=None)
     """全局工具过滤器，限制本次运行可用的工具池。"""
@@ -111,7 +112,7 @@ class AgentState(BaseModel):
     tools: ToolCollection | None = None
     """当前轮次生效的、已完成鉴权和过滤的工具集合"""
 
-    messages: list[LLMMessage] = Field(default_factory=list)
+    messages: list[AgentMessage] = Field(default_factory=list)
     """大模型将看到的完整历史消息列表 (执行历史)"""
     usage: UsageInfo = Field(default_factory=UsageInfo)
     """累计的 Token 消耗"""
@@ -132,7 +133,7 @@ class AgentState(BaseModel):
     current_cycle: int = 0
     """当前思考循环的轮次索引"""
 
-    current_request_messages: list[LLMMessage] = Field(default_factory=list)
+    current_request_messages: list[AgentMessage] = Field(default_factory=list)
     """当前即将发往大模型的实际请求消息"""
     current_request_extra: dict[str, Any] = Field(default_factory=dict)
     """当前请求附加的Extra控制参数"""

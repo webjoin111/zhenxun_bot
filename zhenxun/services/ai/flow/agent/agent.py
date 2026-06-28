@@ -2,10 +2,7 @@ import asyncio
 from collections.abc import AsyncIterator, Callable, Sequence
 import contextlib
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Generic, cast
-
-if TYPE_CHECKING:
-    from zhenxun.services.ai.flow.agent.engine.executor import BaseAgentExecutor
+from typing import Any, Generic, cast
 
 from zhenxun.services.ai.capabilities import (
     AbstractCapability,
@@ -14,18 +11,22 @@ from zhenxun.services.ai.capabilities import (
 from zhenxun.services.ai.context.knowledge.base import BaseKnowledge
 from zhenxun.services.ai.context.memory.builder import MemoryBuilder
 from zhenxun.services.ai.context.memory.models import MemoryConfig
-from zhenxun.services.ai.core.events import EventStreamer
 from zhenxun.services.ai.core.exceptions import (
+    ConcurrencyInterruptException,
     ControlFlowExit,
 )
 from zhenxun.services.ai.core.messages import (
+    LLMMessage,
     PromptInput,
+    UsageInfo,
 )
+from zhenxun.services.ai.core.models import CancellationToken
 from zhenxun.services.ai.core.options import (
     BaseOutputDefinition,
     GenerationConfig,
 )
 from zhenxun.services.ai.core.protocols.tool import ToolExecutable, ToolResolvable
+from zhenxun.services.ai.core.stream_events import EventStreamer
 from zhenxun.services.ai.core.templates import PromptTemplate
 from zhenxun.services.ai.flow.agent.engine.builders import ToolBuilder
 from zhenxun.services.ai.flow.agent.models import (
@@ -63,6 +64,8 @@ from zhenxun.utils.pydantic_compat import (
     parse_as,
 )
 from zhenxun.utils.utils import infer_plugin_namespace
+
+from .engine.executor import BaseAgentExecutor
 
 ToolSource = (
     Callable | BaseTool | dict[str, Any] | str | BaseToolkit | ToolResolvable | Query
@@ -197,6 +200,15 @@ class AgentBuilder(Generic[AgentDepsT, OutputDataT]):
         self._kwargs["generation_config"] = config
         return self
 
+    def with_intervention(self, policy: Any) -> "AgentBuilder[AgentDepsT, OutputDataT]":
+        """配置运行时消息干预策略。"""
+        if self._config is None:
+            self._config = AgentConfig()
+        elif isinstance(self._config, dict):
+            self._config = AgentConfig(**self._config)
+        self._config.intervention_policy = policy
+        return self
+
     def with_response_model(
         self, response_model: BaseOutputDefinition | type[Any]
     ) -> "AgentBuilder[AgentDepsT, Any]":
@@ -264,7 +276,7 @@ class AgentBuilder(Generic[AgentDepsT, OutputDataT]):
         return self
 
     def with_executor(
-        self, executor: "BaseAgentExecutor"
+        self, executor: BaseAgentExecutor
     ) -> "AgentBuilder[AgentDepsT, OutputDataT]":
         """
         配置核心思考大循环的执行策略。
@@ -328,7 +340,7 @@ class Agent(
         config: AgentConfig | dict | None = None,
         guardrails: list[GuardrailSource] | None = None,
         capabilities: list[CapabilitySource] | None = None,
-        executor: "BaseAgentExecutor | None" = None,
+        executor: BaseAgentExecutor | None = None,
         directive_handlers: dict[str, Any] | None = None,
     ):
         """
@@ -654,6 +666,8 @@ class Agent(
                 else ConcurrencyPolicy.QUEUE
             )
 
+        intervention_policy = getattr(self.config, "intervention_policy", None)
+
         from zhenxun.services.ai.utils import ContextUtils
 
         lock_id = ContextUtils.extract_concurrency_lock_id(
@@ -663,18 +677,19 @@ class Agent(
         )
 
         async def _execution_task():
-            from zhenxun.services.ai.core.models import CancellationToken
-            from zhenxun.services.ai.run.session import session_manager
+            from zhenxun.services.ai.flow.concurrency import apply_concurrency_policy
 
             cancel_token = safe_context.run.cancellation_token or CancellationToken()
             safe_context.run.cancellation_token = cancel_token
 
             try:
-                async with session_manager.apply_concurrency_policy(
+                async with apply_concurrency_policy(
                     session_id=safe_context.session_id or "default_session",
                     lock_id=lock_id,
                     policy=policy,
                     cancel_token=cancel_token,
+                    intervention_policy=intervention_policy,
+                    message=prompt,
                 ):
                     await streamer.send(AgentRunStart(agent_name=self.name))
                     result = await self._run_step(
@@ -689,10 +704,6 @@ class Agent(
             except ControlFlowExit as e:
                 await streamer.send(AgentRunError(error=e))
             except asyncio.CancelledError:
-                from zhenxun.services.ai.core.exceptions import (
-                    ConcurrencyInterruptException,
-                )
-
                 logger.debug(f"Agent {self.name} 执行被并发策略中断取消。")
                 await streamer.send(
                     AgentRunError(
@@ -859,8 +870,6 @@ class Agent(
             persona=cast(Persona | None, self.persona),
         )
 
-        from zhenxun.services.ai.core.messages import LLMMessage
-
         if reader:
             long_term_fact = await reader.get_long_term_context(
                 context.run.user_input or ""
@@ -905,6 +914,10 @@ class Agent(
             if reader
             else []
         )
+
+        if context.run.messages:
+            messages_for_run.extend(context.run.messages)
+
         if final_prompt_payload is not None:
             from zhenxun.services.ai.message_builder import MessageBuilder
 
@@ -931,7 +944,6 @@ class Agent(
         self, state: AgentState, resources: AgentRunResources
     ) -> AgentRunResult[OutputDataT]:
         """真正调度大模型执行器并执行记忆落盘"""
-        from zhenxun.services.ai.core.messages import UsageInfo
         from zhenxun.services.ai.flow.agent.engine.executor import StandardAgentExecutor
 
         context = resources.run_context

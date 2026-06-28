@@ -11,6 +11,7 @@ from nonebot.adapters import Bot, Event
 from nonebot.matcher import Matcher
 from pydantic import BaseModel, ConfigDict, Field
 
+from zhenxun.services.ai.core.messages import AgentEvent, AgentMessage
 from zhenxun.services.ai.utils import ContextUtils
 from zhenxun.utils.utils import infer_plugin_namespace
 
@@ -118,7 +119,7 @@ class AgentRunContext(Generic[AgentDepsT]):
     """当前实际调用的底层大模型名称 (Provider/Model)。"""
     user_input: str | None = None
     """当前轮次用户的原始文本输入。"""
-    messages: list[Any] = dataclasses.field(default_factory=list)
+    messages: list[AgentMessage] = dataclasses.field(default_factory=list)
     """大模型原生上下文 (LLMMessage 列表)，与执行器中的执行历史保持内存引用同步。"""
     hitl_locks: dict[str, asyncio.Lock] = dataclasses.field(default_factory=dict)
     """人机交互 (HITL) 并发锁，防止同群组内并发审批冲突。"""
@@ -140,6 +141,10 @@ class AgentRunContext(Generic[AgentDepsT]):
         dict_key = key or prompt
         if prompt:
             self.dynamic_prompts[dict_key] = prompt
+
+    def add_event(self, event: AgentEvent) -> None:
+        """向当前运行上下文中安全追加业务事件"""
+        self.messages.append(event)
 
 
 @dataclasses.dataclass

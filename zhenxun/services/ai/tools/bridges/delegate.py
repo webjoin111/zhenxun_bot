@@ -71,7 +71,7 @@ class DelegateTool(BaseTool):
                 display=f"⚠️ {self.name} 嵌套层级过深",
             )
 
-        logger.info(
+        logger.debug(
             f"🔄 [DelegateTool] 正在委派下级实体 {self.name} (Task: {task[:30]}...)"
         )
 

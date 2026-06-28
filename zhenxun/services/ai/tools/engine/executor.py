@@ -12,17 +12,17 @@ import json_repair
 from nonebot.adapters import Message as PlatformMessage
 
 from zhenxun.services.ai.capabilities import CombinedCapability
-from zhenxun.services.ai.core.events import (
-    EventStreamer,
-    ToolCallResultEvent,
-    ToolCallStart,
-    ToolStreamChunk,
-)
 from zhenxun.services.ai.core.exceptions import (
     ToolFatalError,
     ToolRetryError,
 )
 from zhenxun.services.ai.core.messages import AnyLLMMessage, LLMMessage, ToolCallPart
+from zhenxun.services.ai.core.stream_events import (
+    EventStreamer,
+    ToolCallResultEvent,
+    ToolCallStart,
+    ToolStreamChunk,
+)
 from zhenxun.services.ai.run.context import RunContext
 from zhenxun.services.ai.run.di import DependencyInjector
 from zhenxun.services.ai.tools.models import (
@@ -230,6 +230,8 @@ class ToolExecutor:
                 intent=intent_str,
             )
         except BaseException as e:
+            if isinstance(e, asyncio.CancelledError):
+                raise e
             return ValidatedToolCall(
                 call=tool_call,
                 tool=executable,
@@ -301,6 +303,8 @@ class ToolExecutor:
                     from zhenxun.services.ai.core.exceptions import ControlFlowExit
 
                     if isinstance(e, ControlFlowExit):
+                        raise e
+                    if isinstance(e, asyncio.CancelledError):
                         raise e
                     logger.error(f"洋葱模型异常穿透: {e}")
                     result = ToolResult(output=f"System Fatal Error: {e}").as_error()
@@ -382,6 +386,8 @@ class ToolExecutor:
                 from zhenxun.services.ai.core.exceptions import ControlFlowExit
 
                 if isinstance(result_pair, ControlFlowExit):
+                    raise result_pair
+                if isinstance(result_pair, asyncio.CancelledError):
                     raise result_pair
 
                 logger.error(f"工具批量执行并发崩溃: {func_name}, 错误: {result_pair}")

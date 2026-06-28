@@ -3,16 +3,18 @@ import asyncio
 import json
 from typing import Any, cast
 
+from zhenxun.services.ai.core.engine.context_renderer import ContextConverter
 from zhenxun.services.ai.core.engine.token_counter import (
     parse_usage_info,
     token_counter,
 )
-from zhenxun.services.ai.core.events import ToolStreamChunk
 from zhenxun.services.ai.core.exceptions import (
     ControlFlowExit,
     UpstreamServerException,
 )
 from zhenxun.services.ai.core.messages import (
+    AgentMessage,
+    AssistantContentUnion,
     AssistantMessage,
     AudioPart,
     ChatRequest,
@@ -25,7 +27,9 @@ from zhenxun.services.ai.core.messages import (
     ToolReturnPart,
     VideoPart,
 )
+from zhenxun.services.ai.core.models import LLMContext
 from zhenxun.services.ai.core.options import GenerationConfig
+from zhenxun.services.ai.core.stream_events import ToolStreamChunk
 from zhenxun.services.ai.flow.agent.engine.directive import (
     DirectiveHandlerFunc,
     directive_manager,
@@ -170,11 +174,27 @@ class StandardAgentExecutor(BaseAgentExecutor):
         """通过新版的专属字段直接判断是否允许重试"""
         return result.is_retryable
 
+    def _check_follow_up(
+        self, state: AgentState, resources: AgentRunResources, session_info: Any
+    ) -> bool:
+        """检查追加队列，排空并合并数据到上下文，返回是否发现新消息"""
+        follow_ups = session_info.follow_up_queue.drain()
+        if follow_ups:
+            for fm in follow_ups:
+                state.messages.append(LLMMessage.user(f"💬 [用户追加指示]：{fm}"))
+            resources.run_context.session.append_only_manager.sync_messages(
+                state.messages
+            )
+            state.is_finished = False
+            state.final_result = None
+            return True
+        return False
+
     async def _invoke_and_record_llm(
         self,
         state: AgentState,
         resources: AgentRunResources,
-        messages: list[LLMMessage],
+        messages: list[AgentMessage],
         tools: list[Any] | None,
         tool_choice: Any = None,
     ) -> ChatResponse:
@@ -186,9 +206,13 @@ class StandardAgentExecutor(BaseAgentExecutor):
         current_extra["__sys_capabilities"] = getattr(run_context, "capabilities", [])
         current_extra["run_context"] = run_context
 
+        flattened_messages = ContextConverter.flatten_to_llm_messages(
+            messages, run_context
+        )
+
         response = await self._execute_model_request(
             model_name=resources.model_name,
-            messages=messages,
+            messages=flattened_messages,
             config=resources.generation_config or GenerationConfig(),
             run_context=run_context,
             tools=tools,
@@ -207,8 +231,6 @@ class StandardAgentExecutor(BaseAgentExecutor):
                         part.metadata = {}
                     part.metadata["thought_signature"] = response.thought_signature
                     break
-
-        from zhenxun.services.ai.core.messages import AssistantContentUnion
 
         assistant_message = AssistantMessage(
             content=cast(list[AssistantContentUnion], response.content_parts)
@@ -242,7 +264,6 @@ class StandardAgentExecutor(BaseAgentExecutor):
         cancellation_token: Any = None,
     ) -> ChatResponse:
         from zhenxun.services.ai.capabilities import CombinedCapability
-        from zhenxun.services.ai.core.models import LLMContext
         from zhenxun.services.ai.llm.engine.router import LLMOrchestrator
 
         request = ChatRequest(
@@ -273,6 +294,61 @@ class StandardAgentExecutor(BaseAgentExecutor):
     async def on_start(self, state: AgentState, resources: AgentRunResources) -> None:
         resources.run_context.run.messages = state.messages
 
+    async def run(
+        self, state: AgentState, resources: AgentRunResources
+    ) -> AgentRunResult[Any]:
+        """覆盖基类的模板方法，实现灵活的 while 控制流和 FOLLOW_UP 合并"""
+        await self.on_start(state, resources)
+        from zhenxun.services.ai.run.session import session_manager
+
+        session_info = await session_manager.get_or_create(
+            resources.run_context.session_id or "default_session"
+        )
+
+        try:
+            cycle_count = 0
+            while cycle_count < resources.config.max_cycles:
+                state.current_cycle = cycle_count
+                await self.on_cycle_start(state, resources)
+
+                await self.build_llm_request(state, resources)
+                await self.execute_llm(state, resources)
+
+                await self.handle_llm_response(state, resources)
+                if state.is_finished:
+                    if self._check_follow_up(state, resources, session_info):
+                        cycle_count = 0
+                        continue
+                    assert state.final_result is not None
+                    return state.final_result
+
+                await self.filter_tool_calls(state, resources)
+                if state.is_finished:
+                    if self._check_follow_up(state, resources, session_info):
+                        cycle_count = 0
+                        continue
+                    assert state.final_result is not None
+                    return state.final_result
+
+                await self.execute_tools(state, resources)
+
+                await self.handle_tool_results(state, resources)
+                if state.is_finished:
+                    if self._check_follow_up(state, resources, session_info):
+                        cycle_count = 0
+                        continue
+                    assert state.final_result is not None
+                    return state.final_result
+
+                cycle_count += 1
+
+            if self._check_follow_up(state, resources, session_info):
+                return await self.run(state, resources)
+
+            return await self.on_fallback(state, resources)
+        except Exception as e:
+            raise e
+
     async def on_cycle_start(
         self, state: AgentState, resources: AgentRunResources
     ) -> None:
@@ -296,6 +372,17 @@ class StandardAgentExecutor(BaseAgentExecutor):
         self, state: AgentState, resources: AgentRunResources
     ) -> None:
         run_context = resources.run_context
+
+        from zhenxun.services.ai.run.session import session_manager
+
+        session_info = await session_manager.get_or_create(
+            run_context.session_id or "default_session"
+        )
+        steer_msgs = session_info.steer_queue.drain()
+        if steer_msgs:
+            for sm in steer_msgs:
+                state.messages.append(LLMMessage.user(f"💬 [用户实时修正指示]：{sm}"))
+            run_context.session.append_only_manager.sync_messages(state.messages)
 
         messages_to_send = []
         if state.static_system_prompt:

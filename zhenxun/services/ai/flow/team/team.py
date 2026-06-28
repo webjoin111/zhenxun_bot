@@ -1,28 +1,27 @@
 import asyncio
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from typing_extensions import Self
 
 from pydantic import BaseModel
 
 from zhenxun.services.ai.capabilities import AbstractCapability, DynamicCapability
-from zhenxun.services.ai.core.events import EventStreamer
+from zhenxun.services.ai.core.exceptions import ConcurrencyInterruptException
 from zhenxun.services.ai.core.messages import PromptInput
+from zhenxun.services.ai.core.models import CancellationToken
+from zhenxun.services.ai.core.stream_events import EventStreamer
+from zhenxun.services.ai.flow.agent.agent import CapabilitySource, ToolSource
+from zhenxun.services.ai.flow.agent.models import Persona
 from zhenxun.services.ai.flow.base import BaseRunnable
-from zhenxun.services.ai.flow.team.models import TeamRuntimeConfig
+from zhenxun.services.ai.flow.team.models import TeamRuntimeConfig, Transition
+from zhenxun.services.ai.flow.team.router import BaseRouter
 from zhenxun.services.ai.flow.team.strategy import (
     BaseTeamStrategy,
 )
 from zhenxun.services.ai.run import AgentRunResult, RunContext, Task
 from zhenxun.services.ai.tools.providers.skills.models import Skill, SkillSource
 from zhenxun.utils.utils import infer_plugin_namespace
-
-if TYPE_CHECKING:
-    from zhenxun.services.ai.flow.agent.agent import CapabilitySource, ToolSource
-    from zhenxun.services.ai.flow.agent.models import Persona
-    from zhenxun.services.ai.flow.team.models import Transition
-    from zhenxun.services.ai.flow.team.router import BaseRouter
 
 
 class Team(BaseRunnable[AgentRunResult[Any]]):
@@ -38,9 +37,9 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         model: str | Callable[[], str] | None = None,
         strategy: BaseTeamStrategy | None = None,
         description: str | None = None,
-        persona: "Persona | dict | None" = None,
+        persona: Persona | dict | None = None,
         runtime_config: TeamRuntimeConfig | dict | None = None,
-        capabilities: list["CapabilitySource"] | None = None,
+        capabilities: list[CapabilitySource] | None = None,
         skills: Sequence[str | Path | Skill | SkillSource] | None = None,
     ):
         """
@@ -109,12 +108,12 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
     def with_routing(
         self,
         state_flow: (
-            "Mapping[str, Sequence[Transition | str | Any]] | Callable | None"
+            Mapping[str, Sequence[Transition | str | Any]] | Callable | None
         ) = None,
         selector_func: Callable[..., str | None] | None = None,
-        router: "BaseRouter | None" = None,
+        router: BaseRouter | None = None,
         leader_model: str | None = None,
-        leader_tools: list["ToolSource"] | None = None,
+        leader_tools: list[ToolSource] | None = None,
         custom_prompt: str | None = None,
     ) -> Self:
         """
@@ -146,7 +145,7 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
     def with_coordination(
         self,
         leader_model: str | None = None,
-        leader_tools: list["ToolSource"] | None = None,
+        leader_tools: list[ToolSource] | None = None,
         custom_prompt: str | None = None,
     ) -> Self:
         """
@@ -172,7 +171,7 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
     def with_broadcast(
         self,
         leader_model: str | None = None,
-        leader_tools: list["ToolSource"] | None = None,
+        leader_tools: list[ToolSource] | None = None,
         custom_prompt: str | None = None,
     ) -> Self:
         """
@@ -197,7 +196,7 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
     def with_task(
         self,
         leader_model: str | None = None,
-        leader_tools: list["ToolSource"] | None = None,
+        leader_tools: list[ToolSource] | None = None,
         max_iterations: int = 15,
         blackboard_schema: type[BaseModel] | None = None,
         initial_blackboard_state: BaseModel | None = None,
@@ -243,7 +242,7 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         prompt: PromptInput | Task | None = None,
         *,
         context: "RunContext | None" = None,
-        capabilities: list["CapabilitySource"] | None = None,
+        capabilities: list[CapabilitySource] | None = None,
         skills: Sequence[str | Path | Skill | SkillSource] | None = None,
         **kwargs: Any,
     ) -> AgentRunResult[Any]:
@@ -282,7 +281,7 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         prompt: PromptInput | Task | None = None,
         *,
         context: "RunContext | None" = None,
-        capabilities: list["CapabilitySource"] | None = None,
+        capabilities: list[CapabilitySource] | None = None,
         skills: Sequence[str | Path | Skill | SkillSource] | None = None,
         **kwargs: Any,
     ):
@@ -332,6 +331,8 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
                 else ConcurrencyPolicy.QUEUE
             )
 
+        intervention_policy = getattr(self.runtime_config, "intervention_policy", None)
+
         from zhenxun.services.ai.utils import ContextUtils
 
         lock_id = ContextUtils.extract_concurrency_lock_id(
@@ -341,18 +342,19 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         )
 
         async def _execution_task():
-            from zhenxun.services.ai.core.models import CancellationToken
-            from zhenxun.services.ai.run.session import session_manager
+            from zhenxun.services.ai.flow.concurrency import apply_concurrency_policy
 
             cancel_token = context.run.cancellation_token or CancellationToken()
             context.run.cancellation_token = cancel_token
 
             try:
-                async with session_manager.apply_concurrency_policy(
+                async with apply_concurrency_policy(
                     session_id=context.session_id or "default_session",
                     lock_id=lock_id,
                     policy=policy,
                     cancel_token=cancel_token,
+                    intervention_policy=intervention_policy,
+                    message=prompt,
                 ):
                     async for event in runner.run_stream(prompt, context, **kwargs):
                         await streamer.send(event)
@@ -360,9 +362,6 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
                 from zhenxun.services.ai.run.models import AgentRunError
 
                 if isinstance(e, asyncio.CancelledError):
-                    from zhenxun.services.ai.core.exceptions import (
-                        ConcurrencyInterruptException,
-                    )
 
                     e = ConcurrencyInterruptException("团队执行已被新请求打断并接管")
                 await streamer.send(AgentRunError(error=e))

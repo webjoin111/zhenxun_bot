@@ -1,4 +1,5 @@
-from typing import Any
+from collections.abc import Sequence
+from typing import Any, cast
 
 from zhenxun.services.ai.context.memory.compression import (
     CondenserPipeline,
@@ -6,7 +7,8 @@ from zhenxun.services.ai.context.memory.compression import (
 from zhenxun.services.ai.context.memory.manager import memory_manager
 from zhenxun.services.ai.context.memory.models import MemoryConfig
 from zhenxun.services.ai.context.memory.types import SessionMetadata
-from zhenxun.services.ai.core.messages import LLMMessage
+from zhenxun.services.ai.core.engine.context_renderer import ContextConverter
+from zhenxun.services.ai.core.messages import AgentMessage
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_copy
 
@@ -138,12 +140,12 @@ class MemoryReader:
     async def get_short_term_context(
         self,
         model_name: str,
-        override_history: list[LLMMessage] | None = None,
-    ) -> list[LLMMessage]:
+        override_history: Sequence[AgentMessage] | None = None,
+    ) -> list[AgentMessage]:
         """
         拉取短期对话历史，并执行 Token 压缩。
         """
-        current_history: list[LLMMessage] = []
+        current_history: list[AgentMessage] = []
         if override_history is not None:
             current_history = list(override_history)
 
@@ -154,16 +156,25 @@ class MemoryReader:
 
         if self.memory_config and self.memory_config.short_term.enable and chat_context:
             if override_history is not None:
-                await chat_context.set_messages(self.session_meta, override_history)
+                flattened_override = ContextConverter.flatten_to_llm_messages(
+                    override_history
+                )
+                await chat_context.set_messages(self.session_meta, flattened_override)
             else:
-                current_history = await chat_context.get_messages(self.session_meta)
+                current_history = cast(
+                    list[AgentMessage],
+                    await chat_context.get_messages(self.session_meta),
+                )
 
             pipeline = CondenserPipeline.create_from_configs(
                 self.memory_config, model_name
             )
             if pipeline.reducers:
+                flattened_to_reduce = ContextConverter.flatten_to_llm_messages(
+                    current_history
+                )
                 new_history, changed = await pipeline.run(
-                    current_history, model_name=model_name, base_overhead=0
+                    flattened_to_reduce, model_name=model_name, base_overhead=0
                 )
                 if changed:
                     await chat_context.set_messages(self.session_meta, new_history)
@@ -171,7 +182,7 @@ class MemoryReader:
                         "💾 [MemoryReader] 压缩截断完毕，已同步覆写数据库。"
                         f"压缩后条数: {len(new_history)}"
                     )
-                current_history = new_history
+                current_history = cast(list[AgentMessage], new_history)
 
         return current_history
 
@@ -194,7 +205,7 @@ class MemoryWriter:
 
     async def save_new_messages(
         self,
-        new_messages: list[LLMMessage],
+        new_messages: Sequence[AgentMessage],
     ):
         """将新产生的对话增量保存到数据库"""
         if not new_messages:
@@ -224,5 +235,11 @@ class MemoryWriter:
             self.memory_config,
             namespace=self.session_meta.selector.namespace or "global",
         )
+
+        flattened_msgs = ContextConverter.flatten_to_llm_messages(
+            messages_to_save, self.context
+        )
+
         if chat_ctx and self.memory_config and self.memory_config.short_term.enable:
-            await chat_ctx.add_messages(self.session_meta, messages_to_save)
+            if flattened_msgs:
+                await chat_ctx.add_messages(self.session_meta, flattened_msgs)

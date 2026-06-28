@@ -4,9 +4,11 @@ from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel
 
-from zhenxun.services.ai.core.events import ToolStreamChunk
+from zhenxun.services.ai.core.exceptions import AbortException
+from zhenxun.services.ai.core.messages import AgentMessage, LLMMessage
+from zhenxun.services.ai.core.stream_events import ToolStreamChunk
 from zhenxun.services.ai.core.templates import PromptTemplate
-from zhenxun.services.ai.flow.agent.agent import Agent
+from zhenxun.services.ai.flow.agent.agent import Agent, ToolSource
 from zhenxun.services.ai.flow.agent.models import AgentConfig
 from zhenxun.services.ai.flow.team.models import (
     CallAction,
@@ -20,7 +22,6 @@ from zhenxun.services.ai.tools.bridges.delegate import DelegateTool
 from zhenxun.services.log import logger
 
 if TYPE_CHECKING:
-    from zhenxun.services.ai.flow.agent.agent import ToolSource
     from zhenxun.services.ai.flow.team.team import Team
 
 
@@ -53,14 +54,13 @@ class BaseTeamStrategy(ABC):
            然后将 `AgentRunResult` 通过 .asend() 传回。
         2. 使用 `yield FinishAction(...)` 结束团队协作。
 
-        不再需要手动处理 EventCenter、上下文隔离和异常兜底。
         """
         yield FinishAction(
             result="The Strategy has not implemented generate_plan() yet."
         )
 
     def _build_leader_agent(
-        self, team: "Team", name: str, instruction: str, tools: list["ToolSource"]
+        self, team: "Team", name: str, instruction: str, tools: list[ToolSource]
     ) -> Agent:
         """
         统一的团队 Leader / Planner 装配工厂。
@@ -100,7 +100,7 @@ class RouteStrategy(BaseTeamStrategy):
         selector_func: Callable[..., str | None] | None = None,
         router: BaseRouter | None = None,
         leader_model: str | None = None,
-        leader_tools: list["ToolSource"] | None = None,
+        leader_tools: list[ToolSource] | None = None,
         custom_prompt: str | None = None,
     ):
         """
@@ -167,8 +167,6 @@ class RouteStrategy(BaseTeamStrategy):
 
         decision = await router.route(context, [], prompt)
         if not decision:
-            from zhenxun.services.ai.core.exceptions import AbortException
-
             logger.warning(
                 f"🚨 [RouteStrategy] Team '{team.name}' 的所有路由策略未能命中目标。"
             )
@@ -184,8 +182,6 @@ class RouteStrategy(BaseTeamStrategy):
         while True:
             cycle_count += 1
             if cycle_count > max_cycles:
-                from zhenxun.services.ai.core.exceptions import AbortException
-
                 logger.error(
                     f"🚨 [RouteStrategy] Team '{team.name}' 路由陷入死循环！"
                     f"已达到最大限制 {max_cycles} 次。"
@@ -199,7 +195,7 @@ class RouteStrategy(BaseTeamStrategy):
                     display="🚨 团队协作陷入死循环，已被系统强制中断。",
                 )
 
-            handoff_history_messages = []
+            handoff_history_messages: list[AgentMessage] = []
             upstream_info = []
             if handoff_reason:
                 upstream_info.append(f"【移交说明】\n{handoff_reason}")
@@ -218,8 +214,6 @@ class RouteStrategy(BaseTeamStrategy):
             combined_info = "\n\n".join(upstream_info)
 
             if combined_info:
-                from zhenxun.services.ai.core.messages import LLMMessage
-
                 handoff_msg = LLMMessage.system(
                     f"### 🔄 [来自上游节点的移交数据]\n{combined_info}"
                 )
@@ -232,14 +226,13 @@ class RouteStrategy(BaseTeamStrategy):
                 kwargs=kwargs,
             )
 
-            output_str = str(run_result.output)
-
-            if output_str.startswith("__HANDOFF__:"):
-                parts = output_str[len("__HANDOFF__:") :].split("|", 2)
-                current_target = parts[0]
-                handoff_reason = parts[1] if len(parts) > 1 else ""
-                context_data = parts[2] if len(parts) > 2 else ""
+            if run_result.handoff:
+                current_target = run_result.handoff.target
+                handoff_reason = run_result.handoff.reason
+                context_data = run_result.handoff.context_data
                 continue
+
+            output_str = str(run_result.output)
 
             fast_routed = False
             if isinstance(self.state_flow, dict) and current_target in self.state_flow:
@@ -288,7 +281,7 @@ class CoordinateStrategy(BaseTeamStrategy):
     def __init__(
         self,
         leader_model: str | None = None,
-        leader_tools: list["ToolSource"] | None = None,
+        leader_tools: list[ToolSource] | None = None,
         custom_prompt: str | None = None,
     ):
         """
@@ -358,7 +351,7 @@ class BroadcastStrategy(BaseTeamStrategy):
     def __init__(
         self,
         leader_model: str | None = None,
-        leader_tools: list["ToolSource"] | None = None,
+        leader_tools: list[ToolSource] | None = None,
         custom_prompt: str | None = None,
     ):
         """
@@ -440,7 +433,7 @@ class TaskStrategy(BaseTeamStrategy):
     def __init__(
         self,
         leader_model: str | None = None,
-        leader_tools: list["ToolSource"] | None = None,
+        leader_tools: list[ToolSource] | None = None,
         max_iterations: int = 15,
         blackboard_schema: type[BaseModel] | None = None,
         initial_blackboard_state: BaseModel | None = None,

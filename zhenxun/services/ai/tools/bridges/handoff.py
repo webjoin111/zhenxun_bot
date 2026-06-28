@@ -69,7 +69,17 @@ class HandoffTool(BaseTool):
         else:
             context_data = kwargs
 
+        from zhenxun.services.ai.core.messages import HandoffEvent
         from zhenxun.services.ai.tools.models import HandoffResult
+
+        if context:
+            context.run.add_event(
+                HandoffEvent(
+                    target=self.target_name,
+                    reason=reason,
+                    context_data=context_data,
+                )
+            )
 
         return HandoffResult(
             target=self.target_name,

@@ -111,7 +111,7 @@ class Inject:
     """自动注入：触发当前任务的群聊 ID（私聊时为 None）"""
 
     Platform = CurrentPlatform
-    """自动注入：当前对接的平台名称（如 qq, red 等）"""
+    """自动注入：当前对接的平台名称（如 qq）"""
 
     Bot = CurrentBot
     """自动注入：当前的 NoneBot Bot 实例"""

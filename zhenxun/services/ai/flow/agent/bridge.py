@@ -5,9 +5,14 @@ from typing_extensions import TypeVar
 from nonebot.adapters import Bot, Event
 from nonebot_plugin_alconna.uniseg import UniMessage
 
-from zhenxun.services.ai.core.events import ToolStreamChunk
-from zhenxun.services.ai.core.exceptions import ControlFlowExit
+from zhenxun.services.ai.core.exceptions import (
+    ConcurrencyInterruptException,
+    ConcurrencyRejectException,
+    ControlFlowExit,
+    InterventionHandledException,
+)
 from zhenxun.services.ai.core.messages import UsageInfo
+from zhenxun.services.ai.core.stream_events import ToolStreamChunk
 from zhenxun.services.ai.flow.base import BaseRunnable
 from zhenxun.services.ai.run import AgentRunResult, RunContext
 from zhenxun.services.ai.run.models import AgentRunEnd, AgentRunError
@@ -101,10 +106,15 @@ class AgentRunner(Generic[T_Out]):
                         raise stream_event.error
 
         except ControlFlowExit as e:
-            from zhenxun.services.ai.core.exceptions import (
-                ConcurrencyInterruptException,
-                ConcurrencyRejectException,
-            )
+            if isinstance(e, InterventionHandledException):
+                logger.info(f"✨ {self.runnable.name} 触发运行时干预: {e.message}")
+                if e.display_content and self._bot and self._event:
+                    await MessageUtils.build_message(str(e.display_content)).send(
+                        reply_to=reply_to
+                    )
+                return cast(
+                    AgentRunResult[T_Out], AgentRunResult(output="", usage=UsageInfo())
+                )
 
             if isinstance(e, ConcurrencyRejectException):
                 logger.warning(

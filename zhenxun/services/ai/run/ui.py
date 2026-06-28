@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING, Any
 
 from nonebot_plugin_alconna import UniMessage
 
-from zhenxun.services.ai.core.events import ToolStreamChunk
+from zhenxun.services.ai.core.stream_events import ToolStreamChunk
 
 if TYPE_CHECKING:
     from zhenxun.services.ai.run.context import RunContext

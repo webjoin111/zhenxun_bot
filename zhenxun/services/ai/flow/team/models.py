@@ -5,7 +5,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from zhenxun.services.ai.core.messages import LLMMessage
+from zhenxun.services.ai.core.messages import AgentMessage
 from zhenxun.services.ai.core.options import BaseOutputDefinition
 from zhenxun.services.ai.flow.base import BaseRuntimeConfig
 
@@ -66,7 +66,7 @@ class CallAction(TeamAction):
     """目标 Agent 的名称（字符串）或动态生成的 Agent 实例"""
     task: str | Any
     """派发给该 Agent 的具体任务或提示词"""
-    history: list[LLMMessage] | None = None
+    history: list[AgentMessage] | None = None
     """需要传递给该 Agent 的上下文历史记录（可选）"""
     kwargs: dict[str, Any] | None = None
     """其他透传给 Agent.run_stream 的 kwargs（可选）"""

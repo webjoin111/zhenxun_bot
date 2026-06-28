@@ -1,7 +1,7 @@
 import asyncio
 from typing import Any, Protocol
 
-from zhenxun.services.ai.core.events import ToolStreamChunk
+from zhenxun.services.ai.core.stream_events import ToolStreamChunk
 from zhenxun.services.ai.run import Inject, RunContext
 from zhenxun.services.ai.sandbox.models import (
     SandboxBlueprint,

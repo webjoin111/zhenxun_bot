@@ -88,6 +88,18 @@ class AbortException(ControlFlowExit):
         super().__init__(f"Aborted: {reason}")
 
 
+class InterventionHandledException(ControlFlowExit):
+    """
+    干预成功处理异常。
+    当用户的消息被成功作为 STEER 或 FOLLOW_UP 注入到后台运行中的 Agent 队列时抛出，
+    用于中断当前的新请求生命周期，避免重复启动。
+    """
+    def __init__(self, message: str, display_content: str | None = None):
+        self.message = message
+        self.display_content = display_content
+        super().__init__(self.message)
+
+
 class ConcurrencyRejectException(ControlFlowExit):
     """并发拒绝异常。当 Agent 设置为 REJECT 且正在忙碌时抛出。"""
 

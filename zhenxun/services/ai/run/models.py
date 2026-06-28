@@ -9,12 +9,12 @@ from typing_extensions import TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
-from zhenxun.services.ai.core.events import (
+from zhenxun.services.ai.core.messages import AgentMessage, UsageInfo
+from zhenxun.services.ai.core.stream_events import (
     BaseStreamEvent,
     ToolCallStart,
     ToolStreamChunk,
 )
-from zhenxun.services.ai.core.messages import LLMMessage, UsageInfo
 from zhenxun.utils.pydantic_compat import model_dump, model_validator
 
 
@@ -72,7 +72,7 @@ class AgentRunResult(BaseModel, Generic[OutputDataT]):
 
     output: OutputDataT
     """最终输出数据"""
-    messages: list[LLMMessage] = Field(default_factory=list)
+    messages: list[AgentMessage] = Field(default_factory=list)
     """本次运行产生/更新的历史消息"""
     usage: UsageInfo = Field(default_factory=UsageInfo)
     """本次运行的Token消耗总计"""

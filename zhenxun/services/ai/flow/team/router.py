@@ -2,18 +2,16 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 import inspect
 import re
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 from nonebot.utils import is_coroutine_callable
 
-from zhenxun.services.ai.core.messages import LLMMessage
-from zhenxun.services.ai.flow.team.models import RouteDecision
+from zhenxun.services.ai.core.messages import AgentMessage
+from zhenxun.services.ai.core.templates import PromptTemplate
+from zhenxun.services.ai.flow.team.models import RouteDecision, Transition
 from zhenxun.services.ai.run import RunContext, Task
 from zhenxun.services.ai.run.di import DependencyInjector
 from zhenxun.services.log import logger
-
-if TYPE_CHECKING:
-    from zhenxun.services.ai.flow.team.models import Transition
 
 
 class BaseRouter(ABC):
@@ -23,7 +21,7 @@ class BaseRouter(ABC):
     async def route(
         self,
         context: RunContext,
-        history: list[LLMMessage],
+        history: list[AgentMessage],
         prompt: str | Task | None = None,
     ) -> RouteDecision | None:
         """核心路由方法"""
@@ -34,13 +32,20 @@ class FunctionRouter(BaseRouter):
     """基于纯函数的极速路由器"""
 
     def __init__(self, selector_func: Callable[..., Any], target: str | None = None):
+        """
+        初始化基于函数的极速路由器。
+
+        参数:
+            selector_func: 用于进行路由判断的选择函数，返回布尔值或字符串目标名。
+            target: 当选择函数返回 True 时，默认路由到的目标成员名称。
+        """
         self.selector_func = selector_func
         self.target = target
 
     async def route(
         self,
         context: RunContext,
-        history: list[LLMMessage],
+        history: list[AgentMessage],
         prompt: str | Task | None = None,
     ) -> RouteDecision | None:
         sig = inspect.signature(self.selector_func)
@@ -76,13 +81,20 @@ class RegexRouter(BaseRouter):
     """基于正则表达式的极速路由器"""
 
     def __init__(self, pattern: str, target: str):
+        """
+        初始化基于正则表达式的极速路由器。
+
+        参数:
+            pattern: 正则表达式匹配规则。
+            target: 当正则表达式成功匹配用户输入时路由到的目标成员名称。
+        """
         self.pattern = re.compile(pattern)
         self.target = target
 
     async def route(
         self,
         context: RunContext,
-        history: list[LLMMessage],
+        history: list[AgentMessage],
         prompt: str | Task | None = None,
     ) -> RouteDecision | None:
         text_to_match = (
@@ -101,12 +113,18 @@ class ChainRouter(BaseRouter):
     """责任链路由器：按顺序执行，直到其中一个命中"""
 
     def __init__(self, routers: list[BaseRouter]):
+        """
+        初始化责任链路由器。
+
+        参数:
+            routers: 路由器实例列表，按顺序链式匹配，遇到首个命中的路由器即返回。
+        """
         self.routers = routers
 
     async def route(
         self,
         context: RunContext,
-        history: list[LLMMessage],
+        history: list[AgentMessage],
         prompt: str | Task | None = None,
     ) -> RouteDecision | None:
         for router in self.routers:
@@ -125,11 +143,24 @@ class LLMRouter(BaseRouter):
         members: list[Any],
         leader_model: str | None = None,
         leader_tools: list[Any] | None = None,
-        state_flow: "Mapping[str, Sequence[Transition | str]] | Callable | None" = None,
+        state_flow: Mapping[str, Sequence[Transition | str]] | Callable | None = None,
         runtime_config: Any = None,
         custom_prompt: str | None = None,
-        allowed_transitions: list["Transition"] | None = None,
+        allowed_transitions: list[Transition] | None = None,
     ):
+        """
+        初始化基于大模型的意图路由器。
+
+        参数:
+            team_name: 当前团队的名称标识。
+            members: 团队的成员列表，包含 Agent, Team 或 Workflow。
+            leader_model: 用于进行意图决策的路由器大模型名称，若为空则默认继承全局配置。
+            leader_tools: 挂载给意图决策路由器的额外可用工具列表。
+            state_flow: 状态流转规则字典或动态流转函数，定义智能体成员之间的转接路径。
+            runtime_config: 团队级别的运行时全局配置。
+            custom_prompt: 自定义的系统提示词模板，用以覆盖默认的路由系统指令。
+            allowed_transitions: 允许的状态移交规则与前置条件列表。
+        """
         self.team_name = team_name
         self.members = members
         self.leader_model = leader_model
@@ -142,10 +173,9 @@ class LLMRouter(BaseRouter):
     async def route(
         self,
         context: RunContext,
-        history: list[LLMMessage],
+        history: list[AgentMessage],
         prompt: str | Task | None = None,
     ) -> RouteDecision | None:
-        from zhenxun.services.ai.core.templates import PromptTemplate
         from zhenxun.services.ai.flow.agent.agent import Agent
         from zhenxun.services.ai.flow.agent.models import AgentConfig
         from zhenxun.services.ai.flow.team.capabilities import TeamRoutingCapability

@@ -7,6 +7,7 @@ from nonebot.utils import is_coroutine_callable
 
 from zhenxun.services.ai.capabilities import CombinedCapability
 from zhenxun.services.ai.context.memory.models import MemoryConfig
+from zhenxun.services.ai.core.messages import LLMMessage
 from zhenxun.services.ai.core.options import GenerationConfig
 from zhenxun.services.ai.core.templates import PromptTemplate
 from zhenxun.services.ai.flow.agent.models import Persona
@@ -131,7 +132,6 @@ class ContextBuilder:
         persona: Persona | None = None,
     ) -> tuple[str, list[Any]]:
         """解析提示词，返回 (静态系统提示词文本, 动态独立消息列表) 元组"""
-        from zhenxun.services.ai.core.messages import LLMMessage
 
         static_instructions = []
         dynamic_messages = []

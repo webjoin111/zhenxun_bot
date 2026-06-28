@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any, cast
 
 from zhenxun.services.ai.capabilities import AbstractCapability
@@ -7,6 +8,7 @@ from zhenxun.services.ai.core.engine.structured_parser import (
     SubmitFinalResultExecutable,
 )
 from zhenxun.services.ai.core.exceptions import UpstreamServerException
+from zhenxun.services.ai.core.messages import TaskLifecycleEvent
 from zhenxun.services.ai.core.options import BaseOutputDefinition, ToolOutput
 from zhenxun.services.ai.run import AgentRunResult, RunContext, Task
 from zhenxun.services.log import logger
@@ -118,15 +120,37 @@ class TaskTrackingCapability(AbstractCapability):
 
     async def wrap_run(self, context: RunContext, handler: Any) -> AgentRunResult[Any]:
         """任务生命周期追踪"""
+
         task_name = self.task.name or self.task.id[:8]
         logger.debug(f"📋 **开始任务**: `{task_name}` (由 {self.agent_name} 执行)")
+        context.run.add_event(TaskLifecycleEvent(task_name=task_name, action="start"))
         try:
             result = await handler()
             logger.debug(f"✅ **任务完成**: `{task_name}`")
+            context.run.add_event(
+                TaskLifecycleEvent(task_name=task_name, action="complete")
+            )
             return result
+        except asyncio.CancelledError as e:
+            logger.warning(f"⚠️ **任务被强制取消**: `{task_name}`")
+            context.run.add_event(
+                TaskLifecycleEvent(
+                    task_name=task_name,
+                    action="fail",
+                    error_msg="任务执行被中止或取消",
+                )
+            )
+            raise e
         except BaseException as error:
             event_error = (
                 error if isinstance(error, Exception) else Exception(str(error))
             )
             logger.error(f"❌ **任务失败**: `{task_name}` - {event_error}")
+            context.run.add_event(
+                TaskLifecycleEvent(
+                    task_name=task_name,
+                    action="fail",
+                    error_msg=str(event_error),
+                )
+            )
             raise error
