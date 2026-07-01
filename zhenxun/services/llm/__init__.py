@@ -168,11 +168,11 @@ sys.modules["zhenxun.services.llm.config.generation"] = mod_config_gen
 
 
 class ReasoningConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="allow")  # type: ignore
 
 
 class ToolConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="allow")  # type: ignore
 
 
 setattr(mod_config_gen, "LLMGenerationConfig", GenerationConfig)  # type: ignore

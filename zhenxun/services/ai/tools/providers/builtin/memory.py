@@ -155,7 +155,7 @@ class MemoryManagementToolkit(BaseToolkit):
                     Field(default=None, description="可选的元数据过滤JSON字符串"),
                 ),
                 scope=(
-                    Optional[ScopeType],  # noqa: UP045
+                    Optional[ScopeType],  # noqa
                     Field(
                         default=None,
                         description="搜索特定的分区。留空则跨所有有权分区混合检索！",

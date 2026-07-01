@@ -311,6 +311,4 @@ class VectorKnowledge(BaseKnowledge):
             )
 
         final_text = "\n\n======\n\n".join(formatted_results)
-        return ToolResult(output=final_text).with_log(
-            f"语义检索 '{query}' 成功召回 {len(results)} 条记录。"
-        )
+        return ToolResult(output=final_text)

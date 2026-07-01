@@ -204,11 +204,7 @@ def direct_reply():
             from zhenxun.services.ai.tools.models import ToolResult
 
             if isinstance(result, ToolResult):
-                if not result.ui_display:
-                    result.ui_display = result.output
-                from zhenxun.services.ai.tools.models import ToolDirective
-
-                result.directive = ToolDirective.END_RUN
+                context.state["__end_run__"] = result.output
             return result
 
     def decorator(func: Callable):

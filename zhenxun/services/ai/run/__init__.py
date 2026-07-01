@@ -19,10 +19,10 @@ from .session import session_manager
 from .ui import UIController
 
 __all__ = [
+    "GLOBAL_CAPABILITIES",
     "AgentRunResult",
     "BlackboardManager",
     "CancellationToken",
-    "GLOBAL_CAPABILITIES",
     "HITLController",
     "Hidden",
     "Hooks",

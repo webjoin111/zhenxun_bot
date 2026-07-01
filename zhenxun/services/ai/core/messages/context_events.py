@@ -13,7 +13,7 @@ class AgentEvent(BaseModel):
     支持作为一种特殊的消息，直接被混入到大模型的上下文(记忆)中。
     """
 
-    model_config = ConfigDict(arbitrary_types_allowed=True, extra="allow")
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="allow")  # type: ignore
 
     def to_llm_message(
         self, context: Any | None = None

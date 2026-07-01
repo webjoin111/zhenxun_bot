@@ -93,7 +93,7 @@ class FileSystemKnowledge(BaseKnowledge):
             return ToolResult(output=f"未找到包含 '{keyword}' 的内容。尝试更换关键词。")
 
         final_output = "\n\n======\n\n".join(results[:10])
-        return ToolResult(output=final_output).with_log(f"搜索到关键词 '{keyword}'")
+        return ToolResult(output=final_output)
 
     @tool(name="list_knowledge_files", description="列出知识库中所有可用的文档路径。")
     async def list_knowledge_files(self) -> ToolResult:
@@ -119,4 +119,4 @@ class FileSystemKnowledge(BaseKnowledge):
             return ToolResult(output=f"❌ 文件不存在: {file_path}").as_error()
 
         content = target.read_text(encoding="utf-8", errors="ignore")
-        return ToolResult(output=content).with_log(f"读取文件: {file_path}")
+        return ToolResult(output=content)

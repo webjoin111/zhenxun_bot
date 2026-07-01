@@ -379,7 +379,7 @@ class ReflexionCapability(AbstractCapability):
                     not is_model_retry
                     and llm_error
                     and not isinstance(
-                        llm_error, (ResponseParseException, UpstreamServerException)
+                        llm_error, ResponseParseException | UpstreamServerException
                     )
                 ):
                     raise e

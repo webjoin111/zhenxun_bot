@@ -60,7 +60,7 @@ async def handle_submit_structured(
     state: AgentState, resources: AgentRunResources, tool_res: ToolResult
 ) -> tuple[Any, str, bool]:
     state.structured_result = tool_res.output
-    return tool_res.ui_display, "✅ 结构化结果处理完毕。", True
+    return tool_res.output, "✅ 结构化结果处理完毕。", True
 
 
 @directive("end_run", namespace="global")
@@ -69,7 +69,7 @@ async def handle_end_run(
 ) -> tuple[Any, str, bool]:
     state.should_terminate = True
     state.early_result_output = tool_res.output
-    return tool_res.ui_display, "✅ 已获取最终结果，结束当前任务。", True
+    return tool_res.output, "✅ 已获取最终结果，结束当前任务。", True
 
 
 @directive("handoff", namespace="global")
@@ -80,4 +80,4 @@ async def handle_handoff(
     state.early_result_output = tool_res.output
     state.handoff_triggered = tool_res
     target = getattr(tool_res, "target", "unknown")
-    return tool_res.ui_display, f"✅ 已决定移交控制权至 {target}。", True
+    return tool_res.output, f"✅ 已决定移交控制权至 {target}。", True
