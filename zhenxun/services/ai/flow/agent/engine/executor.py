@@ -606,6 +606,8 @@ class StandardAgentExecutor(BaseAgentExecutor):
         if not tool_calls or not tool_results:
             return
 
+        from zhenxun.services.ai.flow.agent.engine.directive import directive_manager
+
         for i, res_or_exc in enumerate(tool_results):
             original_call = tool_calls[i]
             tool_res = None
@@ -619,52 +621,26 @@ class StandardAgentExecutor(BaseAgentExecutor):
             )
             state.messages.append(msg)
 
+            if tool_res and getattr(tool_res, "directive", None):
+                ns = getattr(resources.run_context.session, "namespace", "global")
+                handler = directive_manager.get_handler(
+                    tool_res.directive.name, namespace=ns
+                )
+
+                if handler:
+                    await handler(state, resources, tool_res)
+                    if state.is_finished:
+                        resources.run_context.session.append_only_manager.sync_messages(
+                            state.messages
+                        )
+                        return
+                else:
+                    logger.warning(
+                        f"⚠️ 未能找到名为 '{tool_res.directive.name}' "
+                        f"的指令处理器 (Namespace: {ns})"
+                    )
+
         resources.run_context.session.append_only_manager.sync_messages(state.messages)
-        run_context = resources.run_context
-
-        if "__structured_result__" in run_context.state:
-            logger.info("✅ AgentExecutor：拦截到结构化结果提交，结束循环。")
-            state.is_finished = True
-            state.final_result = model_construct(
-                AgentRunResult,
-                output=None,
-                messages=state.messages,
-                structured_data=run_context.state["__structured_result__"],
-                usage=state.usage,
-            )
-            return
-
-        if "__handoff__" in run_context.state:
-            logger.info("✅ AgentExecutor：拦截到移交(Handoff)信号，结束循环。")
-
-            handoff_payload = run_context.state["__handoff__"]
-            output_text = (
-                f"已触发控制权移交 -> {handoff_payload.target}。"
-                f"原因: {handoff_payload.reason}"
-            )
-
-            state.is_finished = True
-            state.final_result = model_construct(
-                AgentRunResult,
-                output=output_text,
-                messages=state.messages,
-                usage=state.usage,
-                handoff=handoff_payload,
-            )
-            return
-
-        if "__end_run__" in run_context.state:
-            logger.debug(
-                "✅ AgentExecutor：捕获到工具发出的终止信号，提前结束推理循环。"
-            )
-            state.is_finished = True
-            state.final_result = model_construct(
-                AgentRunResult,
-                output=run_context.state["__end_run__"],
-                messages=state.messages,
-                usage=state.usage,
-            )
-            return
 
     async def on_fallback(
         self, state: AgentState, resources: AgentRunResources

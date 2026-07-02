@@ -15,6 +15,15 @@ if TYPE_CHECKING:
     from zhenxun.services.ai.tools.core.tool import BaseTool
 
 
+class DirectivePayload(BaseModel):
+    """工具执行产生的副作用控制流指令载荷"""
+
+    name: str
+    """指令名称，对应 directive_manager 中的注册名"""
+    payload: dict[str, Any] = Field(default_factory=dict)
+    """传递给指令处理器的具体数据"""
+
+
 class ToolResult(BaseModel):
     """结构化的工具执行结果模型"""
 
@@ -28,6 +37,8 @@ class ToolResult(BaseModel):
     """是否发生了业务级别的错误"""
     is_retryable: bool = Field(default=True)
     """标记该错误是否允许大模型进行自愈反思重试"""
+    directive: DirectivePayload | None = Field(default=None)
+    """工具执行产生的副作用指令（如移交、结束运行等），供底层的指令路由引擎调度"""
 
     def as_error(self, is_retryable: bool = True) -> "ToolResult":
         """链式方法：标记此结果为错误，并引导大模型在下一轮进行重试自愈"""
@@ -40,6 +51,48 @@ class ToolResult(BaseModel):
         self.is_error = True
         self.is_retryable = False
         return self
+
+
+class EndRunResult(ToolResult):
+    """强制结束运行并返回结果给用户"""
+
+    def __init__(self, output: Any, **kwargs):
+        super().__init__(
+            output=output,
+            directive=DirectivePayload(name="end_run", payload={"output": output}),
+            **kwargs,
+        )
+
+
+class HandoffResult(ToolResult):
+    """触发智能体控制权物理移交"""
+
+    def __init__(self, target: str, reason: str = "", context_data: Any = "", **kwargs):
+        super().__init__(
+            output=f"已触发控制权移交 -> {target}。原因: {reason}",
+            directive=DirectivePayload(
+                name="handoff",
+                payload={
+                    "target": target,
+                    "reason": reason,
+                    "context_data": context_data,
+                },
+            ),
+            **kwargs,
+        )
+
+
+class StructuredSubmissionResult(ToolResult):
+    """提交结构化解析结果并结束运行"""
+
+    def __init__(self, output: Any, parsed_obj: Any, **kwargs):
+        super().__init__(
+            output=output,
+            directive=DirectivePayload(
+                name="submit_structured", payload={"parsed_obj": parsed_obj}
+            ),
+            **kwargs,
+        )
 
 
 class StateSyncResult(ToolResult):

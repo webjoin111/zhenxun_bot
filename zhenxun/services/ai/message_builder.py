@@ -153,6 +153,7 @@ class MessageBuilder:
 
     @classmethod
     async def _transform_to_content_part(cls, item: Any) -> UserContentUnion:
+        """将任意输入项转换为符合 LLM 规范的内容部件"""
         if isinstance(item, BaseContentPart):
             return TypeAdapter(UserContentUnion).validate_python(model_dump(item))
         if isinstance(item, str):
@@ -179,6 +180,7 @@ class MessageBuilder:
         namespace: str | None = None,
         allowed_modalities: set[str] | None = None,
     ) -> list[UserContentUnion]:
+        """将 UniMessage 消息解析并转换为 LLM 内容部件列表"""
         namespace = namespace or infer_plugin_namespace(default="global")
         parts: list[UserContentUnion] = []
         for seg in message:
@@ -228,7 +230,7 @@ class MessageBuilder:
         namespace: str | None = None,
         allowed_modalities: set[str] | None = None,
     ) -> list[LLMContentPart] | None:
-        """提取公共引用抓取与解析逻辑"""
+        """获取并解析引用消息的内容片段"""
         namespace = namespace or infer_plugin_namespace(default="global")
         try:
             from nonebot.adapters import Message as PlatformMessage
@@ -273,6 +275,7 @@ class MessageBuilder:
         namespace: str | None = None,
         allowed_modalities: set[str] | None = None,
     ) -> list[LLMMessage]:
+        """将任意类型的提示输入标准化为统一的 LLM 消息历史列表"""
         namespace = namespace or infer_plugin_namespace(default="global")
         messages = []
         if instruction:
@@ -375,6 +378,7 @@ class MessageBuilder:
 
     @classmethod
     def message_to_unimessage(cls, message: PlatformMessage) -> UniMessage:
+        """将平台原生 Message 转换为统一的 UniMessage"""
         return UniMessage.of(message)
 
     @classmethod
@@ -386,8 +390,8 @@ class MessageBuilder:
         namespace: str | None = None,
         config: LLMEmbeddingConfig | None = None,
     ) -> list[LLMContentPart]:
+        """为 Embed 向量化提取纯粹的内容片段，忽略杂项"""
         namespace = namespace or infer_plugin_namespace(default="global")
-        """为 Embed 专用提取纯粹的内容片段，忽略工具调用等杂项"""
         allowed_modalities = {"text"}
         if config:
             if config.multimodal is True:
@@ -431,8 +435,8 @@ class MessageBuilder:
         namespace: str | None = None,
         config: LLMEmbeddingConfig | None = None,
     ) -> "EmbedBatch":
+        """将任意输入标准化为嵌入向量批处理对象"""
         namespace = namespace or infer_plugin_namespace(default="global")
-        """将任意输入标准化为 EmbedBatch (支持单模态批量与多模态融合)"""
         from nonebot_plugin_alconna import UniMessage
 
         from zhenxun.services.ai.core.messages import BaseContentPart, TextPart

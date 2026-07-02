@@ -201,11 +201,13 @@ def direct_reply():
     class DirectReplyCapability(AbstractCapability):
         async def wrap_tool_execute(self, context, tool_name, arguments, handler):
             result = await handler(arguments)
-            from zhenxun.services.ai.tools.models import ToolResult
+            from zhenxun.services.ai.tools.models import EndRunResult, ToolResult
 
             if isinstance(result, ToolResult):
-                context.state["__end_run__"] = result.output
-            return result
+                if getattr(result, "is_error", False):
+                    return result
+                return EndRunResult(output=result.output)
+            return EndRunResult(output=result)
 
     def decorator(func: Callable):
         return _update_settings(func, capabilities=[DirectReplyCapability()])

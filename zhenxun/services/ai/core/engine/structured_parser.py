@@ -13,7 +13,7 @@ from zhenxun.services.ai.core.exceptions import (
 from zhenxun.services.ai.core.models import ToolDefinition
 from zhenxun.services.ai.run.models import OutputDataT
 from zhenxun.services.ai.tools.core.tool import BaseTool
-from zhenxun.services.ai.tools.models import ToolResult
+from zhenxun.services.ai.tools.models import StructuredSubmissionResult, ToolResult
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_json_schema, model_validate
 
@@ -186,9 +186,9 @@ class SubmitFinalResultExecutable(BaseTool):
                 json_str, final_obj, context
             )
 
-            if context:
-                context.state["__structured_result__"] = final_obj
-            return ToolResult(output="结构化数据已成功提交")
+            return StructuredSubmissionResult(
+                output="结构化数据已成功提交", parsed_obj=final_obj
+            )
         except ControlFlowExit as e:
             raise e
         except ModelRetry as e:

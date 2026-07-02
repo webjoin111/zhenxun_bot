@@ -188,9 +188,8 @@ class TaskPlanningToolkit(BaseToolkit):
         ],
         context: RunContext,
     ) -> ToolResult:
+        from zhenxun.services.ai.tools.models import EndRunResult
         board = self._get_board(context)
         board.is_goal_complete = True
         board.final_summary = summary
-
-        context.state["__end_run__"] = summary
-        return ToolResult(output=summary)
+        return EndRunResult(output=summary)

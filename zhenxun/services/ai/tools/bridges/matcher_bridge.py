@@ -23,7 +23,7 @@ from zhenxun.services.ai.core.models import ToolDefinition
 from zhenxun.services.ai.run import RunContext
 from zhenxun.services.ai.tools.core.schema import build_schema_hint
 from zhenxun.services.ai.tools.core.tool import BaseTool
-from zhenxun.services.ai.tools.models import ToolOptions, ToolResult
+from zhenxun.services.ai.tools.models import EndRunResult, ToolOptions, ToolResult
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_validate
 
@@ -373,9 +373,7 @@ class MatcherTool(BaseTool):
 
         except FinishedException:
             if self.terminal:
-                if context:
-                    context.state["__end_run__"] = "任务已完成。结果已直接发送给用户。"
-                return ToolResult(output="任务已完成。结果已直接发送给用户。")
+                return EndRunResult(output="任务已完成。结果已直接发送给用户。")
             return ToolResult(output="执行完毕，已直接向用户发送结果。")
 
         except PausedException:
@@ -400,9 +398,7 @@ class MatcherTool(BaseTool):
             return ToolResult(output=f"执行时发生底层错误: {real_err}").as_error()
 
         if self.terminal:
-            if context:
-                context.state["__end_run__"] = "执行完毕。"
-            return ToolResult(output="执行完毕。")
+            return EndRunResult(output="执行完毕。")
 
         return ToolResult(output="命令已在后台成功执行完成。")
 
@@ -434,6 +430,7 @@ def bind_matcher(
 
     if require_prefix:
         from zhenxun.utils.utils import infer_plugin_namespace
+
         ns = infer_plugin_namespace(default="global")
         if ns and ns not in ("global", "unknown"):
             if not name.startswith(f"{ns}_"):

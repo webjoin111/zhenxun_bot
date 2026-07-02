@@ -1,14 +1,15 @@
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
-from typing import Any
 
 from zhenxun.services.ai.flow.agent.models import AgentRunResources, AgentState
+from zhenxun.services.ai.run.models import AgentRunResult, HandoffPayload
 from zhenxun.services.ai.tools.models import ToolResult
 from zhenxun.services.log import logger
+from zhenxun.utils.pydantic_compat import model_construct
 from zhenxun.utils.utils import infer_plugin_namespace
 
 DirectiveHandlerFunc = Callable[
-    [AgentState, AgentRunResources, ToolResult], Awaitable[tuple[Any, str, bool]]
+    [AgentState, AgentRunResources, ToolResult], Awaitable[None]
 ]
 
 
@@ -58,26 +59,57 @@ def directive(name: str | None = None, namespace: str | None = None):
 @directive("submit_structured", namespace="global")
 async def handle_submit_structured(
     state: AgentState, resources: AgentRunResources, tool_res: ToolResult
-) -> tuple[Any, str, bool]:
-    state.structured_result = tool_res.output
-    return tool_res.output, "✅ 结构化结果处理完毕。", True
+) -> None:
+    parsed_obj = (
+        tool_res.directive.payload.get("parsed_obj") if tool_res.directive else None
+    )
+    logger.info("✅ 拦截到结构化结果提交，结束循环。")
+    state.is_finished = True
+    state.final_result = model_construct(
+        AgentRunResult,
+        output=None,
+        messages=state.messages,
+        structured_data=parsed_obj,
+        usage=state.usage,
+    )
 
 
 @directive("end_run", namespace="global")
 async def handle_end_run(
     state: AgentState, resources: AgentRunResources, tool_res: ToolResult
-) -> tuple[Any, str, bool]:
-    state.should_terminate = True
-    state.early_result_output = tool_res.output
-    return tool_res.output, "✅ 已获取最终结果，结束当前任务。", True
+) -> None:
+    output = (
+        tool_res.directive.payload.get("output", tool_res.output)
+        if tool_res.directive
+        else tool_res.output
+    )
+    logger.debug("✅ 捕获到工具发出的终止信号，提前结束推理循环。")
+    state.is_finished = True
+    state.final_result = model_construct(
+        AgentRunResult,
+        output=output,
+        messages=state.messages,
+        usage=state.usage,
+    )
 
 
 @directive("handoff", namespace="global")
 async def handle_handoff(
     state: AgentState, resources: AgentRunResources, tool_res: ToolResult
-) -> tuple[Any, str, bool]:
-    state.should_terminate = True
-    state.early_result_output = tool_res.output
-    state.handoff_triggered = tool_res
-    target = getattr(tool_res, "target", "unknown")
-    return tool_res.output, f"✅ 已决定移交控制权至 {target}。", True
+) -> None:
+    payload = tool_res.directive.payload if tool_res.directive else {}
+    handoff = HandoffPayload(
+        target=payload.get("target", "unknown"),
+        reason=payload.get("reason", ""),
+        context_data=payload.get("context_data", ""),
+    )
+    output_text = f"已触发控制权移交 -> {handoff.target}。原因: {handoff.reason}"
+    logger.info(f"✅ 拦截到移交(Handoff)信号: 移交给 -> {handoff.target}。结束循环。")
+    state.is_finished = True
+    state.final_result = model_construct(
+        AgentRunResult,
+        output=output_text,
+        messages=state.messages,
+        usage=state.usage,
+        handoff=handoff,
+    )

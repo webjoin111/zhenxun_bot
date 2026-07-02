@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, create_model
 
 from zhenxun.services.ai.run import RunContext
 from zhenxun.services.ai.tools.core.tool import BaseTool
-from zhenxun.services.ai.tools.models import ToolResult
+from zhenxun.services.ai.tools.models import HandoffResult, ToolResult
 
 
 class HandoffTool(BaseTool):
@@ -94,13 +94,6 @@ class HandoffTool(BaseTool):
                 )
             )
 
-        if context:
-            from zhenxun.services.ai.run.models import HandoffPayload
-
-            context.state["__handoff__"] = HandoffPayload(
-                target=self.target_name, reason=reason, context_data=context_data
-            )
-
-        return ToolResult(
-            output=f"已触发控制权移交 -> {self.target_name}。原因: {reason}"
+        return HandoffResult(
+            target=self.target_name, reason=reason, context_data=context_data
         )
