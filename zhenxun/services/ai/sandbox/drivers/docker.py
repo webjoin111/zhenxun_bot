@@ -135,8 +135,8 @@ class DockerSandboxSession(BaseSandboxSession):
         if not self.container:
             return False
         try:
-            await self.container.show()
-            return self.container._container.get("State", {}).get("Running", False)
+            info = await self.container.show()
+            return info.get("State", {}).get("Running", False)
         except Exception:
             return False
 
@@ -372,7 +372,8 @@ class DockerSandboxSession(BaseSandboxSession):
     async def close(self) -> None:
         """关闭会话：仅清理工作区，不销毁共享容器"""
         try:
-            await self.rm(self.workspace_path, recursive=True)
+            if await self.is_alive():
+                await self.rm(self.workspace_path, recursive=True)
         except Exception as e:
             logger.error(f"清理沙箱会话工作区 {self.session_id} 异常: {e}")
 
@@ -410,6 +411,16 @@ class DockerSandboxClient(BaseSandboxClient):
                     raise SandboxFatalError(
                         f"无法连接到本地 Docker 引擎 (引擎未启动或无权限): {e}"
                     )
+
+            if eff_cname in DockerSandboxClient._containers:
+                try:
+                    c = DockerSandboxClient._containers[eff_cname]
+                    info = await c.show()
+                    if not info.get("State", {}).get("Running", False):
+                        raise RuntimeError("Container is not running")
+                except Exception:
+                    DockerSandboxClient._containers.pop(eff_cname, None)
+                    DockerSandboxClient._jupyter_ports.pop(eff_cname, None)
 
             if eff_cname not in DockerSandboxClient._containers:
                 port_bindings = {}
@@ -565,7 +576,12 @@ class DockerSandboxClient(BaseSandboxClient):
                     "已长时间闲置，已触发彻底销毁释放内存。"
                 )
             except Exception as e:
-                logger.error(f"[DockerSandbox] 闲置销毁物理容器 {cname} 失败: {e}")
+                self._containers.pop(cname, None)
+                self._jupyter_ports.pop(cname, None)
+                if getattr(e, "status", None) == 404 or "No such container" in str(e):
+                    logger.debug(f"[DockerSandbox] 物理容器 {cname} 已不存在。")
+                else:
+                    logger.error(f"[DockerSandbox] 闲置销毁物理容器 {cname} 失败: {e}")
 
     @classmethod
     async def close_env(cls):
@@ -574,7 +590,10 @@ class DockerSandboxClient(BaseSandboxClient):
                 await container.delete(force=True)
                 logger.info(f"已清理物理容器: {cname}")
             except Exception as e:
-                logger.error(f"清理物理容器 {cname} 失败: {e}")
+                if getattr(e, "status", None) == 404 or "No such container" in str(e):
+                    logger.debug(f"物理容器 {cname} 已不存在，无需清理。")
+                else:
+                    logger.error(f"清理物理容器 {cname} 失败: {e}")
         cls._containers.clear()
         cls._jupyter_ports.clear()
 

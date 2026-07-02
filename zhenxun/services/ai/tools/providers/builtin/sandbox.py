@@ -125,6 +125,9 @@ class SandboxToolkit(BaseToolkit):
 
         state_key = f"code_exec_{session_id}_{language}"
         code_executor = context.session.shared_state.get(state_key)
+        if code_executor and getattr(code_executor, "session", None) is not executor:
+            code_executor = None
+
         if not code_executor:
             code_executor = CodeExecutorRegistry.create_executor(
                 language, bp.needs_state, executor, namespace=ns
