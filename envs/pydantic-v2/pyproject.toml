@@ -41,6 +41,9 @@ dependencies = [
     "pydantic>=2.0.0,<3.0.0",
     "json-repair>=0.54.0,<0.55.0",
     "alibabacloud-devops20210625>=5.0.2,<6.0.0",
+    "mcp>=1.8.0",
+    "jieba>=0.42.1",
+    "aiodocker>=0.24.0",
 ]
 
 [project.optional-dependencies]
@@ -138,6 +141,7 @@ executionEnvironments = [
 
 typeCheckingMode = "standard"
 reportShadowedImports = false
+reportMissingImports = "none"
 disableBytesTypePromotions = true
 
 [tool.pytest.ini_options]

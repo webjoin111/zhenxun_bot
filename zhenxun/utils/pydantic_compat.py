@@ -24,8 +24,40 @@ T = TypeVar("T", bound=BaseModel)
 V = TypeVar("V")
 
 
+import typing
+
+if typing.TYPE_CHECKING:
+    _T_TA = TypeVar("_T_TA")
+
+    class TypeAdapter(typing.Generic[_T_TA]):
+        def __init__(self, type_: Any, **kwargs: Any): ...
+        def validate_python(self, obj: Any) -> _T_TA: ...
+
+    def model_validator(*args: Any, **kwargs: Any) -> Any: ...
+else:
+    try:
+        from pydantic import TypeAdapter, model_validator
+    except ImportError:
+
+        class TypeAdapter:
+            def __init__(self, type_: Any, **kwargs: Any):
+                self.type_ = type_
+
+            def validate_python(self, obj: Any) -> Any:
+                from nonebot.compat import type_validate_python
+
+                return type_validate_python(self.type_, obj)
+
+        def model_validator(*args: Any, **kwargs: Any) -> Any:
+            def decorator(func: Any) -> Any:
+                return func
+
+            return decorator
+
+
 __all__ = [
     "PYDANTIC_V2",
+    "TypeAdapter",
     "_dump_pydantic_obj",
     "_is_pydantic_type",
     "compat_computed_field",
@@ -37,6 +69,7 @@ __all__ = [
     "model_fields",
     "model_json_schema",
     "model_validate",
+    "model_validator",
     "parse_as",
     "type_validate_json",
     "type_validate_python",

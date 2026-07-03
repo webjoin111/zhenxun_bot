@@ -31,7 +31,11 @@ class Model(TortoiseModel):
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        if cls.__module__ not in db_model.models:
+
+        is_abstract = (
+            getattr(cls.Meta, "abstract", False) if hasattr(cls, "Meta") else False
+        )
+        if not is_abstract and cls.__module__ not in db_model.models:
             db_model.models.append(cls.__module__)
 
         if func := getattr(cls, "_run_script", None):
