@@ -6,10 +6,16 @@ from typing import Any, Generic, cast
 
 from zhenxun.services.ai.capabilities import (
     AbstractCapability,
+    CombinedCapability,
     DynamicCapability,
 )
+from zhenxun.services.ai.config import get_llm_config
 from zhenxun.services.ai.context.knowledge.base import BaseKnowledge
 from zhenxun.services.ai.context.memory.builder import MemoryBuilder
+from zhenxun.services.ai.context.memory.capabilities import (
+    AgenticMemoryCapability,
+    SlotMemoryCapability,
+)
 from zhenxun.services.ai.context.memory.models import MemoryConfig
 from zhenxun.services.ai.core.exceptions import (
     ConcurrencyInterruptException,
@@ -28,20 +34,15 @@ from zhenxun.services.ai.core.options import (
 from zhenxun.services.ai.core.protocols.tool import ToolExecutable, ToolResolvable
 from zhenxun.services.ai.core.stream_events import AgentStreamEvent, EventBus
 from zhenxun.services.ai.core.templates import PromptTemplate
-from zhenxun.services.ai.flow.agent.engine.builders import ToolBuilder
-from zhenxun.services.ai.flow.agent.models import (
-    AgentConfig,
-    AgentRunResources,
-    AgentState,
-    Persona,
-)
-from zhenxun.services.ai.flow.base import BaseRunnable
-from zhenxun.services.ai.guardrails import GuardrailSource
+from zhenxun.services.ai.flow.base import BaseRunnable, ConcurrencyPolicy
+from zhenxun.services.ai.flow.concurrency import apply_concurrency_policy
+from zhenxun.services.ai.guardrails import GuardrailSource, parse_guardrails
 from zhenxun.services.ai.llm.builder import IntentBuilder
+from zhenxun.services.ai.message_builder import MessageBuilder
 from zhenxun.services.ai.run import (
     AgentRunResult,
+    AgentTask,
     RunContext,
-    Task,
 )
 from zhenxun.services.ai.run.context import AgentDepsT
 from zhenxun.services.ai.run.di import DependencyInjector
@@ -52,10 +53,20 @@ from zhenxun.services.ai.run.models import (
     OutputDataT,
     StreamedRunResult,
 )
-from zhenxun.services.ai.tools.core.tool import BaseTool
+from zhenxun.services.ai.run.subscribers import (
+    DefaultUISubscriber,
+    TelemetrySubscriber,
+)
+from zhenxun.services.ai.tools.bridges.delegate import DelegateTool
+from zhenxun.services.ai.tools.core.tool import BaseTool, FunctionTool
 from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
-from zhenxun.services.ai.tools.models import Query
+from zhenxun.services.ai.tools.models import Query, ToolOptions
+from zhenxun.services.ai.tools.providers.builtin.hitl import HITLToolkit
+from zhenxun.services.ai.tools.providers.skills.capabilities import (
+    SkillCapability,
+)
 from zhenxun.services.ai.tools.providers.skills.models import Skill, SkillSource
+from zhenxun.services.ai.utils import ContextUtils
 from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import (
     model_construct,
@@ -65,7 +76,18 @@ from zhenxun.utils.pydantic_compat import (
 )
 from zhenxun.utils.utils import infer_plugin_namespace
 
-from .engine.executor import BaseAgentExecutor
+from .engine.builders import (
+    AgentProfileResolver,
+    ContextBuilder,
+    ToolBuilder,
+)
+from .engine.executor import BaseAgentExecutor, StandardAgentExecutor
+from .models import (
+    AgentConfig,
+    AgentRunResources,
+    AgentState,
+    Persona,
+)
 
 ToolSource = (
     Callable | BaseTool | dict[str, Any] | str | BaseToolkit | ToolResolvable | Query
@@ -413,8 +435,6 @@ class Agent(
         self.tool_filters = []
         self.toolset_funcs = []
         self._event_listeners: dict[type[AgentStreamEvent], list[Callable]] = {}
-        from zhenxun.services.ai.guardrails import parse_guardrails
-
         self._guardrails = parse_guardrails(guardrails)
 
         self.memory_config = MemoryBuilder.resolve(memory)
@@ -428,8 +448,6 @@ class Agent(
         self.engine_config = self.config
 
         if self.config.enable_hitl is None:
-            from zhenxun.services.ai.config import get_llm_config
-
             self.config.enable_hitl = get_llm_config().agent_settings.enable_hitl
 
         self.config.stateless = not self.memory_config.short_term.enable
@@ -450,19 +468,11 @@ class Agent(
         self.capabilities: list[AbstractCapability] = []
 
         if self.memory_config.long_term.enable and self.memory_config.long_term.agentic:
-            from zhenxun.services.ai.context.memory.capabilities import (
-                AgenticMemoryCapability,
-            )
-
             self.capabilities.append(
                 AgenticMemoryCapability(self.memory_config, self.namespace)
             )
 
         if self.memory_config.slots.enable:
-            from zhenxun.services.ai.context.memory.capabilities import (
-                SlotMemoryCapability,
-            )
-
             self.capabilities.append(
                 SlotMemoryCapability(self.memory_config, self.namespace)
             )
@@ -475,15 +485,9 @@ class Agent(
                     self.capabilities.append(DynamicCapability(cap))
 
         if self.config.enable_hitl:
-            from zhenxun.services.ai.tools.providers.builtin.hitl import HITLToolkit
-
             self.tool_definitions.append(HITLToolkit())
 
         if skills:
-            from zhenxun.services.ai.tools.providers.skills.capabilities import (
-                SkillCapability,
-            )
-
             self.capabilities.append(
                 SkillCapability(skills=skills, namespace=self.namespace)
             )
@@ -502,9 +506,6 @@ class Agent(
         """
 
         def decorator(f: Callable):
-            from zhenxun.services.ai.tools.core.tool import FunctionTool
-            from zhenxun.services.ai.tools.models import ToolOptions
-
             tool_name = name or f.__name__
             tool_desc = description or f.__doc__ or "未提供描述"
             base_settings = settings or getattr(f, "__tool_settings__", ToolOptions())
@@ -566,15 +567,11 @@ class Agent(
         if func is None:
 
             def decorator(f: Callable):
-                from zhenxun.services.ai.guardrails import parse_guardrails
-
                 self._guardrails.extend(parse_guardrails([f]))
                 return f
 
             return decorator
         else:
-            from zhenxun.services.ai.guardrails import parse_guardrails
-
             self._guardrails.extend(parse_guardrails([func]))
             return func
 
@@ -594,13 +591,11 @@ class Agent(
 
     async def __resolve_to_tools__(self) -> list[ToolExecutable]:
         """协议支持：将自身 Agent 转化为可被上级调用的工具"""
-        from zhenxun.services.ai.tools.bridges.delegate import DelegateTool
-
         return [DelegateTool(self)]
 
     async def run(
         self,
-        prompt: PromptInput | Task | None = None,
+        prompt: PromptInput | AgentTask | None = None,
         *,
         config: AgentConfig | dict | None = None,
         deps: AgentDepsT | None = None,
@@ -611,7 +606,7 @@ class Agent(
         智能体单次运行阻塞核心入口，内部使用上下文管理器静默消费事件流直至执行结束。
 
         参数:
-            prompt: 用户输入的消息内容或标准数据契约任务对象 (Task)。
+            prompt: 用户输入的消息内容或标准数据契约任务对象 (AgentTask)。
             deps: 强类型的外部依赖注入对象 (例如 NoneBot 的 Bot, Event)。
             context: 显式传入的运行时与会话上下文 (RunContext)。
             config: 单次运行时的动态配置覆盖字典或对象。
@@ -628,7 +623,7 @@ class Agent(
     @contextlib.asynccontextmanager
     async def run_stream(
         self,
-        prompt: PromptInput | Task | None = None,
+        prompt: PromptInput | AgentTask | None = None,
         *,
         config: AgentConfig | dict | None = None,
         deps: AgentDepsT | None = None,
@@ -648,10 +643,6 @@ class Agent(
         effective_config = self.config.merge_with(override_conf)
 
         if effective_config.skills:
-            from zhenxun.services.ai.tools.providers.skills.capabilities import (
-                SkillCapability,
-            )
-
             if effective_config.capabilities is None:
                 effective_config.capabilities = []
             effective_config.capabilities.append(
@@ -661,11 +652,6 @@ class Agent(
             )
         bus = event_bus or EventBus()
 
-        from zhenxun.services.ai.run.subscribers import (
-            DefaultUISubscriber,
-            TelemetrySubscriber,
-        )
-
         TelemetrySubscriber().attach(bus)
 
         if self._event_listeners:
@@ -674,8 +660,6 @@ class Agent(
 
                     def _make_handler(callback_func: Callable) -> Callable:
                         async def _di_handler(event: AgentStreamEvent):
-                            from zhenxun.services.ai.run.di import DependencyInjector
-
                             await DependencyInjector.invoke(
                                 callback_func, {"stream_event": event}, safe_context
                             )
@@ -700,8 +684,6 @@ class Agent(
 
         policy = getattr(self.config, "concurrency_policy", None)
         if policy is None:
-            from zhenxun.services.ai.flow.base import ConcurrencyPolicy
-
             policy = (
                 ConcurrencyPolicy.ALLOW
                 if getattr(self.config, "stateless", True)
@@ -710,8 +692,6 @@ class Agent(
 
         intervention_policy = getattr(self.config, "intervention_policy", None)
 
-        from zhenxun.services.ai.utils import ContextUtils
-
         lock_id = ContextUtils.extract_concurrency_lock_id(
             safe_context,
             getattr(self.config, "concurrency_scope", None),
@@ -719,8 +699,6 @@ class Agent(
         )
 
         async def _execution_task():
-            from zhenxun.services.ai.flow.concurrency import apply_concurrency_policy
-
             cancel_token = safe_context.run.cancellation_token or CancellationToken()
             safe_context.run.cancellation_token = cancel_token
 
@@ -767,16 +745,16 @@ class Agent(
                 task.cancel()
 
     def _parse_task_prompt(
-        self, prompt: PromptInput | Task | None
-    ) -> tuple[Task | None, Any | None, list[Any], Any, list[Any]]:
-        """解析输入意图，提取数据契约 (Task)"""
+        self, prompt: PromptInput | AgentTask | None
+    ) -> tuple[AgentTask | None, Any | None, list[Any], Any, list[Any]]:
+        """解析输入意图，提取数据契约 (AgentTask)"""
         task_obj = None
         final_prompt_payload = None
         extra_tools = []
         run_output_type = self.response_model
         task_guardrails = []
 
-        if isinstance(prompt, Task):
+        if isinstance(prompt, AgentTask):
             task_obj = prompt
             if task_obj.response_model:
                 run_output_type = task_obj.response_model
@@ -803,7 +781,7 @@ class Agent(
 
     async def on_state_init(
         self,
-        prompt: PromptInput | Task | None = None,
+        prompt: PromptInput | AgentTask | None = None,
         context: RunContext[AgentDepsT] | None = None,
         config: AgentConfig | None = None,
         cancellation_token: Any = None,
@@ -886,11 +864,6 @@ class Agent(
         self, state: AgentState, resources: AgentRunResources
     ) -> None:
         """装配记忆与提示词上下文、解析可用工具集"""
-        from zhenxun.services.ai.capabilities import CombinedCapability
-        from zhenxun.services.ai.flow.agent.engine.builders import (
-            AgentProfileResolver,
-            ContextBuilder,
-        )
 
         context = resources.run_context
         reader = resources.memory_reader
@@ -961,8 +934,6 @@ class Agent(
             messages_for_run.extend(context.run.messages)
 
         if final_prompt_payload is not None:
-            from zhenxun.services.ai.message_builder import MessageBuilder
-
             if msgs := await MessageBuilder.normalize_to_llm_messages(
                 final_prompt_payload, bot=context.get_bot(), event=context.get_event()
             ):
@@ -986,8 +957,6 @@ class Agent(
         self, state: AgentState, resources: AgentRunResources
     ) -> AgentRunResult[OutputDataT]:
         """真正调度大模型执行器并执行记忆落盘"""
-        from zhenxun.services.ai.flow.agent.engine.executor import StandardAgentExecutor
-
         context = resources.run_context
 
         for tk in resources.toolkits:
@@ -1027,7 +996,7 @@ class Agent(
 
     async def _run_step(
         self,
-        prompt: PromptInput | Task | None = None,
+        prompt: PromptInput | AgentTask | None = None,
         *,
         context: RunContext[AgentDepsT],
         config: AgentConfig,
@@ -1045,8 +1014,6 @@ class Agent(
             **kwargs,
         )
         await self.on_context_build(state, resources)
-
-        from zhenxun.services.ai.capabilities import CombinedCapability
 
         run_scoped_cap = (
             resources.run_scoped_cap

@@ -1,20 +1,20 @@
 import asyncio
 from collections.abc import AsyncIterator, Callable, Sequence
+import copy
 from typing import Any, cast
-
-from pydantic import BaseModel, Field
 
 from zhenxun.services.ai.core.messages import PromptInput
 from zhenxun.services.ai.flow.base import BaseRunnable
 from zhenxun.services.ai.flow.workflow.base import BaseNode
+from zhenxun.services.ai.flow.workflow.policies import BaseFailurePolicy
 from zhenxun.services.ai.flow.workflow.types import (
-    BaseFailurePolicy,
     StepInput,
     StepOutput,
     StepType,
 )
-from zhenxun.services.ai.run import RunContext
+from zhenxun.services.ai.run import AgentTask, RunContext
 from zhenxun.services.ai.run.di import DependencyInjector
+from zhenxun.services.ai.run.models import AgentRunEnd
 from zhenxun.services.log import logger
 
 NodeSource = BaseNode | BaseRunnable | Callable
@@ -47,8 +47,6 @@ class Step(BaseNode):
         name: str | None = None,
         executor: NodeSource | None = None,
         prompt: PromptInput | None = None,
-        requires_confirmation: bool = False,
-        confirmation_message: str | None = None,
         failure_policy: BaseFailurePolicy | None = None,
     ):
         """
@@ -58,8 +56,6 @@ class Step(BaseNode):
             name: 步骤的名称，为空则自动取执行器的名称，默认 None。
             executor: 该步骤要运行的核心执行器（支持 RunnableNode 或 Callable 依赖注入）。
             prompt: 该步骤的初始输入或提示词定义，默认 None。
-            requires_confirmation: 标记该节点在执行前是否需要人工介入授权，默认 False。
-            confirmation_message: 挂起等待授权时展示的提示文案，默认 None。
             failure_policy: 该节点执行失败时的错误处理策略，默认使用中断策略。
         """  # noqa: E501
         actual_name = name or getattr(
@@ -67,8 +63,6 @@ class Step(BaseNode):
         )
         super().__init__(
             name=actual_name,
-            requires_confirmation=requires_confirmation,
-            confirmation_message=confirmation_message,
             failure_policy=failure_policy,
         )
         self.executor = executor
@@ -83,9 +77,7 @@ class Step(BaseNode):
     ) -> AsyncIterator[Any]:
         if False:
             yield None
-        raise NotImplementedError(
-            "This is a facade. Real execution happens in subclasses."
-        )
+        raise NotImplementedError("这是一个外观门面，实际的执行发生在子类中。")
 
 
 class RunnableNode(Step):
@@ -94,27 +86,28 @@ class RunnableNode(Step):
     async def run_stream(
         self, step_input: StepInput, context: RunContext
     ) -> AsyncIterator[Any]:
-        import copy
-
-        from zhenxun.services.ai.flow.base import BaseRunnable
-        from zhenxun.services.ai.run import Task
-
         executor = cast(BaseRunnable, self.executor)
-        prompt_data = self.prompt if self.prompt is not None else step_input.input
 
-        if isinstance(prompt_data, Task):
+        if isinstance(step_input.previous_step_content, AgentTask):
+            prompt_data = step_input.previous_step_content
+            prev_content_to_append = None
+        else:
+            prompt_data = self.prompt if self.prompt is not None else step_input.input
+            prev_content_to_append = step_input.previous_step_content
+
+        if isinstance(prompt_data, AgentTask):
             prompt_data = copy.copy(prompt_data)
-            if step_input.previous_step_content:
-                prev_content = str(step_input.previous_step_content)
+            if prev_content_to_append:
+                prev_content = str(prev_content_to_append)
                 prompt_data.description = (
                     f"### 🔙 [上游节点执行输出]\n{prev_content}\n\n"
                     f"### 🎯 [当前需执行的任务]\n{prompt_data.description}"
                 )
             context.run.user_input = prompt_data.description
         else:
-            if step_input.previous_step_content:
+            if prev_content_to_append:
                 prompt_data = (
-                    f"[上游节点执行输出]:\n{step_input.previous_step_content}\n\n"
+                    f"[上游节点执行输出]:\n{prev_content_to_append}\n\n"
                     f"[当前需执行的任务]:\n{prompt_data or ''}"
                 )
             context.run.user_input = str(prompt_data) if prompt_data else ""
@@ -126,8 +119,6 @@ class RunnableNode(Step):
             prompt=prompt_data, context=sandbox_context
         ) as stream_result:
             async for event in stream_result.stream_events():
-                from zhenxun.services.ai.run.models import AgentRunEnd
-
                 if isinstance(event, AgentRunEnd):
                     final_result = event.result
                 yield event
@@ -156,26 +147,6 @@ class FunctionNode(Step):
             yield res
         else:
             yield StepOutput(content=res, success=True)
-
-
-class StepMeta(BaseModel):
-    """承载工作流节点装饰器元数据的内部模型"""
-
-    name: str | None = None
-    requires_confirmation: bool = False
-    confirmation_message: str | None = None
-    failure_policy: Any = None
-
-
-class ConditionMeta(BaseModel):
-    name: str | None = None
-    if_true: list[Any] = Field(default_factory=list)
-    if_false: list[Any] = Field(default_factory=list)
-
-
-class RouterMeta(BaseModel):
-    name: str | None = None
-    choices: list[Any] = Field(default_factory=list)
 
 
 class Steps(BaseNode):
@@ -223,7 +194,6 @@ class Steps(BaseNode):
         yield StepOutput(
             content=all_outputs[-1].content if all_outputs else "No steps executed",
             success=all(o.success for o in all_outputs),
-            is_paused=any(getattr(o, "is_paused", False) for o in all_outputs),
             steps=all_outputs,
         )
 
@@ -432,7 +402,6 @@ class Loop(BaseNode):
         yield StepOutput(
             content=all_results[-1].content if all_results else "No iterations run",
             success=all(o.success for o in all_results),
-            is_paused=any(getattr(o, "is_paused", False) for o in all_results),
             steps=all_results,
         )
 
@@ -539,7 +508,6 @@ class Parallel(BaseNode):
         yield StepOutput(
             content="\n\n".join(aggregated_content_parts),
             success=not has_any_failure,
-            is_paused=any(getattr(o, "is_paused", False) for o in all_outputs),
             steps=all_outputs,
             stop=any(getattr(o, "stop", False) for o in all_outputs),
         )
@@ -555,18 +523,12 @@ class NodeFactory:
         cls,
         executor: NodeSource,
         name: str | None = None,
-        requires_confirmation: bool = False,
-        confirmation_message: str | None = None,
         failure_policy: Any = None,
     ) -> BaseNode:
         """底层物理实例化分发"""
-        from zhenxun.services.ai.flow.base import BaseRunnable
-
         kwargs = {
             "name": name,
             "executor": executor,
-            "requires_confirmation": requires_confirmation,
-            "confirmation_message": confirmation_message,
             "failure_policy": failure_policy,
         }
         if isinstance(executor, BaseRunnable):
@@ -590,36 +552,6 @@ class NodeFactory:
             return item
 
         if isinstance(item, BaseRunnable) or callable(item):
-            cond_meta = getattr(item, "__workflow_condition_meta__", None)
-            if cond_meta:
-                final_name = name or cond_meta.name or "ConditionGroup"
-                return Condition(
-                    evaluator=item,
-                    steps=cond_meta.if_true,
-                    else_steps=cond_meta.if_false,
-                    name=final_name,
-                )
-
-            router_meta = getattr(item, "__workflow_router_meta__", None)
-            if router_meta:
-                final_name = name or router_meta.name or "RouterGroup"
-                return Router(
-                    selector=item,
-                    choices=router_meta.choices,
-                    name=final_name,
-                )
-
-            step_meta = getattr(item, "__workflow_step_meta__", None)
-            if step_meta:
-                final_name = name or step_meta.name
-                return NodeFactory._create_step(
-                    executor=item,
-                    name=final_name,
-                    requires_confirmation=step_meta.requires_confirmation,
-                    confirmation_message=step_meta.confirmation_message,
-                    failure_policy=step_meta.failure_policy,
-                )
-
             return NodeFactory._create_step(executor=item, name=name)
 
         raise ValueError(
