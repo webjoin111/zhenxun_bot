@@ -6,7 +6,10 @@ from nonebot.utils import is_coroutine_callable
 
 from zhenxun.services.ai.capabilities import AbstractCapability
 from zhenxun.services.ai.run import RunContext
+from zhenxun.services.ai.run.di import DependencyInjector
 from zhenxun.services.ai.tools.bridges.handoff import HandoffTool
+
+from .models import Transition
 
 
 class TeamRoutingCapability(AbstractCapability):
@@ -17,10 +20,12 @@ class TeamRoutingCapability(AbstractCapability):
         team_name: str,
         members: list[Any],
         state_flow: Mapping[str, Sequence[Any]] | Callable | None = None,
+        max_handoffs: int = 3,
     ):
         self.team_name = team_name
         self.members = members
         self.state_flow = state_flow
+        self.max_handoffs = max_handoffs
 
     async def _get_allowed_transitions(self, context: RunContext) -> list[Any] | None:
         """核心FSM解析：解析静态字典或动态执行函数获取允许的 Transition 列表"""
@@ -34,15 +39,12 @@ class TeamRoutingCapability(AbstractCapability):
                 current_speaker,
                 [m.name for m in self.members if m.name != current_speaker],
             )
-            from zhenxun.services.ai.flow.team.models import Transition
 
             return [
                 Transition(target=t) if isinstance(t, str) else t for t in raw_targets
             ]
 
         if callable(self.state_flow):
-            from zhenxun.services.ai.run.di import DependencyInjector
-
             sig = inspect.signature(self.state_flow)
             kwargs = await DependencyInjector.resolve_all(
                 sig, call_kwargs={}, context=context
@@ -55,7 +57,6 @@ class TeamRoutingCapability(AbstractCapability):
 
             if result is None:
                 return None
-            from zhenxun.services.ai.flow.team.models import Transition
 
             return [Transition(target=t) if isinstance(t, str) else t for t in result]
 
@@ -97,6 +98,7 @@ class TeamRoutingCapability(AbstractCapability):
                         target_name=m.name,
                         target_description=desc,
                         input_schema=input_schema,
+                        max_handoffs=self.max_handoffs,
                     )
                 )
         return tools

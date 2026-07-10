@@ -10,14 +10,15 @@ from zhenxun.services.ai.sandbox.protocols import (
 from zhenxun.services.ai.tools.core.decorators import Rules, tool
 from zhenxun.services.ai.tools.core.toolkit import BaseToolkit
 from zhenxun.services.ai.tools.models import ResolvedToolPayload, ToolResult
-from zhenxun.services.ai.tools.providers.skills.manager import (
+from zhenxun.services.ai.utils.logger import log_tool as logger
+from zhenxun.utils.pydantic_compat import model_copy
+from zhenxun.utils.utils import infer_plugin_namespace
+
+from .manager import (
     skill_env_manager,
     skill_manager,
 )
-from zhenxun.services.ai.tools.providers.skills.models import Skill
-from zhenxun.services.log import logger
-from zhenxun.utils.pydantic_compat import model_copy
-from zhenxun.utils.utils import infer_plugin_namespace
+from .models import Skill
 
 
 class SkillSandboxExecutionMixin:

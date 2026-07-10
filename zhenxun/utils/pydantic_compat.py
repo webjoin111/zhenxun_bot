@@ -48,9 +48,14 @@ else:
 
                 return type_validate_python(self.type_, obj)
 
+        from pydantic import root_validator
+
         def model_validator(*args: Any, **kwargs: Any) -> Any:
+            mode = kwargs.get("mode", "after")
+            pre = mode == "before"
+
             def decorator(func: Any) -> Any:
-                return func
+                return root_validator(pre=pre, allow_reuse=True)(func)
 
             return decorator
 
@@ -68,6 +73,7 @@ __all__ = [
     "model_dump_json",
     "model_fields",
     "model_json_schema",
+    "model_rebuild",
     "model_validate",
     "model_validator",
     "parse_as",
@@ -180,3 +186,14 @@ def dump_json_safely(obj: Any, **kwargs) -> str:
         )
 
     return json.dumps(obj, default=default_serializer, **kwargs)
+
+
+def model_rebuild(model_class: type[BaseModel], **kwargs: Any) -> None:
+    """
+    Pydantic V1/V2 兼容的前向引用重建函数。
+    V2 调用 `model_rebuild()`，V1 调用 `update_forward_refs()`。
+    """
+    if PYDANTIC_V2:
+        model_class.model_rebuild(**kwargs)
+    else:
+        model_class.update_forward_refs(**kwargs)

@@ -8,10 +8,11 @@ from nonebot.utils import is_coroutine_callable
 
 from zhenxun.services.ai.core.messages import AgentMessage
 from zhenxun.services.ai.core.templates import PromptTemplate
-from zhenxun.services.ai.flow.team.models import RouteDecision, Transition
 from zhenxun.services.ai.run import AgentTask, RunContext
 from zhenxun.services.ai.run.di import DependencyInjector
-from zhenxun.services.log import logger
+from zhenxun.services.ai.utils.logger import log_team as logger
+
+from .models import RouteDecision, Transition
 
 
 class BaseRouter(ABC):
@@ -148,6 +149,7 @@ class LLMRouter(BaseRouter):
         runtime_config: Any = None,
         custom_prompt: str | None = None,
         allowed_transitions: list[Transition] | None = None,
+        max_handoffs: int = 3,
     ):
         """
         初始化基于大模型的意图路由器。
@@ -161,6 +163,7 @@ class LLMRouter(BaseRouter):
             runtime_config: 团队级别的运行时全局配置。
             custom_prompt: 自定义的系统提示词模板，用以覆盖默认的路由系统指令。
             allowed_transitions: 允许的状态移交规则与前置条件列表。
+            max_handoffs: 同一会话中允许连续移交的最大次数。
         """
         self.team_name = team_name
         self.members = members
@@ -170,6 +173,7 @@ class LLMRouter(BaseRouter):
         self.runtime_config = runtime_config
         self.custom_prompt = custom_prompt
         self.allowed_transitions = allowed_transitions
+        self.max_handoffs = max_handoffs
 
     async def route(
         self,
@@ -179,7 +183,8 @@ class LLMRouter(BaseRouter):
     ) -> RouteDecision | None:
         from zhenxun.services.ai.flow.agent.agent import Agent
         from zhenxun.services.ai.flow.agent.models import AgentConfig
-        from zhenxun.services.ai.flow.team.capabilities import TeamRoutingCapability
+
+        from .capabilities import TeamRoutingCapability
 
         default_system_prompt = """## 角色与目标
 你是一个高级任务路由器 (所在团队: {{ team_name }})。
@@ -200,7 +205,10 @@ class LLMRouter(BaseRouter):
         route_prompt = PromptTemplate(template).render(team_name=self.team_name)
 
         routing_cap = TeamRoutingCapability(
-            team_name=self.team_name, members=self.members, state_flow=self.state_flow
+            team_name=self.team_name,
+            members=self.members,
+            state_flow=self.state_flow,
+            max_handoffs=self.max_handoffs,
         )
 
         leader_config = AgentConfig(

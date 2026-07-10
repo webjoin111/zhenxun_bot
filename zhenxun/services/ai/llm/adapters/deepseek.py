@@ -6,12 +6,13 @@ from zhenxun.services.ai.core.models import (
     ModelIdentity,
 )
 from zhenxun.services.ai.core.options import GenerationConfig
-from zhenxun.services.ai.llm.adapters.handlers.openai_handlers import (
+
+from .handlers.openai_handlers import (
     OpenAIConfigMapper,
     OpenAITextHandler,
     OpenAIToolSerializer,
 )
-from zhenxun.services.ai.llm.adapters.openai import OpenAICompatAdapter
+from .openai import OpenAICompatAdapter
 
 
 class DeepSeekToolSerializer(OpenAIToolSerializer):
@@ -83,21 +84,6 @@ class DeepSeekConfigMapper(OpenAIConfigMapper):
             rf = params["response_format"]
             if isinstance(rf, dict) and rf.get("type") == "json_schema":
                 params["response_format"] = {"type": "json_object"}
-
-        if config.common.reasoning_effort:
-            effort = str(config.common.reasoning_effort).lower()
-            if effort == "none":
-                params["thinking"] = {"type": "disabled"}
-            else:
-                params["thinking"] = {"type": "enabled"}
-        elif (
-            hasattr(config, "deepseek_options")
-            and config.deepseek_options.thinking is not None
-        ):
-            if config.deepseek_options.thinking is True:
-                params["thinking"] = {"type": "enabled"}
-            elif config.deepseek_options.thinking is False:
-                params["thinking"] = {"type": "disabled"}
 
         return params
 

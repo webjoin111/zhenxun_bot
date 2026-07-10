@@ -16,16 +16,16 @@ from zhenxun.services.ai.core.exceptions import (
 )
 from zhenxun.services.ai.core.models import ToolDefinition
 from zhenxun.services.ai.run.context import RunContext
-from zhenxun.services.ai.tools.core.capabilities import InteractiveCapability
 from zhenxun.services.ai.tools.models import (
     ResolvedToolPayload,
     ToolOptions,
     ToolResult,
 )
+from zhenxun.services.ai.utils.logger import log_tool as logger
 from zhenxun.services.ai.utils.utils import wrap_to_async
-from zhenxun.services.log import logger
 from zhenxun.utils.pydantic_compat import model_dump, model_json_schema, model_validate
 
+from .capabilities import InteractiveCapability
 from .schema import (
     _parse_docstring,
     build_schema_hint,
@@ -289,7 +289,6 @@ class BaseTool:
 
     async def _core_execution(self, context: RunContext, **kwargs: Any) -> ToolResult:
         """核心执行流水线 (Core Execution Pipeline)"""
-        _retries = context.run.tool_retries.get(self.name, 0)
 
         if (
             self.settings.max_usage_count is not None

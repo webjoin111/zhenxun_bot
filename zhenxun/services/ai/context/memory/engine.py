@@ -1,16 +1,17 @@
 from collections.abc import Sequence
 from typing import Any, cast
 
-from zhenxun.services.ai.context.memory.compression import (
-    CondenserPipeline,
-)
-from zhenxun.services.ai.context.memory.manager import memory_manager
-from zhenxun.services.ai.context.memory.models import MemoryConfig
-from zhenxun.services.ai.context.memory.types import SessionMetadata
 from zhenxun.services.ai.core.engine.context_renderer import ContextConverter
 from zhenxun.services.ai.core.messages import AgentMessage
-from zhenxun.services.log import logger
+from zhenxun.services.ai.utils.logger import log_memory as logger
 from zhenxun.utils.pydantic_compat import model_copy
+
+from .compression import (
+    CondenserPipeline,
+)
+from .manager import memory_manager
+from .models import MemoryConfig
+from .types import SessionMetadata
 
 
 class MemoryReader:

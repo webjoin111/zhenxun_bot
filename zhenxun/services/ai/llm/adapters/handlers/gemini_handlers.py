@@ -56,7 +56,9 @@ from zhenxun.services.ai.llm.adapters.base import (
     ResponseData,
     process_image_data,
 )
-from zhenxun.services.ai.llm.adapters.handlers.base import (
+from zhenxun.services.ai.utils.logger import log_llm as logger
+
+from .base import (
     BaseAudioHandler,
     BaseEmbeddingHandler,
     BaseImageHandler,
@@ -66,7 +68,6 @@ from zhenxun.services.ai.llm.adapters.handlers.base import (
     ResponseParser,
     ToolSerializer,
 )
-from zhenxun.services.log import logger
 
 
 class GeminiConfigMapper(ConfigMapper):
@@ -121,22 +122,19 @@ class GeminiConfigMapper(ConfigMapper):
                     fc_config["allowedFunctionNames"] = user_funcs
             params["toolConfig"] = {"functionCallingConfig": fc_config}
 
-        has_effort = bool(
-            config.common.reasoning_effort
-            and str(config.common.reasoning_effort).lower() != "none"
-        )
-        if (
-            has_effort
-            and capabilities
-            and capabilities.reasoning_mode == ReasoningMode.LEVEL
-        ):
-            thinking_config = params.setdefault("thinkingConfig", {})
+        if config.common.reasoning_effort and capabilities:
             effort = str(config.common.reasoning_effort).lower()
-
             if capabilities.reasoning_effort_map:
                 effort = capabilities.reasoning_effort_map.get(effort, effort)
 
-            thinking_config["thinkingLevel"] = effort
+            if capabilities.reasoning_mode == ReasoningMode.LEVEL and effort != "none":
+                thinking_config = params.setdefault("thinkingConfig", {})
+                thinking_config["thinkingLevel"] = effort
+            elif (
+                capabilities.reasoning_mode == ReasoningMode.BUDGET and effort == "none"
+            ):
+                thinking_config = params.setdefault("thinkingConfig", {})
+                thinking_config["thinkingBudget"] = 0
 
         if config.gemini_options.include_thoughts is not None:
             thinking_config = params.setdefault("thinkingConfig", {})
@@ -828,10 +826,6 @@ class GeminiEmbeddingHandler(BaseEmbeddingHandler):
         )
         url = f"{base_url}/v1beta/{api_model_name}:batchEmbedContents"
         headers = adapter.get_base_headers(api_key)
-
-        from zhenxun.services.ai.llm.adapters.handlers.gemini_handlers import (
-            GeminiMessageConverter,
-        )
 
         converter = GeminiMessageConverter()
 

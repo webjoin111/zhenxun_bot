@@ -1,27 +1,42 @@
 import asyncio
 from collections.abc import Callable, Mapping, Sequence
+import contextlib
 from pathlib import Path
 from typing import Any
 from typing_extensions import Self
 
 from pydantic import BaseModel
 
-from zhenxun.services.ai.capabilities import AbstractCapability, DynamicCapability
+from zhenxun.services.ai.capabilities import (
+    AbstractCapability,
+    CapabilitySource,
+    DynamicCapability,
+)
 from zhenxun.services.ai.core.exceptions import ConcurrencyInterruptException
 from zhenxun.services.ai.core.messages import PromptInput
 from zhenxun.services.ai.core.models import CancellationToken
 from zhenxun.services.ai.core.stream_events import EventBus
-from zhenxun.services.ai.flow.agent.agent import CapabilitySource, ToolSource
+from zhenxun.services.ai.flow.agent.agent import ToolSource
 from zhenxun.services.ai.flow.agent.models import Persona
-from zhenxun.services.ai.flow.base import BaseRunnable
-from zhenxun.services.ai.flow.team.models import TeamRuntimeConfig, Transition
-from zhenxun.services.ai.flow.team.router import BaseRouter
-from zhenxun.services.ai.flow.team.strategy import (
+from zhenxun.services.ai.flow.base import BaseRunnable, ConcurrencyPolicy
+from zhenxun.services.ai.flow.concurrency import apply_concurrency_policy
+from zhenxun.services.ai.run import (
+    AgentRunResult,
+    AgentTask,
+    RunContext,
+    StreamedRunResult,
+)
+from zhenxun.services.ai.run.models import AgentRunError
+from zhenxun.services.ai.tools.providers.skills.capabilities import SkillCapability
+from zhenxun.services.ai.tools.providers.skills.models import Skill, SkillSource
+from zhenxun.services.ai.utils import ContextUtils
+from zhenxun.utils.utils import infer_plugin_namespace
+
+from .models import TeamRuntimeConfig, Transition
+from .router import BaseRouter
+from .strategy import (
     BaseTeamStrategy,
 )
-from zhenxun.services.ai.run import AgentRunResult, AgentTask, RunContext
-from zhenxun.services.ai.tools.providers.skills.models import Skill, SkillSource
-from zhenxun.utils.utils import infer_plugin_namespace
 
 
 class Team(BaseRunnable[AgentRunResult[Any]]):
@@ -115,6 +130,7 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         leader_model: str | None = None,
         leader_tools: list[ToolSource] | None = None,
         custom_prompt: str | None = None,
+        max_handoffs: int = 3,
     ) -> Self:
         """
         应用路由策略，基于挂载的 Router 进行最合适的专家动态分发。
@@ -128,8 +144,9 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
             leader_model: 路由节点 (Leader) 使用的大模型名称，若为空则默认继承全局。
             leader_tools: 挂载给路由节点 (Leader) 的专属工具列表。
             custom_prompt: 自定义系统提示词，用于覆盖默认的路由系统提示词。
+            max_handoffs: 同一会话中允许连续移交的最大次数，防止无限踢皮球。
         """
-        from zhenxun.services.ai.flow.team.strategy import RouteStrategy
+        from .strategy import RouteStrategy
 
         self.strategy = RouteStrategy(
             state_flow=state_flow,
@@ -138,6 +155,7 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
             leader_model=leader_model,
             leader_tools=leader_tools,
             custom_prompt=custom_prompt,
+            max_handoffs=max_handoffs,
         )
         self.selector_func = selector_func
         return self
@@ -147,6 +165,7 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         leader_model: str | None = None,
         leader_tools: list[ToolSource] | None = None,
         custom_prompt: str | None = None,
+        max_delegations: int = 3,
     ) -> Self:
         """
         应用协作策略，Leader 自主规划并主动将子任务委派给 Sub-Agents，最后汇总结果。
@@ -158,13 +177,15 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
             leader_model: 协调节点 (Leader) 使用的大模型名称，若为空则默认继承全局。
             leader_tools: 挂载给协调节点 (Leader) 的专属附加工具列表。
             custom_prompt: 自定义系统提示词，用于覆盖默认的协调系统提示词。
+            max_delegations: 允许向同一个专员连续委派失败的最大重试次数。
         """
-        from zhenxun.services.ai.flow.team.strategy import CoordinateStrategy
+        from .strategy import CoordinateStrategy
 
         self.strategy = CoordinateStrategy(
             leader_model=leader_model,
             leader_tools=leader_tools,
             custom_prompt=custom_prompt,
+            max_delegations=max_delegations,
         )
         return self
 
@@ -184,7 +205,7 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
             leader_tools: 挂载给总结节点 (Leader) 的专属附加工具列表。
             custom_prompt: 自定义系统提示词，用于覆盖默认的广播总结系统提示词。
         """
-        from zhenxun.services.ai.flow.team.strategy import BroadcastStrategy
+        from .strategy import BroadcastStrategy
 
         self.strategy = BroadcastStrategy(
             leader_model=leader_model,
@@ -198,8 +219,7 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         leader_model: str | None = None,
         leader_tools: list[ToolSource] | None = None,
         max_iterations: int = 15,
-        blackboard_schema: type[BaseModel] | None = None,
-        initial_blackboard_state: BaseModel | None = None,
+        blackboard: type[BaseModel] | BaseModel | None = None,
         custom_prompt: str | None = None,
     ) -> Self:
         """
@@ -213,18 +233,16 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
             leader_model: 规划节点 (Leader) 使用的大模型名称，若为空则默认继承全局。
             leader_tools: 挂载给规划节点 (Leader) 的专属附加工具列表。
             max_iterations: 引擎驱动的状态机最大迭代/循环次数，防止死循环。
-            blackboard_schema: 团队共享黑板的数据结构类型 (Pydantic Model 类)。
-            initial_blackboard_state: 共享黑板的初始数据状态实例。
+            blackboard: (可选) 团队共享黑板。可传入 Schema 类型类，或直接传入带有初始数据的 Schema 实例对象。
             custom_prompt: 自定义系统提示词，用于覆盖默认的规划系统提示词。
-        """
-        from zhenxun.services.ai.flow.team.strategy import TaskStrategy
+        """  # noqa: E501
+        from .strategy import TaskStrategy
 
         self.strategy = TaskStrategy(
             leader_model=leader_model,
             leader_tools=leader_tools,
             max_iterations=max_iterations,
-            blackboard_schema=blackboard_schema,
-            initial_blackboard_state=initial_blackboard_state,
+            blackboard=blackboard,
             custom_prompt=custom_prompt,
         )
         return self
@@ -260,10 +278,6 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         """
         self._ensure_strategy()
         if skills:
-            from zhenxun.services.ai.tools.providers.skills.capabilities import (
-                SkillCapability,
-            )
-
             capabilities = list(capabilities) if capabilities else []
             capabilities.append(
                 SkillCapability(skills=skills, namespace=self.namespace)
@@ -272,8 +286,6 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         return await super().run(
             prompt=prompt, context=context, capabilities=capabilities, **kwargs
         )
-
-    import contextlib
 
     @contextlib.asynccontextmanager
     async def run_stream(
@@ -297,10 +309,6 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
             context.capabilities.extend(self.capabilities)
 
         if skills:
-            from zhenxun.services.ai.tools.providers.skills.capabilities import (
-                SkillCapability,
-            )
-
             capabilities = list(capabilities) if capabilities else []
             capabilities.append(
                 SkillCapability(skills=skills, namespace=self.namespace)
@@ -313,8 +321,7 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
                 elif callable(cap):
                     context.capabilities.append(DynamicCapability(cap))
 
-        from zhenxun.services.ai.flow.team.runner import TeamRunner
-        from zhenxun.services.ai.run import StreamedRunResult
+        from .runner import TeamRunner
 
         event_bus = EventBus()
         context.run.event_bus = event_bus
@@ -323,8 +330,6 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
 
         policy = getattr(self.runtime_config, "concurrency_policy", None)
         if policy is None:
-            from zhenxun.services.ai.flow.base import ConcurrencyPolicy
-
             policy = (
                 ConcurrencyPolicy.ALLOW
                 if getattr(self.runtime_config, "stateless", True)
@@ -333,8 +338,6 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
 
         intervention_policy = getattr(self.runtime_config, "intervention_policy", None)
 
-        from zhenxun.services.ai.utils import ContextUtils
-
         lock_id = ContextUtils.extract_concurrency_lock_id(
             context,
             getattr(self.runtime_config, "concurrency_scope", None),
@@ -342,8 +345,6 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
         )
 
         async def _execution_task():
-            from zhenxun.services.ai.flow.concurrency import apply_concurrency_policy
-
             cancel_token = context.run.cancellation_token or CancellationToken()
             context.run.cancellation_token = cancel_token
 
@@ -359,8 +360,6 @@ class Team(BaseRunnable[AgentRunResult[Any]]):
                     async for event in runner.run_stream(prompt, context, **kwargs):
                         await event_bus.emit(event)
             except BaseException as e:
-                from zhenxun.services.ai.run.models import AgentRunError
-
                 if isinstance(e, asyncio.CancelledError):
                     e = ConcurrencyInterruptException("团队执行已被新请求打断并接管")
                 await event_bus.emit(AgentRunError(error=e))

@@ -1,17 +1,17 @@
+from __future__ import annotations
+
 import asyncio
 from collections.abc import Callable
 import time
-from typing import TYPE_CHECKING
 
 from nonebot.adapters import Event
 from nonebot.permission import SUPERUSER
 from nonebot_plugin_waiter import waiter
 
 from zhenxun.services.ai.core.exceptions import AbortException, ToolFatalError
-from zhenxun.services.log import logger
+from zhenxun.services.ai.utils.logger import log_agent as logger
 
-if TYPE_CHECKING:
-    from zhenxun.services.ai.run.context import RunContext
+from .context import RunContext
 
 CANCEL_WORDS = {"取消", "cancel", "0", "退出", "quit"}
 CONFIRM_WORDS = {"y", "yes", "是", "1", "ok", "确认"}
@@ -24,7 +24,7 @@ class HITLController:
     封装底层的物理环境隔离等待逻辑，供上层工具和中间件发起提问或审批。
     """
 
-    def __init__(self, context: "RunContext"):
+    def __init__(self, context: RunContext):
         self.context = context
 
     async def wait_event(
@@ -42,7 +42,9 @@ class HITLController:
 
         if not bot or not event:
             logger.warning("HITLController: 当前环境无 Bot/Event 实例，无法发起交互。")
-            return None
+            raise ToolFatalError(
+                "当前处于自动化后台调度环境，无法发起人工交互。任务已强行中止。"
+            )
 
         if prompt_msg:
             await bot.send(event, prompt_msg)
